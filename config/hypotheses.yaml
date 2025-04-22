@@ -1,0 +1,106 @@
+---
+hypotheses:
+  - name: "CLI_per_active_AM"
+    description: "Teams might be over-or-under-utilizing their Account Managers"
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "CLI_per_active_AM"
+      natural_name: "CLIs / Account Manager"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of CLIs per Account Manager than the global mean ({ref_hypo_val}). This workload imbalance likely affects the team's ability to properly manage client engagements, impacting overall performance metrics.
+
+  - name: "SLI_per_active_AM"
+    description: "Teams are busy with SLIs and have not been able to cover the CLIs."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "SLI_per_active_AM"
+      natural_name: "SLIs / Account Manager"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of SLIs per Account Manager than the global mean ({ref_hypo_val}). This suggests Account Managers are handling a different SLI workload, potentially diverting focus from CLI-related activities and affecting performance outcomes.
+      
+  - name: "sli_closed_won_pct"
+    description: "Teams are busy with SLIs and have not been able to cover the CLIs."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "sli_closed_won_pct"
+      natural_name: "SLI Closed Won %"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} SLI Closed Won % than the global mean ({ref_hypo_val}). This suggests the team is experiencing different success rates with SLIs, which may be affecting resource allocation and attention to CLI-related activities.
+
+  - name: "sli_added_and_closed"
+    description: "Teams are busy with SLIs and have not been able to cover the CLIs."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv" 
+      value_column: "sli_added_and_closed"
+      natural_name: "SLI Added & Closed"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of SLIs added and closed than the global mean ({ref_hypo_val}). This suggests a different level of SLI in the region, potentially consuming Account Manager bandwidth that could otherwise be directed toward CLI.
+
+  - name: "CI_w_KI_pct"
+    description: "% of CI connected to key initiatives."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "CI_w_KI_pct"
+      natural_name: "% CIs with Key Initiatives"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean. 
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of % CI connected with KI than the global mean ({ref_hypo_val}). This may cause high CLI lost rate as the KI was never spoken about in a client interaction.
+
+  - name: "CI_per_CLI"
+    description: "Specialists or Managers's effort is not aligned with the CLIs."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "CI_per_CLI"
+      natural_name: "CIs per CLI"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of Client Interactions per CLI than the global mean ({ref_hypo_val}). This suggests potential misalignment between team effort and CLI priorities, affecting overall performance and conversion rates.
+
+  - name: "CI_per_active_AM"
+    description: "Teams with more client interactions than other teams. AMs have not been able to cover the book still."
+    hypothesis_type: "single_dim"
+    input_data:
+      file: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+      value_column: "CI_per_active_AM"
+      natural_name: "CIs per Account Manager"
+      region_column: "territory_l4_name"
+    evaluation:
+      method: "threshold_compare"
+      direction: "opposite"
+    insight_template: |
+      Callout: {metric_name} in {region} is {metric_deviation}% {metric_dir} than Global mean.
+      Root cause indicator: {region} has {hypo_delta} {hypo_dir} of Client Interactions per Account Manager than the global mean ({ref_hypo_val}). This suggests Account Managers have different interaction volumes, potentially impacting their ability to effectively manage and prioritize CLIs in their portfolio. 

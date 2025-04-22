@@ -1,0 +1,12 @@
+token.json
+credentials.json
+.DS_Store
+*/.DS_Store
+*.pptx
+*.png
+*.pdf
+*.html
+*.csv
+*.json
+*.xlsx
+*.xls
