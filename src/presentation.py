@@ -126,7 +126,8 @@ def upload_to_drive(file_path: str, folder_id: str = None, mime_type: str = 'app
         # File metadata
         file_name = os.path.basename(file_path)
         file_metadata = {
-            'name': file_name
+            'name': file_name,
+            'mimeType': 'application/vnd.google-apps.presentation'  # <-- triggers conversion to Slides when saved
         }
         
         # Add to specific folder if provided
