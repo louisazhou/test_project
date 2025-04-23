@@ -1,0 +1,54 @@
+product_limitation:
+  category: product gap
+  potential_action: Escalate to product for roadmap consideration; log frequent blockers
+initiative_duplication:
+  category: internal misalignment
+  potential_action: Improve initiative tracking and internal visibility among AMs
+advertiser_limitation:
+  category: client constraint
+  potential_action: Requalify earlier or shift engagement strategy based on advertiser
+    capacity
+performance_limitation:
+  category: perceived value
+  potential_action: Provide benchmark and success stories to overcome perception gaps
+contact_limitation:
+  category: engagement barrier
+  potential_action: Identify alternative contacts or escalate via exec engagement
+Advertiser not response:
+  category: engagement barrier
+  potential_action: Set stricter requalification cutoffs; prioritize contact health
+Advertiser ad strategy unfit:
+  category: strategy mismatch
+  potential_action: Provide vertical-specific strategy consultation or shift to aligned
+    products
+relationship_issues:
+  category: account relationship
+  potential_action: Initiate trust-building plays or leadership touchpoints
+buy with other opportunities:
+  category: competition
+  potential_action: "Improve Meta\u2019s competitive messaging and win-loss insights"
+Advertiser limited resources:
+  category: client constraint
+  potential_action: Shift toward lighter-weight products or async solutions
+Other reason:
+  category: uncategorized
+  potential_action: Review manually to determine root pattern
+Satisfied with current performance:
+  category: perceived value
+  potential_action: Benchmark Meta uplift versus current performance; reposition narrative
+Previously pitched:
+  category: initiative tracking
+  potential_action: Improve CRM hygiene and initiative coordination
+Unfavorable measurement results:
+  category: measurement
+  potential_action: Re-analyze experiment setup or propose test redesign
+meta_trust_issues:
+  category: perception
+  potential_action: Deploy leadership-led outreach and case studies
+advertiser_friction:
+  category: process friction
+  potential_action: Simplify touchpoints and reduce workflow barriers
+Missing product/feature:
+  category: product gap
+  potential_action: Log and escalate feature requests; provide workaround or roadmap
+    visibility
