@@ -1,0 +1,13 @@
+# datasets.yaml (only file that changes when a new CSV arrives)
+datasets:
+  pipeline_metrics:
+    path: "metrics_input/pipeline_reporting_metrics.csv"
+    rename: {territory_l4_name: region} # Adjusted rename based on current usage
+  # Extracted from hypotheses.yaml
+  cli_ci_ki_hypothesis:
+    path: "hypothesis_input/CLI_CI_KI_hypothesis.csv"
+    rename: {territory_l4_name: region} # Assuming consistent region naming
+  # Add other datasets referenced in hypotheses.yaml here
+  # cli_closed_won_by_vertical: # Example
+  #   path: "hypothesis_input/cli_closed_won_by_vertical.csv"
+  #   rename: {region: L4} 
