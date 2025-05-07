@@ -5,15 +5,70 @@ from pptx.util import Inches, Pt
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-# Use relative import for get_credentials within the same package
-from .utils import get_credentials
-# Import Optional for type hinting
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from typing import Optional
 
 # Setup logging
 logger = logging.getLogger(__name__)
 # Configure root logger if necessary, or rely on calling script's config
 # logging.basicConfig(level=logging.INFO)
+
+# Define scopes for Google APIs
+SCOPES = [
+    'https://www.googleapis.com/auth/presentations',
+    'https://www.googleapis.com/auth/drive.file'
+]
+
+def get_credentials():
+    """Gets user credentials for Google APIs, handling token refresh/creation."""
+    creds = None
+    # Assume token.json and credentials.json are in the ROOT directory of the project
+    # Adjust path relative to this utils.py file (src/core/utils.py)
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    token_path = os.path.join(project_root, 'token.json')
+    credentials_path = os.path.join(project_root, 'credentials.json')
+
+    if not os.path.exists(credentials_path):
+         print(f"ERROR: credentials.json not found at {credentials_path}")
+         print("Please download credentials from Google Cloud Console and place it in the project root.")
+         return None
+
+    if os.path.exists(token_path):
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except Exception as e:
+            print(f"Error loading token.json: {e}. Will attempt re-authentication.")
+            creds = None # Force re-auth
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"Error refreshing token: {e}. Please re-authenticate.")
+                # Optionally delete token.json to force full re-auth
+                # if os.path.exists(token_path): os.remove(token_path)
+                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+        else:
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+            except FileNotFoundError:
+                 print(f"ERROR: credentials.json not found at {credentials_path}")
+                 return None
+            except Exception as e:
+                 print(f"Error during authentication flow: {e}")
+                 return None
+        try:
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+        except Exception as e:
+            print(f"Error saving token to {token_path}: {e}")
+
+    return creds
 
 def generate_ppt(analysis_results: dict, output_dir: str, ppt_filename: str = "RCA_Summary.pptx", report_format: str = "detailed"):
     """Generates a PowerPoint presentation from RCA results and visualizations.

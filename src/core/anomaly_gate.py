@@ -7,26 +7,6 @@ from .types import RegionAnomaly, MetricFormatting
 
 logger = logging.getLogger(__name__)
 
-def is_anomalous(metric_val: float, global_val: float, std: float, threshold: float = 1.0) -> Tuple[bool, float]:
-    """Check if a metric value is anomalous based on z-score threshold.
-    
-    Args:
-        metric_val: Current metric value
-        global_val: Global reference value
-        std: Standard deviation
-        threshold: Z-score threshold (default: 1.0)
-        
-    Returns:
-        Tuple of (is_anomalous, z_score)
-    """
-    # Calculate z-score
-    z_score = (metric_val - global_val) / std if std > 0 else 0
-    
-    # Check if absolute z-score exceeds threshold
-    is_anomaly = abs(z_score) >= threshold
-    
-    return is_anomaly, z_score
-
 class AnomalyGate:
     """Identifies significant anomalies based on multiple statistical criteria."""
 
@@ -168,22 +148,14 @@ class AnomalyGate:
                  'is_anomaly': r['is_anomaly'],
                  'z_score': r['z_score'],
                  'delta_pct': r['delta_pct'],
-                 'anomaly_dir': r['dir'],
-                 'good_anomaly': is_good,
-                 'bad_anomaly': is_bad,
                  'votes': r['votes']
              }
 
              # Create RegionAnomaly object ONLY if it IS an anomaly
              if r['is_anomaly']:
                  # Create formatted values for this anomaly
-                 formatted_value = MetricFormatting.format_value(r['value'], is_percentage)
+               
                  delta_fmt = MetricFormatting.format_delta(r['value'], global_value, is_percentage)
-                 deviation_description = MetricFormatting.create_deviation_description(
-                     delta_fmt=delta_fmt,
-                     direction=r['dir'],
-                     reference_label="the global average"
-                 )
                  
                  # Create the anomaly with all the formatted values
                  anomaly = RegionAnomaly(
@@ -191,13 +163,15 @@ class AnomalyGate:
                      dir=r['dir'],
                      delta_pct=r['delta_pct'],
                      z_score=r['z_score'],
-                     is_anomaly=True # Explicitly True
+                     is_anomaly=True, # Explicitly True,
+                     good_anomaly=is_good,
+                     bad_anomaly=is_bad
                  )
                  
                  # Add additional fields needed for narrative generation
                  anomaly.value = r['value']
-                 anomaly.formatted_value = formatted_value
-                 anomaly.deviation_description = deviation_description
+                 anomaly.global_value = global_value
+                 anomaly.is_percentage = is_percentage
                  anomaly.metric_name = metric_name
                  anomaly.metric_natural_name = display_name
                  anomaly.delta_fmt = delta_fmt

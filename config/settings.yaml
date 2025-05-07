@@ -1,0 +1,15 @@
+# Pipeline Settings
+plotting:
+  enabled: true
+  mode: "batch" # "inline" or "batch" - Controls individual plot output
+  output_dir: "output/figs"
+
+anomaly_gate:
+  z_thresh: 1.0
+  delta_thresh: 0.1
+
+reporting:
+  summary_report_format: "detailed" # Options: "detailed", "succinct", or null (to disable summary report plots)
+  generate_ppt: true # Generate PPTX from the summary report plots?
+  upload_gdrive: false  # Upload the generated PPTX report?
+  gdrive_folder_id: ""  # Optional: Specify Google Drive Folder ID

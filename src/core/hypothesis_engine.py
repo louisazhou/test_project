@@ -73,7 +73,7 @@ class HypothesisEngine:
                 )
                 
                 # Call the handler's run method
-                # Pass the specific anomaly, and now metric_global_value and metric_overall_std
+                # Pass the specific anomaly, and now metric_data_key
                 hypo_result, hypo_plot_spec_from_handler = handler.run(
                     metric_name=metric_name, 
                     anomaly=anomaly,
@@ -120,11 +120,11 @@ class HypothesisEngine:
         for spec in plot_specs: # Iterate over specs collected from handlers
             is_selected_plot = False
             # Check if this plot corresponds to the top-ranked hypothesis
-            if ranked_results and spec.ctx.get('hypothesis_name') == ranked_results[0].name:
+            if ranked_results and spec.context.get('hypothesis_name') == ranked_results[0].name:
                 is_selected_plot = True
             
             # Update the existing spec's context
-            spec.ctx['selected'] = is_selected_plot 
+            spec.context['selected'] = is_selected_plot 
             final_plot_specs.append(spec)
 
         return ranked_results, final_plot_specs

@@ -7,7 +7,6 @@ import logging
 from .data_catalog import DataCatalog
 # Assuming metrics.yaml structure is loaded elsewhere and passed
 from .data_registry import DataRegistry
-from .types import MetricFormatting
 
 logger = logging.getLogger(__name__)
 
@@ -171,20 +170,3 @@ class MetricEngine:
         metric_config = self.metrics_config.get(metric_name, {})
             
         return metric_df, global_value, metric_config
-    
-    def process_all_metrics(self) -> Dict[str, str]:
-        """Process all metrics defined in the configuration.
-        
-        Returns:
-            Dictionary mapping metric names to their registry keys
-        """
-        results = {}
-        for metric_name in self.metrics_config:
-            logger.info(f"Processing metric: {metric_name}")
-            registry_key = self._calculate_metric(metric_name, self.metrics_config[metric_name])
-            if registry_key is not None:
-                self._metric_cache[metric_name] = registry_key
-                results[metric_name] = registry_key
-                
-        logger.info(f"Processed {len(results)} metrics successfully")
-        return results 

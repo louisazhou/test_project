@@ -1,16 +1,3 @@
-settings:
-  plotting:
-    enabled: true
-    mode: "batch" # "inline" or "batch" - Controls individual plot output
-  
-  output_formats: 
-    summary_report_format: "detailed" # Options: "detailed", "succinct", or null (to disable summary report plots)
-    ppt: true # Generate PPTX from the summary report plots?
-
-  google_drive:
-    upload_enabled: false # Upload the generated PPTX report?
-    folder_id: null # Optional: Specify Google Drive Folder ID
-
 metrics:
   cli_closed_pct:
     description: "Percentage of CLI that was Closed Lost"

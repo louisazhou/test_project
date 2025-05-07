@@ -91,7 +91,7 @@ class Handler:
         metric_df_full = self.data_registry.get(metric_data_key)
         if metric_df_full is None or metric_df_full.empty:
             logger.error(f"Could not load metric_df for '{self.name}'. Cannot calculate correlation.")
-            # raw_consistency = 0.0 already initialized
+            
         else:
             hypo_region_col = df_hypo.index.name # Get region col name from df_hypo index
             if metric_df_full.index.name != hypo_region_col:
@@ -99,10 +99,9 @@ class Handler:
                     metric_df_full = metric_df_full.set_index(hypo_region_col)
                 else:
                     logger.error(f"Metric DF for {metric_data_key} missing region index/col '{hypo_region_col}'.")
-                    # raw_consistency = 0.0 already initialized
+                    
             if metric_name not in metric_df_full.columns:
-                logger.error(f"Metric col '{metric_name}' not in metric_df for key {metric_data_key}.")
-                # raw_consistency = 0.0 already initialized
+                logger.error(f"Metric col '{metric_name}' not in metric_df for key {metric_data_key}.")   
             
             # Only try to calculate if we haven't set raw_consistency to 0.0 due to errors
             if raw_consistency == 0.0 and metric_df_full is not None and not metric_df_full.empty and hypo_region_col and metric_name in metric_df_full.columns:
@@ -161,59 +160,14 @@ class Handler:
         )
         return max(0, min(score, 1.0))
 
-    def _build_key_numbers(self, metric_name: str, anomaly: RegionAnomaly, 
-                           hypo_val_region: float, ref_val_hypo: float, is_percent_hypo: bool, 
-                           score_components: Dict[str, Any], final_score: float) -> Dict[str, Any]:
-        """Build hypothesis-specific key numbers for narrative and visualization.
-        Metric-related data should be stored in RegionAnomaly, not duplicated here."""
-        
-        hypo_natural_name = self.hypothesis_config.get('natural_name', self.name)
-        fmt_hypo_val_region = MetricFormatting.format_value(hypo_val_region, is_percent_hypo)
-        fmt_ref_hypo_val = MetricFormatting.format_value(ref_val_hypo, is_percent_hypo)
-        delta_fmt = MetricFormatting.format_delta(hypo_val_region, ref_val_hypo, is_percent_hypo)
-        hypo_dir = score_components["hypo_dir_calculated"]
-        
-        # Format these consistently for narrative generation
-        deviation_description = MetricFormatting.create_deviation_description(
-            delta_fmt=delta_fmt,
-            direction=hypo_dir,
-            reference_label=f"the global average for {hypo_natural_name}"
-        )
-        
-        # Use key names that match exactly with the templates in hypotheses.yaml
-        # Make sure to use formatted values for variables that appear directly in templates
-        return {
-            "name": self.name,
-            "natural_name": hypo_natural_name,
-            "value": hypo_val_region,
-            "hypo_value_fmt": fmt_hypo_val_region,
-            "global_value": ref_val_hypo,
-            "ref_hypo_val": fmt_ref_hypo_val,  
-            "hypo_delta": delta_fmt,  # Most important - templates use hypo_delta as the formatted value
-            "hypo_dir": hypo_dir,  # Templates use this directly
-            "value_with_ref": f"{fmt_hypo_val_region} (vs {fmt_ref_hypo_val} Global for {hypo_natural_name})",
-            "hypo_deviation_description": deviation_description,
-            "z_score": score_components["hypo_z_score"],
-            "is_percentage": is_percent_hypo,
-            "direction_alignment": score_components["direction_alignment"],
-            "consistency": score_components["consistency"],
-            "raw_consistency_correlation": score_components["raw_consistency_correlation"],
-            "hypo_z_score_norm": score_components["hypo_z_score_norm"],
-            "explained_ratio": score_components["explained_ratio"],
-            "score": final_score,
-            # Include metric info for narrative generation
-            "metric_name": metric_name,
-            "region": anomaly.region
-        }
-
     def _create_plot_spec(self, df_hypo: pd.DataFrame, anomaly_region: str, 
                           hypo_region_col: str, hypo_value_col: str, 
-                          key_numbers_dict: Dict[str, Any], metric_name: str) -> PlotSpec:
+                          score_components: Dict[str, Any], final_score: float, metric_name: str) -> PlotSpec:
         hypo_natural_name = self.hypothesis_config.get('natural_name', self.name)
         return PlotSpec(
             plot_key='hypo_bar_scored',
-            data_keys=[], 
-            ctx={
+            data=df_hypo,
+            context={
                 'hypothesis_name': self.name,
                 'hypothesis_natural_name': hypo_natural_name,
                 'metric_name': metric_name,
@@ -223,10 +177,15 @@ class Handler:
                 'value_col': hypo_value_col, 
                 'explaining_region': anomaly_region,
                 'primary_region': anomaly_region,
-                'score_components': {**key_numbers_dict},
+                'score_components': {
+                    'score': final_score,
+                    'direction_alignment': score_components.get('direction_alignment', 0.0),
+                    'consistency': score_components.get('consistency', 0.0),
+                    'hypo_z_score_norm': score_components.get('hypo_z_score_norm', 0.0),
+                    'explained_ratio': score_components.get('explained_ratio', 0.0)
+                },
                 'selected': False 
-            },
-            extra_data={'df': df_hypo}
+            }
         )
     
     def run(self, metric_name: str, 
@@ -244,7 +203,7 @@ class Handler:
             return None, None
 
         # Confirm the RegionAnomaly object already contains metric information (from AnomalyGate)
-        if not hasattr(anomaly, 'value') or not hasattr(anomaly, 'formatted_value'):
+        if not hasattr(anomaly, 'value') or not hasattr(anomaly, 'global_value'):
             logger.error(f"RegionAnomaly object is missing required attributes for {metric_name} in {anomaly.region}")
             return None, None
         
@@ -260,28 +219,28 @@ class Handler:
         
         # Formatting for hypothesis values
         is_percent_hypo = MetricFormatting.is_percentage_metric(hypo_value_col)
-
-        key_numbers = self._build_key_numbers(
-            metric_name, anomaly, 
-            hypo_val_region, ref_val_hypo, is_percent_hypo,
-            score_components, final_score
-        )
         
         hypo_natural_name = self.hypothesis_config.get('natural_name', self.name)
         
-        hypo_result = HypoResult(
+        # Extract values directly from key_numbers
+        value = hypo_val_region
+        global_value = ref_val_hypo
+        
+        # Create the hypothesis result
+        result = HypoResult(
             name=self.name,
             type="single_dim",
-            narrative="", 
-            key_numbers=key_numbers,
-            plots=[],  # Empty list - plot spec is returned separately
-            natural_name=hypo_natural_name,  # Use the new field directly
-            plot_data=df_hypo,
+            narrative=None,  # Narrative will be generated separately
             score=final_score,
-            display_rank=self.display_rank
+            display_rank=self.display_rank,
+            natural_name=hypo_natural_name,
+            value=value,
+            global_value=global_value,
+            is_percentage=is_percent_hypo,
+            plot_data=df_hypo
         )
         
-        hypo_plot_spec = self._create_plot_spec(df_hypo, anomaly.region, hypo_region_col, hypo_value_col, key_numbers, metric_name)
+        hypo_plot_spec = self._create_plot_spec(df_hypo, anomaly.region, hypo_region_col, hypo_value_col, score_components, final_score, metric_name)
         
         logger.info(f"Hypothesis {self.name} for metric {metric_name} in {anomaly.region} scored: {final_score:.3f}")
-        return hypo_result, hypo_plot_spec
+        return result, hypo_plot_spec
