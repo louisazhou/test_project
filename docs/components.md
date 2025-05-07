@@ -1,13 +1,48 @@
 # Component Details
 
+## Core Engines
+
+### Metric Engine
+- Processes metric data across dimensions
+- Calculates statistical properties
+- Detects anomalies using multiple methods
+- Manages metric definitions and relationships
+
+### Hypothesis Engine
+- Evaluates hypothesis validity against metrics
+- Implements scoring algorithm with weighted components
+- Ranks hypotheses by explanatory power
+- Supports hypothesis configuration via YAML
+
+### Plot Engine
+- Generates visualizations for metric performance
+- Creates comparison charts for hypotheses
+- Implements visualization styles (detailed/succinct)
+- Supports static output formats
+
+### Narrative Engine
+- Creates natural language explanations
+- Generates context-aware insights
+- Formats analysis results as readable text
+- Supports multiple narrative styles
+
+### Presentation Engine
+- Compiles results into structured reports
+- Supports PowerPoint and Google Slides output
+- Implements templating system for slides
+- Manages visual hierarchy and layout
+
 ## Hypothesis Types
 
 ### Current Implementation
 1. **Single Dimensional**
    - Direct metric-to-hypothesis comparison
    - One-to-one relationship between metric and hypothesis values
-   - [Implementation](../src/...)
-   - Example: CLI per AM vs. Closed Won Rate, when workload (CLI/AM) is too heavy the won rate would be low
+   - Weighted scoring approach:
+     - Direction Alignment (30%)
+     - Consistency (30%)
+     - Hypothesis Z-score (20%)
+     - Explained Ratio (20%)
 
 ### Planned Types
 1. **Depth Spotter**
@@ -18,10 +53,11 @@
 
 2. **Reason Mix**
    - Status: Planned
-   - Purpose: Surface the tagged reasons (submitted by sales managers)
+   - Purpose: Surface tagged reasons from sales managers
    - Features:
-     - Weighted impact assessment (e.g. compared to the rest of the world, the over-indexed reason in this region cause X more dollar of lost)
-     - Recommended action based on the tagged reason type
+     - Weighted impact assessment
+     - Overindexed reason analysis
+     - Action recommendations
 
 3. **Benchmark Comparison**
    - Status: Planned
@@ -33,20 +69,17 @@
 
 4. **History Reference**
    - Status: Planned
-   - Purpose: Temporal pattern analysis (e.g. compared to start of quarter, now...)
+   - Purpose: Temporal pattern analysis
    - Features:
      - Time series comparison
      - Seasonal adjustment
      - Trend analysis
-  
-5. 
 
 ## Visualization Framework
 
 ### Current Implementation
 1. **Detailed View**
    - Complete analysis visualization
-   - [Implementation](../src/...)
    - Features:
      - Metric performance plots
      - Hypothesis comparison charts
@@ -61,7 +94,9 @@
      - Essential annotations
   
 3. **Reporting Deck**
-   - PowerPoint/Google Slides
+   - PowerPoint/Google Slides integration
+   - Slide templates for different analysis types
+   - Visual hierarchy for insights
 
 ### Future Framework
 1. **Modular Components**
@@ -71,8 +106,7 @@
 
 2. **Dashboard Integration**
    - Unidash compatibility
-   - Real-time updates
-   - Interactive filtering
+
 
 ## Metric Types
 
@@ -119,8 +153,9 @@
 
 ### Integration Points
 1. **Data Processing**
-   - Anomaly detection
+   - Anomaly detection enhancement
    - Pattern recognition
+   - Anomaly classification
 
 2. **Analysis**
    - Hypothesis selection
@@ -130,3 +165,4 @@
 3. **Reporting**
    - Natural language summaries
    - Recommendation generation
+   - Contextual explanations

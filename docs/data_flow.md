@@ -1,57 +1,61 @@
 # Data Flow
 
-## Input Processing
+## System Pipeline
 
 ### 1. Configuration Loading
-```python
-# src/data_processor.py
-def _load_metrics_config(self) -> None:
-    """Loads metrics configuration and settings"""
-```
-- Loads metric definitions
-- Sets evaluation parameters
-- Configures visualization options
+- Loads metric definitions from `config/metrics.yaml`
+- Processes hypothesis configurations from `config/hypotheses.yaml`
+- Applies system settings from `config/settings.yaml`
+- Registers datasets via data catalog
 
-### 2. Data Preparation
-```python
-# src/data_processor.py
-def prepare_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Processes input data for analysis"""
-```
-- Validates input data format
-- Performs data cleaning
-- Prepares analysis datasets
+### 2. Data Ingestion
+- Reads metric data from input files
+- Validates data against expected schema
+- Performs initial data cleaning and normalization
+- Registers data in the data registry
 
-## Analysis Flow
+### 3. Metric Processing
+- Calculates core statistics for each metric
+- Computes deltas from reference values
+- Applies transformations as configured
+- Prepares metrics for anomaly detection
 
-### 1. Anomaly Detection
-```python
-# src/automation_pipeline.py
-def detect_anomaly(self) -> Tuple[float, float, float, int]:
-    """Detects anomalies using multiple statistical methods"""
-```
-Uses 5 methods to detect anomalies:
-1. Z-score: Deviation from mean in standard deviations
-2. Delta: Percentage difference from reference value
-3. IQR: Outlier detection using interquartile range
-4. 95% CI: Outside confidence interval
-5. 10/90 Percentile: Outside expected range
+### 4. Anomaly Detection
+The system uses five methods to detect anomalies:
 
-### 2. Hypothesis Evaluation
-```python
-# src/automation_pipeline.py
-def calculate_score(self) -> Tuple[float, float, float, float, float, bool]:
-    """Evaluates hypothesis validity using multiple components"""
-```
+1. **Z-score Analysis**
+   - Calculates deviation from mean in standard deviations
+   - Flags metrics exceeding threshold (typically 2-3 σ)
+   - Accounts for distribution shape
 
-## Scoring System
-The system uses a weighted scoring approach:
+2. **Delta Percentage**
+   - Computes percentage difference from reference value
+   - Applies configurable threshold (typically 10-20%)
+   - Direction-aware (improvement vs. degradation)
 
-### Components
+3. **Interquartile Range (IQR)**
+   - Identifies outliers beyond Q1-1.5×IQR and Q3+1.5×IQR
+   - Robust to non-normal distributions
+   - Less sensitive to extreme outliers
+
+4. **Confidence Interval**
+   - Constructs 95% CI around reference value
+   - Flags metrics outside confidence interval
+   - Accounts for sample size and variation
+
+5. **Percentile Bounds**
+   - Checks if metric falls outside 10th-90th percentile range
+   - Provides non-parametric bounds
+   - Useful for skewed distributions
+
+### 5. Hypothesis Testing
+For each anomalous metric, the system evaluates configured hypotheses:
+
+#### Scoring Components
 1. **Direction Alignment (30%)**
    - Checks if metric and hypothesis movements align
    - Based on expected direction ('same' or 'opposite')
-   ```python
+   ```
    if expected_direction == 'opposite':
        if consistency_sign < 0:
            direction_alignment = 1.0
@@ -63,14 +67,14 @@ The system uses a weighted scoring approach:
 2. **Consistency (30%)**
    - Measures correlation strength
    - Uses absolute correlation value
-   ```python
+   ```
    consistency = abs(raw_consistency)
    ```
 
 3. **Hypothesis Z-score (20%)**
    - Evaluates statistical significance
    - Normalized based on magnitude
-   ```python
+   ```
    if abs_hypo_z > 3:
        hypo_z_score_norm = 1.0
    elif abs_hypo_z > 2:
@@ -83,12 +87,12 @@ The system uses a weighted scoring approach:
 
 4. **Explained Ratio (20%)**
    - Measures proportion of metric deviation explained
-   ```python
+   ```
    explained_ratio = min(abs(hypo_delta) / abs(metric_delta), 1.0)
    ```
 
-### Final Score Calculation
-```python
+#### Final Score Calculation
+```
 final_score = (
     0.3 * direction_alignment +
     0.3 * consistency +
@@ -98,10 +102,11 @@ final_score = (
 explains = final_score > 0.5  # Threshold for explanation
 ```
 
-## Result Processing
-
-### 1. Anomaly Classification
-```python
+### 6. Anomaly Classification
+The system classifies anomalies as "good" or "bad" based on:
+- Metric's preferred direction (higher_is_better flag)
+- Observed delta (positive or negative)
+```
 # Good/Bad Anomaly Classification
 is_anomaly = anomaly_df['is_anomaly']
 delta_positive = anomaly_df['delta'] > 0
@@ -112,22 +117,29 @@ good_anomaly = is_anomaly & ((wants_higher & delta_positive) | (~wants_higher & 
 bad_anomaly = is_anomaly & ((wants_higher & ~delta_positive) | (~wants_higher & delta_positive))
 ```
 
-### 2. Result Consolidation
-- Combines all hypothesis evaluations
-- Ranks hypotheses by score
-- Generates final insights
+### 7. Visualization Generation
+- The Plot Engine generates visualizations based on analysis results
+- Visualization type depends on configuration (detailed/succinct)
+- Formats include charts for metric performance and hypothesis comparison
 
-## Output Generation
-1. Analysis Results
-   - Anomaly detection summary
-   - Hypothesis evaluation scores
-   - Explanation texts
+### 8. Narrative Creation
+- The Narrative Engine creates text explanations for anomalies
+- Generates insights based on hypothesis evaluation
+- Formats findings for inclusion in reports
 
-2. Visualizations
-   - Metric performance plots
-   - Hypothesis comparison charts
-   - Score component breakdowns
+### 9. Report Generation
+- The Presentation Engine compiles results into structured reports
+- Creates PowerPoint or Google Slides document
+- Organizes content by metrics and hypotheses
+- Applies consistent styling and formatting
 
-3. Reports
-   - PowerPoint/Google Slides
-   - Future: Dashboard integration 
+## Data Paths
+
+### Input Path
+`input/metrics_input/` → `data_registry.py` → `metric_engine.py` → `anomaly_gate.py`
+
+### Hypothesis Path
+`config/hypotheses.yaml` → `hypothesis_engine.py` → `scoring system` → `ranked results`
+
+### Output Path
+`analysis results` → `plot_engine.py` → `narrative_engine.py` → `presentation.py` → `output/` 

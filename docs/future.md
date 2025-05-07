@@ -1,185 +1,58 @@
 # Future Development
 
-## Roadmap Overview
+## Brainstorming Session: Advanced RCA Concepts
 
-### Phase 1: Core Functionality Enhancement
-Current phase focusing on stabilizing and enhancing existing features:
-- Robust single-dimensional hypothesis testing
-- Basic visualization framework
-- PowerPoint report generation
-- Snapshot-based analysis
-- Core scoring system
+The RCA Automation System has several promising avenues for advanced development. The following concepts represent high-impact areas that could transform the system's capabilities:
 
-### Phase 2: Advanced Analysis Features
-Next phase introducing multi-dimensional capabilities:
-- Multi-dimensional hypothesis support
-  - Depth Spotter: Analyzing metric performance across hierarchical dimensions
-  - Reason Mix: Evaluating contribution patterns across categories
-  - Benchmark Comparison: Cross-regional or cross-segment analysis
-  - History Reference: Historical pattern comparison
-- Enhanced visualization options
-  - Interactive components
-  - Custom layouts
-  - Dynamic sizing
-- Dashboard integration
-- Pacing metrics implementation
-- Automated report generation improvements
+### Metric Dependency Graphs
+- **Core idea**: Implement a DAG-based approach for hypothesis chains
+- **Why it matters**: Many metrics are functions of upstream inputs that may themselves be anomalous
+- **Implementation path**: Create a YAML-based dependency graph and recursive evaluator
+- **Details**: See [Advanced Ideas - Dependency Chains](ideas.md#dependency-chains-in-root-cause-analysis)
 
-### Phase 3: AI Integration & Advanced Analytics
-Future phase incorporating AI and advanced analytics:
-- LLM Agent Integration
-  - ReAct framework implementation
-  - Automated hypothesis generation
-  - Natural language insights
-  - Dynamic scoring adjustment
-- Revenue metrics
-- Product metrics
-- Time-series analysis
-- Advanced hypothesis types
-  - Correlation analysis
-  - Pattern recognition
-  - Anomaly clustering
+### Pacing-Adjusted Analysis
+- **Core idea**: Compare metrics against historical pacing curves, not just global averages
+- **Why it matters**: Eliminates false anomalies due to normal regional or temporal variation
+- **Implementation path**: Build historical pacing curves and incorporate into anomaly detection
+- **Details**: See [Advanced Ideas - Pacing-Adjusted Analysis](ideas.md#pacing-adjusted-analysis)
 
-## Detailed Feature Plans
+### Semantic Layer for Dynamic Metrics
+- **Core idea**: Build a declarative registry for metrics that can generate queries on demand
+- **Why it matters**: Avoids explosion of pre-materialized tables while enabling flexible analysis
+- **Implementation path**: Create a thin wrapper that translates YAML definitions to SQL
+- **Details**: See [Advanced Ideas - Semantic Layer](ideas.md#semantic-layer-for-metrics)
 
-### 1. Enhanced Hypothesis Types
+### LLM Agent Integration
+- **Core idea**: Use LLM with specialized tools to navigate the analysis graph
+- **Why it matters**: Enables dynamic, context-aware exploration of hypotheses
+- **Implementation path**: Wrap core functions as tools for function-calling API
+- **Details**: See [Advanced Ideas - LLM-Powered Analysis](ideas.md#llm-powered-analysis)
 
-#### Depth Spotter
-- Purpose: Analyze metric performance across hierarchical dimensions
-- Features:
-  - Automatic dimension hierarchy detection
-  - Drill-down analysis
-  - Impact quantification at each level
-- Implementation Status: Design phase
+### Narrative Generation Improvements
+- **Core idea**: Templatize explanations that adapt to analysis context
+- **Why it matters**: Provides consistent, readable explanations of complex findings
+- **Implementation path**: Create a narrative engine using context-aware templates
+- **Details**: See [Advanced Ideas - Narrative Generation](ideas.md#narrative-generation)
 
-#### Reason Mix
-- Purpose: Evaluate contribution patterns across categories
-- Features:
-  - Category distribution analysis
-  - Significance testing
-  - Historical comparison
-- Implementation Status: Early development
+## Implementation Priority
 
-#### Benchmark Comparison
-- Purpose: Cross-regional or cross-segment analysis
-- Features:
-  - Peer group identification
-  - Statistical significance testing
-  - Performance ranking
-- Implementation Status: Planning
+1. **Phase 2.1**: Pacing-Adjusted Analysis
+   - Quick win for reducing false positives
+   - Relatively small implementation effort
+   - Immediate ROI for analysis quality
 
-#### History Reference
-- Purpose: Historical pattern comparison
-- Features:
-  - Seasonal adjustment
-  - Trend analysis
-  - Pattern matching
-- Implementation Status: Research phase
+2. **Phase 2.2**: Metric Dependency Graphs
+   - Foundational for more complex analysis
+   - Leverages existing hypothesis framework
+   - Enables multi-level explanations
 
-### 2. Visualization Framework
+3. **Phase 2.3**: Semantic Layer
+   - Scales system capability without data explosion
+   - Improves maintenance through centralized definitions
+   - Enables more flexible filtering and analysis
 
-#### Interactive Components
-- Dynamic filtering
-- Drill-down capabilities
-- Custom view options
-- Export functionality
+4. **Phase 3**: LLM Agent Integration
+   - Advanced capability building on previous phases
+   - Requires careful design for reliable results
+   - Highest potential for autonomous insights
 
-#### Layout System
-- Modular component architecture
-- Responsive design
-- Theme customization
-- Template system
-
-#### Output Formats
-- PowerPoint integration
-- Google Slides support
-- Dashboard widgets
-- PDF reports
-
-### 3. LLM Integration
-
-#### Agent Framework
-- Purpose: Automate analysis and insight generation
-- Components:
-  - Function calling system
-  - Natural language processing
-  - Decision tree logic
-  - Feedback loop
-
-#### Integration Points
-1. Data Processing
-   - Automated data validation
-   - Smart cleaning
-   - Format detection
-
-2. Analysis
-   - Hypothesis selection
-   - Parameter tuning
-   - Result interpretation
-
-3. Reporting
-   - Natural language insights
-   - Recommendation generation
-   - Executive summary creation
-
-### 4. Performance Optimization
-
-#### Data Processing
-- Parallel processing
-- Caching system
-- Incremental updates
-- Memory optimization
-
-#### Analysis Engine
-- Algorithm efficiency
-- Computation distribution
-- Resource management
-- Error handling
-
-#### Visualization
-- Rendering optimization
-- Asset management
-- Lazy loading
-- Cache management
-
-## Implementation Timeline
-
-### Q2 2024
-- Complete Phase 1 stabilization
-- Begin Depth Spotter implementation
-- Enhance visualization framework
-
-### Q3 2024
-- Launch Reason Mix analysis
-- Implement dashboard integration
-- Start LLM integration research
-
-### Q4 2024
-- Release Benchmark Comparison
-- Complete visualization enhancements
-- Begin Phase 3 development
-
-### Q1 2025
-- Launch History Reference
-- Complete LLM integration
-- Release advanced analytics suite
-
-## Success Metrics
-
-### Technical Metrics
-- Analysis runtime
-- Accuracy rates
-- System reliability
-- Resource utilization
-
-### User Metrics
-- Adoption rate
-- User satisfaction
-- Time savings
-- Insight quality
-
-### Business Impact
-- Decision speed
-- Analysis depth
-- Resource efficiency
-- Knowledge sharing 

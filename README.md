@@ -10,76 +10,61 @@ The Root Cause Analysis (RCA) Automation System is a powerful tool designed to a
 - [Architecture](docs/architecture.md): System design and component details
 - [Data Flow](docs/data_flow.md): Data processing and analysis pipeline
 - [Components](docs/components.md): Detailed component documentation
-- [Setup & Usage](docs/setup.md): Installation and usage instructions
+- [Setup & Usage](docs/setup.md): Configuration and usage instructions
 - [Future Development](docs/future.md): Roadmap and planned features
+- [Advanced Ideas](docs/ideas.md): Brainstorming concepts for future enhancement
 
-## Quick Start
+## System Usage
 
-### Prerequisites
-- Python 3.8+
-- pip package manager
-- Virtual environment (recommended)
-
-### Installation
-```bash
-# Clone the repository
-git clone [repository-url]
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Basic Usage
-1. Configure metrics in `config/metrics.yaml`
+### Configuration
+1. Update metrics in `config/metrics.yaml`
 2. Set up hypotheses in `config/hypotheses.yaml`
-3. Place input data in `input/metrics_input/`
-4. Run the pipeline:
-```bash
+3. Review system settings in `config/settings.yaml`
+4. Place input data in `input/metrics_input/`
+
+### Running the Analysis
+Run the main pipeline script to perform the analysis:
+```
 python src/run_pipeline.py
 ```
+
+### Output Locations
+- Analysis results: `output/analysis_results/`
+- Visualizations: `output/visualizations/`
+- Reports: `output/reports/`
 
 ## Key Features
 
 ### Current Capabilities
-- Automated anomaly detection
-- Single-dimensional hypothesis testing
-- Visualization generation
-- Report automation
-- PowerPoint output
+- Automated anomaly detection using multiple statistical methods
+- Single-dimensional hypothesis testing with weighted scoring system
+- Visualization generation with detailed and succinct options
+- Report automation with PowerPoint/Google Slides integration
+- Configurable metrics and hypotheses
 
 ### Upcoming Features
-- Multi-dimensional analysis
-- Enhanced visualization options
-- Dashboard integration
-- LLM-powered insights
-- Advanced analytics suite
+- Multi-dimensional analysis for complex relationships
+- Enhanced visualization options with interactive elements
+- Dashboard integration for real-time monitoring
+- LLM-powered insights using advanced NLP techniques
+- Advanced analytics with temporal and causal analysis
 
 ## Project Structure
 ```
 RCA_automation/
 ├── config/           # Configuration files
-├── docs/            # Documentation
-├── input/           # Input data directory
-├── src/             # Source code
-├── output/          # Generated outputs
-├── tmp/             # Temporary files
-└── tests/           # Test suite
+│   ├── metrics.yaml  # Metric definitions
+│   ├── hypotheses.yaml # Hypothesis configurations
+│   └── settings.yaml # System settings
+├── docs/             # Documentation
+├── input/            # Input data directory
+├── src/              # Source code
+│   ├── core/         # Core engine components
+│   ├── handlers/     # Data handlers
+│   ├── plotting/     # Visualization modules
+│   ├── reporting/    # Report generation
+│   └── cli/          # Command-line interface
+├── output/           # Generated outputs
+├── tmp/              # Temporary files
+└── hypothesis_input/ # Hypothesis data files
 ```
-
-## Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-See [Future Development](docs/future.md) for planned enhancements and contribution opportunities.
-
-## Support
-For issues and feature requests, please use the issue tracker.
-
-## License
-[License Type] - See LICENSE file for details 
