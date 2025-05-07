@@ -20,27 +20,16 @@
 
 2. **Reason Mix**
    - Status: Planned
-   - Purpose: Evaluate combined impact of multiple factors
+   - Purpose: Surface the tagged reasons submitted and show their mix
    - Features:
-     - Factor combination analysis
-     - Weighted impact assessment
-     - Interaction effect detection
+
 
 3. **Benchmark Comparison**
    - Status: Planned
    - Purpose: Compare against industry/historical benchmarks
    - Features:
-     - External benchmark integration
-     - Peer group analysis
-     - Performance gap assessment
 
-4. **History Reference**
-   - Status: Planned
-   - Purpose: Temporal pattern analysis
-   - Features:
-     - Time series comparison
-     - Seasonal adjustment
-     - Trend analysis
+
 
 ## Visualization Framework
 

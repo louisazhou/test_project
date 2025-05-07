@@ -99,44 +99,6 @@ settings:
 3. Add visualization support in `visualization.py`
 4. Update documentation
 
-### Modifying Visualization
-1. Update `RCAVisualizer` class in `visualization.py`
-2. Maintain consistent styling
-3. Follow existing naming conventions
-
-### Adding New Metrics
-1. Add metric configuration to `metrics.yaml`
-2. Ensure data file contains required columns
-3. Update hypothesis associations if needed
-
-## Troubleshooting
-
-### Common Issues
-1. Missing Data Columns
-   - Verify input data format
-   - Check column names in configuration
-
-2. Visualization Errors
-   - Confirm matplotlib backend
-   - Check plot dimensions
-
-3. Google Drive Integration
-   - Verify credentials
-   - Check API permissions
-
-### Debug Information
-- Check `tmp/` directory for intermediate results
-- Review logging output
-- Examine debug visualizations
-
-## Future Development
-
-### Contributing
-1. Fork the repository
-2. Create feature branch
-3. Follow coding standards
-4. Submit pull request
-
 ### Planned Enhancements
 - See [Future Development](future.md) for details
 - Follow issue tracker for updates

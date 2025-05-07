@@ -15,24 +15,6 @@ The Root Cause Analysis (RCA) Automation System is a powerful tool designed to a
 
 ## Quick Start
 
-### Prerequisites
-- Python 3.8+
-- pip package manager
-- Virtual environment (recommended)
-
-### Installation
-```bash
-# Clone the repository
-git clone [repository-url]
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
 ### Basic Usage
 1. Configure metrics in `config/metrics.yaml`
 2. Set up hypotheses in `config/hypotheses.yaml`
@@ -52,7 +34,7 @@ python src/run_pipeline.py
 - PowerPoint output
 
 ### Upcoming Features
-- Multi-dimensional analysis
+- More types of hypothesis
 - Enhanced visualization options
 - Dashboard integration
 - LLM-powered insights
@@ -69,17 +51,3 @@ RCA_automation/
 ├── tmp/             # Temporary files
 └── tests/           # Test suite
 ```
-
-## Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-See [Future Development](docs/future.md) for planned enhancements and contribution opportunities.
-
-## Support
-For issues and feature requests, please use the issue tracker.
-
-## License
-[License Type] - See LICENSE file for details 

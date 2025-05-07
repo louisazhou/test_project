@@ -65,11 +65,4 @@ graph TD
 - Hypothesis selection and ranking
 
 ### 2. Extensible Framework
-- Plugin system for new hypothesis types
 - Modular visualization components
-- API-first design for external integration
-
-### 3. Performance Optimization
-- Parallel processing capabilities
-- Caching mechanisms
-- Incremental updates 
