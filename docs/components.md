@@ -6,29 +6,26 @@
 1. **Single Dimensional**
    - Direct metric-to-hypothesis comparison
    - One-to-one relationship between metric and hypothesis values
-   - [Implementation](../src/automation_pipeline.py#L385-L432)
-   - Example: CLI per AM vs. Closed Won Rate
+   - [Implementation](../src/...)
+   - Example: CLI per AM vs. Closed Won Rate, when workload (CLI/AM) is too heavy the won rate would be low
 
 ### Planned Types
 1. **Depth Spotter**
    - Status: In Development
-   - Purpose: Analyze metric patterns at different organizational levels
+   - Purpose: Analyze metric patterns at a more granular level
    - Features:
-     - Multi-level analysis
-     - Hierarchical pattern detection
-     - Drill-down capabilities
+     - Drill-down capabilities (e.g. the most lagged)
 
 2. **Reason Mix**
    - Status: Planned
-   - Purpose: Evaluate combined impact of multiple factors
+   - Purpose: Surface the tagged reasons (submitted by sales managers)
    - Features:
-     - Factor combination analysis
-     - Weighted impact assessment
-     - Interaction effect detection
+     - Weighted impact assessment (e.g. compared to the rest of the world, the over-indexed reason in this region cause X more dollar of lost)
+     - Recommended action based on the tagged reason type
 
 3. **Benchmark Comparison**
    - Status: Planned
-   - Purpose: Compare against industry/historical benchmarks
+   - Purpose: Compare against historical benchmarks
    - Features:
      - External benchmark integration
      - Peer group analysis
@@ -36,18 +33,20 @@
 
 4. **History Reference**
    - Status: Planned
-   - Purpose: Temporal pattern analysis
+   - Purpose: Temporal pattern analysis (e.g. compared to start of quarter, now...)
    - Features:
      - Time series comparison
      - Seasonal adjustment
      - Trend analysis
+  
+5. 
 
 ## Visualization Framework
 
 ### Current Implementation
 1. **Detailed View**
    - Complete analysis visualization
-   - [Implementation](../src/visualization.py)
+   - [Implementation](../src/...)
    - Features:
      - Metric performance plots
      - Hypothesis comparison charts
@@ -60,6 +59,9 @@
      - Key metrics only
      - Simplified visuals
      - Essential annotations
+  
+3. **Reporting Deck**
+   - PowerPoint/Google Slides
 
 ### Future Framework
 1. **Modular Components**
@@ -71,12 +73,6 @@
    - Unidash compatibility
    - Real-time updates
    - Interactive filtering
-
-3. **Output Formats**
-   - PowerPoint/Google Slides
-   - Web dashboards
-   - PDF reports
-   - API endpoints
 
 ## Metric Types
 
@@ -123,7 +119,6 @@
 
 ### Integration Points
 1. **Data Processing**
-   - Input validation
    - Anomaly detection
    - Pattern recognition
 
@@ -135,4 +130,3 @@
 3. **Reporting**
    - Natural language summaries
    - Recommendation generation
-   - Action item creation 
