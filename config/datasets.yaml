@@ -11,3 +11,15 @@ datasets:
   # cli_closed_won_by_vertical: # Example
   #   path: "hypothesis_input/cli_closed_won_by_vertical.csv"
   #   rename: {region: L4} 
+  # Add L8 concentration dataset
+  Mock_L8_CLI_Qualified_Data:
+    path: "metrics_input/Mock_L8_CLI_Qualified_Data.csv"
+  # cli_closed_won_by_vertical: # Example
+  #   path: "hypothesis_input/cli_closed_won_by_vertical.csv"
+  #   rename: {region: L4} 
+
+  # Data for Closed-Lost Reason Analysis
+  ClosedLostReasonsData:
+    path: "metrics_input/mock_closed_lost_reasons.csv"
+    config: # Optional: Add if specific read_csv params are needed
+      # dtype: { 'opportunity_lost': 'Int64' } # Example

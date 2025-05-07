@@ -208,8 +208,9 @@ def main():
         for anomaly in region_anomalies: 
             logger.info(f"Evaluating hypotheses for anomaly in {anomaly.region} for metric {metric_name}")
             
-            # Evaluate hypotheses for this anomaly
-            hypo_results, hypo_plot_specs = hypothesis_engine.evaluate_hypotheses_for_anomaly(
+            # Evaluate hypotheses for this anomaly - now returns only List[HypoResult]
+            # Each HypoResult in hypo_results_from_engine now contains its .plots list
+            hypo_results_from_engine = hypothesis_engine.evaluate_hypotheses_for_anomaly(
                 metric_name=metric_name,
                 anomaly=anomaly,
                 associated_hypotheses=associated_hypotheses,
@@ -218,20 +219,27 @@ def main():
             
             # Save hypothesis results for inspection if requested
             if args.save_data:
-                save_data_for_inspection(hypo_results, f"hypo_results_{metric_name}_{anomaly.region}", tmp_dir)
-                save_data_for_inspection(hypo_plot_specs, f"hypo_plot_specs_{metric_name}_{anomaly.region}", tmp_dir)
+                # hypo_plot_specs are now inside hypo_results_from_engine objects
+                save_data_for_inspection(hypo_results_from_engine, f"hypo_results_with_plots_{metric_name}_{anomaly.region}", tmp_dir)
             
             # Collect results for reporting
-            all_hypo_results_for_metric.extend(hypo_results)
-            all_plot_specs.extend(hypo_plot_specs)
+            all_hypo_results_for_metric.extend(hypo_results_from_engine)
+            
+            # Collect PlotSpecs from each HypoResult for the main plot engine
+            for res in hypo_results_from_engine:
+                if hasattr(res, "plots") and res.plots:
+                    logger.debug(f"Adding {len(res.plots)} plot(s) from {res.name}")
+                    all_plot_specs.extend(res.plots)
+                else:
+                    logger.debug(f"No plots found for {res.name}")
             
             # Generate narratives for hypothesis results
-            for hypo_res in hypo_results:
+            for hypo_res in hypo_results_from_engine: # Iterate through the list from engine
                 hypo_res.narrative = narrative_engine.generate_narrative(hypo_res, anomaly)
             
             # Store hypothesis results in the anomaly object
-            anomaly.hypo_results = hypo_results
-            
+            anomaly.hypo_results = hypo_results_from_engine # Store the full list from engine
+        
         # Create a MetricReport object to consolidate metric data, anomalies, and plots
         metric_report = MetricReport(
             metric_name=metric_name,
@@ -247,6 +255,9 @@ def main():
         # Save metric report for inspection if requested
         if args.save_data:
             save_data_for_inspection(metric_report, f"metric_report_{metric_name}", tmp_dir)
+        
+        # ADDED LOG before adding metric_plot_spec
+        logger.debug(f"Collected {len(all_plot_specs)} plot specifications for {metric_name}")
         
         # 5. Generate metric plot specification
         metric_plot_spec = PlotSpec(
@@ -266,14 +277,15 @@ def main():
             }
         )
         all_plot_specs.append(metric_plot_spec)
-        
-        # Save plot spec for inspection if requested
-        if args.save_data:
-            save_data_for_inspection(metric_plot_spec, f"metric_plot_spec_{metric_name}", tmp_dir)
+        logger.info(f"[run_pipeline] After adding metric_plot_spec for {metric_name}, all_plot_specs has {len(all_plot_specs)} items.")
 
     # --- Render Individual Plots --- 
     logger.info(f"Collected {len(all_plot_specs)} plot specifications.")
-    saved_plot_files = plot_engine.render(all_plot_specs)
+    saved_plot_files = []
+    for plot_spec in all_plot_specs:
+        plot_file = plot_engine.render(plot_spec)
+        if plot_file:
+            saved_plot_files.append(plot_file)
     
     # Save plot files for inspection if requested
     if args.save_data:

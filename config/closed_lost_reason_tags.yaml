@@ -2,8 +2,8 @@ product_limitation:
   category: product gap
   potential_action: Escalate to product for roadmap consideration; log frequent blockers
 initiative_duplication:
-  category: internal misalignment
-  potential_action: Improve initiative tracking and internal visibility among AMs
+  category: "Internal Client-Side Factor"
+  potential_action: "Advise client on internal alignment, clarify unique value prop."
 advertiser_limitation:
   category: client constraint
   potential_action: Requalify earlier or shift engagement strategy based on advertiser
@@ -14,9 +14,9 @@ performance_limitation:
 contact_limitation:
   category: engagement barrier
   potential_action: Identify alternative contacts or escalate via exec engagement
-Advertiser not response:
-  category: engagement barrier
-  potential_action: Set stricter requalification cutoffs; prioritize contact health
+"Advertiser not response":
+  category: "Engagement Issue"
+  potential_action: "Review communication strategy, attempt alternative contact points."
 Advertiser ad strategy unfit:
   category: strategy mismatch
   potential_action: Provide vertical-specific strategy consultation or shift to aligned
@@ -43,8 +43,8 @@ Unfavorable measurement results:
   category: measurement
   potential_action: Re-analyze experiment setup or propose test redesign
 meta_trust_issues:
-  category: perception
-  potential_action: Deploy leadership-led outreach and case studies
+  category: "Product/Brand Perception"
+  potential_action: "Share trust-building case studies, address PR."
 advertiser_friction:
   category: process friction
   potential_action: Simplify touchpoints and reduce workflow barriers
@@ -52,3 +52,7 @@ Missing product/feature:
   category: product gap
   potential_action: Log and escalate feature requests; provide workaround or roadmap
     visibility
+# Add other reasons as needed
+default_reason:
+  category: "Other/Unknown"
+  potential_action: "Requires manual review and categorization."

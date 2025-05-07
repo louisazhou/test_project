@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from ..core.data_registry import DataRegistry
 from ..core.types import MetricReport, PlotSpec
-from .report_plots.detailed import plot_summary_report
+from .report_plots.detailed import plot_summary_report, plot_summary_report_by_type
 from ..core.presentation import generate_ppt, upload_to_drive
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class ReportBuilder:
         Returns:
             Dictionary containing the extracted context
         """
+        logger.debug(f"ReportBuilder._extract_metric_report_context: Processing {len(all_hypotheses)} hypotheses")
         metric_name = metric_report.metric_name
         metric_natural_name = metric_report.natural_name or metric_name
         
@@ -218,12 +219,9 @@ class ReportBuilder:
         
         for report in all_metric_reports:
             # Consolidate unique hypotheses across all anomalies for this metric
-            all_hypo_results_dict = {}
+            all_hypotheses_for_metric = []
             for anom in report.anomalies:
-                for hypo_res in anom.hypo_results:
-                    if hypo_res.name not in all_hypo_results_dict:
-                        all_hypo_results_dict[hypo_res.name] = hypo_res
-            all_hypotheses_for_metric = list(all_hypo_results_dict.values())
+                all_hypotheses_for_metric.extend(anom.hypo_results)
             
             # Use the existing extract method to avoid code duplication
             analysis_summary[report.metric_name] = self._extract_metric_report_context(report, all_hypotheses_for_metric)
@@ -250,17 +248,68 @@ class ReportBuilder:
         logger.info(f"Generating '{self.summary_report_format}' summary visualizations...")
         summary_plot_paths = []
         
-        for metric, summary_item in analysis_summary.items():
-            summary_plot_path = plot_summary_report(
-                analysis_summary_item=summary_item,
-                data_registry=self.data_registry,
-                output_dir=self.fig_dir,
-                report_format=self.summary_report_format
-            )
+        for metric_name, summary_item in analysis_summary.items():
+            if summary_item.get('primary_region', "NoAnomaly") in ["NoAnomaly", "NoData", None]:
+                logger.info(f"Skipping summary plot for {metric_name} as no primary anomaly region identified.")
+                continue
             
-            if summary_plot_path:
-                summary_plot_paths.append(summary_plot_path)
-        
+            logger.info(f"ReportBuilder.generate_summary_visualizations: Processing metric='{metric_name}', primary_region='{summary_item['primary_region']}'")
+            
+            summary_item['summary_plot_paths'] = {} # Initialize/reset
+
+            # Determine if relevant hypothesis types exist for each view
+            has_descriptive_hypo_type = False
+            has_ranked_hypo_type = False
+
+            # Check for non-single_dim hypothesis types first
+            for hypo in summary_item.get('all_hypotheses_for_metric', []):
+                if getattr(hypo, 'type', '') != 'single_dim':
+                    has_descriptive_hypo_type = True
+                    logger.info(f"Identified descriptive hypothesis type for {metric_name} ({summary_item['primary_region']}): {hypo.name} (Type: {hypo.type})")
+                    break
+
+            # Check for ranked types (e.g., single_dim)
+            for hypo in summary_item.get('all_hypotheses_for_metric', []):
+                if getattr(hypo, 'type', '') == 'single_dim' and hypo.score is not None: # Ensure it's a scorable, ranked type
+                    has_ranked_hypo_type = True
+                    logger.info(f"Identified ranked hypothesis type for {metric_name} ({summary_item['primary_region']}): {hypo.name} (Type: {hypo.type})")
+                    break
+            
+            # Generate Descriptive View if applicable
+            if has_descriptive_hypo_type:
+                logger.info(f"Attempting to generate DESCRIPTIVE view for {metric_name} in {summary_item['primary_region']}.")
+                descriptive_plot_path = plot_summary_report_by_type(
+                    analysis_summary_item=summary_item,
+                    data_registry=self.data_registry,
+                    output_dir=self.fig_dir,
+                    summary_view_type="descriptive",
+                    report_format=self.summary_report_format
+                )
+                if descriptive_plot_path:
+                    summary_item['summary_plot_paths']['descriptive'] = descriptive_plot_path
+                    logger.info(f"Generated DESCRIPTIVE summary plot for {metric_name} ({summary_item['primary_region']}): {descriptive_plot_path}")
+                else:
+                    logger.warning(f"Failed to generate DESCRIPTIVE summary plot for {metric_name} ({summary_item['primary_region']}).")
+
+            # Generate Ranked View if applicable
+            if has_ranked_hypo_type:
+                logger.info(f"Attempting to generate RANKED view for {metric_name} in {summary_item['primary_region']}.")
+                ranked_plot_path = plot_summary_report_by_type(
+                    analysis_summary_item=summary_item,
+                    data_registry=self.data_registry,
+                    output_dir=self.fig_dir,
+                    summary_view_type="ranked",
+                    report_format=self.summary_report_format
+                )
+                if ranked_plot_path:
+                    summary_item['summary_plot_paths']['ranked'] = ranked_plot_path
+                    logger.info(f"Generated RANKED summary plot for {metric_name} ({summary_item['primary_region']}): {ranked_plot_path}")
+                else:
+                    logger.warning(f"Failed to generate RANKED summary plot for {metric_name} ({summary_item['primary_region']}).")
+
+            if not summary_item['summary_plot_paths']:
+                 logger.warning(f"No summary plots (descriptive or ranked) were generated for {metric_name} in {summary_item['primary_region']}.")
+
         return summary_plot_paths
 
     def generate_powerpoint(self, analysis_summary: Dict[str, Dict[str, Any]]) -> Optional[str]:

@@ -19,33 +19,37 @@ logger = logging.getLogger(__name__)
 def metric_bar_anomaly(
     ax: plt.Axes,
     df: pd.DataFrame,
-    *, # Make subsequent args keyword-only
-    metric_name: str, 
-    ref_metric_val: float,
-    std: float,
-    value_col: str, # No default needed, should always be passed
-    metric_natural_name: Optional[str] = None,
+    *,
+    value_col: str,
     title: Optional[str] = None,
     y_label: Optional[str] = None,
-    z_score_threshold: float = 1.0,
-    enrichment_data: Optional[Dict[str, Dict]] = None, # Expect enrichment dict
-    **kwargs # Accept extra kwargs
+    metric_name: Optional[str] = None,
+    metric_natural_name: Optional[str] = None,
+    higher_is_better: bool = True,
+    ref_metric_val: Optional[float] = None,
+    std: Optional[float] = None,
+    z_score_threshold: float = 1.5,
+    enrichment_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    **kwargs
 ) -> None:
-    """Plot metric values with anomaly highlighting and confidence band.
+    """Plot metric values as a bar chart with anomaly highlighting.
     
     Args:
         ax: Matplotlib axes to draw on
-        df: DataFrame containing metric values by region
+        df: DataFrame containing metric values
+        value_col: Column containing metric values
+        title: Plot title
+        y_label: Y-axis label
         metric_name: Technical name of the metric
-        ref_metric_val: Global reference value (typically the mean)
+        metric_natural_name: Human-readable metric name
+        higher_is_better: Whether higher values are better
+        ref_metric_val: Reference value (typically global average)
         std: Standard deviation of the metric
-        value_col: Column name in df containing the metric values
-        metric_natural_name: Human-readable name of the metric
-        title: Plot title (defaults to metric name)
-        y_label: Y-axis label (defaults to metric name)
-        z_score_threshold: Threshold for confidence band (defaults to 1.0)
-        enrichment_data: Additional data for each region
+        z_score_threshold: Z-score threshold for highlighting anomalies
+        enrichment_data: Additional data about each region
     """
+    logger.debug(f"metric_bar_anomaly called for {metric_name}, value_col={value_col}")
+    
     plot_router.setup_style()
     
     if df.empty:
@@ -55,7 +59,7 @@ def metric_bar_anomaly(
         return
 
     # --- Log for debugging ---
-    logger.info(f"metric_bar_anomaly called for {metric_name}, value_col={value_col}, columns in df: {list(df.columns)}")
+    logger.debug(f"metric_bar_anomaly called for {metric_name}, value_col={value_col}")
 
     # --- Ensure region index --- 
     if df.index.name != 'region':

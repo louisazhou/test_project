@@ -112,7 +112,7 @@ class PlotEngine:
         try:
             filepath = os.path.join(self.output_dir, filename)
             fig.savefig(filepath, bbox_inches='tight', dpi=150)
-            logger.info(f"Saved plot to {filepath}")
+            logger.debug(f"Saved plot to {filepath}")
             plt.close(fig)
             return filepath
         except Exception as e:

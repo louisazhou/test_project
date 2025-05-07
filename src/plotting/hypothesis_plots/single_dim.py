@@ -7,11 +7,14 @@ This module implements visualizations for single dimension hypotheses.
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 
 # Import shared style and utility functions
 from .. import plot_router
+from ..plot_styles import setup_style, STYLE
+from ...registry import hypothesis_plotter, register_plotter
+from ...core.types import MetricFormatting
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +162,6 @@ def hypo_bar_scored(
             direction = "higher" if region_value > global_value else "lower"
             
             # Format delta using MetricFormatting
-            from ...core.types import MetricFormatting
             delta_fmt = MetricFormatting.format_delta(
                 region_value, 
                 global_value, 
@@ -171,3 +173,88 @@ def hypo_bar_scored(
 
     ax.set_title(plot_title, fontsize=11)
     ax.set_ylabel(y_label or value_col.replace('_', ' ').title(), fontsize=10)
+
+@hypothesis_plotter
+def plot_for_report(ax, hypo_result, **kwargs):
+    """Plot a single dimension hypothesis for a report.
+    
+    This function extracts data from a hypothesis result and calls the
+    hypo_bar_scored function.
+    
+    Args:
+        ax: The matplotlib axes to draw on
+        hypo_result: The hypothesis result object
+        **kwargs: Additional parameters
+        
+    Returns:
+        True if plotting was successful, False otherwise
+    """
+    # Extract plot data
+    hypo_df = getattr(hypo_result, 'plot_data', None)
+    if hypo_df is None:
+        logger.warning(f"Could not get data for hypothesis plot: {hypo_result.name}")
+        ax.text(0.5, 0.5, f"No plot data available for {hypo_result.name}", 
+               ha='center', va='center')
+        return False
+    
+    # Extract value column
+    value_col = kwargs.get('value_col')
+    if not value_col and hypo_df is not None and len(hypo_df.columns) > 0:
+        # Try to determine value_col from the plot_data columns
+        potential_cols = [col for col in hypo_df.columns if col != 'region']
+        if potential_cols:
+            value_col = potential_cols[0]
+            logger.debug(f"Determined value_col '{value_col}' from plot_data columns for hypothesis: {hypo_result.name}")
+        else:
+            logger.error(f"Could not determine value_col for hypothesis plot: {hypo_result.name}")
+            ax.text(0.5, 0.5, f"Could not determine value column for {hypo_result.name}", 
+                   ha='center', va='center')
+            return False
+    
+    # Get region
+    primary_region = kwargs.get('primary_region') or kwargs.get('focus_region')
+    
+    # Format delta text if needed
+    if kwargs.get('include_delta', False) and hasattr(hypo_result, 'value') and hasattr(hypo_result, 'global_value'):
+        delta_fmt = MetricFormatting.format_delta(
+            hypo_result.value, 
+            hypo_result.global_value, 
+            hypo_result.is_percentage if hasattr(hypo_result, 'is_percentage') else False
+        )
+        
+        direction = "higher" if hypo_result.value > hypo_result.global_value else "lower"
+        delta_text = f"({primary_region} is {delta_fmt} {direction} than Global)"
+        
+        title = kwargs.get('title', '')
+        if title and delta_text:
+            kwargs['title'] = f"{title} {delta_text}"
+    
+    # Prepare score components
+    score_components = {
+        'score': getattr(hypo_result, 'score', 0.0),
+        'direction_alignment': kwargs.get('direction_alignment', 0.0),
+        'consistency': kwargs.get('consistency', 0.0),
+        'hypo_z_score_norm': kwargs.get('hypo_z_score_norm', 0.0),
+        'explained_ratio': kwargs.get('explained_ratio', 0.0)
+    }
+    
+    # Create kwargs for the plotter
+    hypo_kwargs = {
+        'region_col': 'region',
+        'value_col': value_col,
+        'hypothesis_name': hypo_result.name,
+        'hypothesis_natural_name': getattr(hypo_result, 'natural_name', hypo_result.name),
+        'explaining_region': primary_region,
+        'primary_region': primary_region,
+        'score_components': score_components,
+        'selected': kwargs.get('selected', False),
+        'title': kwargs.get('title', ''),
+        'y_label': getattr(hypo_result, 'natural_name', hypo_result.name)
+    }
+    
+    # Call the plotter
+    hypo_bar_scored(ax=ax, df=hypo_df, **hypo_kwargs)
+    return True
+
+# Register the plotter
+register_plotter('single_dim', plot_for_report)

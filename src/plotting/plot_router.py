@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 import logging
@@ -9,61 +8,20 @@ from ..core.types import PlotSpec
 import os
 import matplotlib.gridspec as gridspec
 
+# Import styles from the plot_styles module
+from .plot_styles import STYLE, setup_style
+
 # Import plot functions from specialized modules
 from .metric_plots.anomaly_plots import metric_bar_anomaly
 from .hypothesis_plots.single_dim import hypo_bar_scored
-from ..reporting.report_plots.detailed import plot_summary_report
+from .hypothesis_plots.l8_concentration import l8_concentration_plot
+from .hypothesis_plots.closed_lost_reason import plot_closed_lost_overindex
+from ..reporting.report_plots.detailed import plot_summary_report_registry as plot_summary_report
+
+# Use forward references to avoid circular imports
+# These will be imported dynamically when needed
 
 logger = logging.getLogger(__name__)
-
-# Centralized style settings
-STYLE = {
-    'colors': {
-        'anomaly_positive': '#2ecc71',  # Green
-        'anomaly_negative': '#e74c3c',  # Red
-        'global_line': '#34495e',       # Dark blue-gray
-        'confidence_band': '#AED6F1',   # Lighter blue
-        'default_bar': '#BDC3C7',       # Lighter gray
-        'highlight': '#5DADE2',         # Blue highlight
-        'text': '#2c3e50',             # Dark text
-        'highlight_text': 'dodgerblue', # Highlight text for [selected] / [Anomaly Detected in KPI]
-        'score_color': '#AF7AC5',       # Purple for score
-        'score_components': {
-            'direction_alignment': '#3498DB',  # Blue
-            'consistency': '#4ECDC4',         # Teal
-            'hypo_z_score_norm': '#FFC300',   # Yellow/Orange
-            'explained_ratio': '#FF9F43'      # Orange
-        }
-    },
-    'score_components': {
-        'direction_alignment': {'weight': 0.3, 'name': 'Dir. Align'},
-        'consistency': {'weight': 0.3, 'name': 'Consistency'},
-        'hypo_z_score_norm': {'weight': 0.2, 'name': 'Hypo Z-Score'},
-        'explained_ratio': {'weight': 0.2, 'name': 'Expl. Ratio'}
-    },
-    'score_component_order': [
-        'direction_alignment',
-        'consistency',
-        'hypo_z_score_norm',
-        'explained_ratio'
-    ],
-    'anomaly_band_alpha': 0.2
-}
-
-def setup_style():
-    """Set consistent style for all visualizations."""
-    sns.set_style("whitegrid")
-    plt.rcParams.update({
-        "axes.grid": False,
-        "axes.titlesize": 14,
-        "axes.labelsize": 12,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 9,
-        "figure.titlesize": 16,
-        "font.family": "sans-serif",
-        "font.size": 10
-    })
 
 # Helper functions used across all plot types
 def _create_scorecard(ax: plt.Axes, x: float, y: float, value: float, component_name: str, color: str, show_text: bool = False, fontsize: Optional[float] = None, width_factor=1.0):
@@ -337,6 +295,12 @@ def route_plot(plot_spec: PlotSpec, plot_engine=None) -> Optional[str]:
         
     setup_style()
     
+    # ADDED LOGGING
+    logger.debug(f"[route_plot] Routing plot for key '{plot_spec.plot_key}'")
+    if plot_spec.context:
+        primary_region = plot_spec.context.get('primary_region', 'None')
+        logger.debug(f"[route_plot] Primary region: {primary_region}")
+
     # Get plot key and data
     plot_key = plot_spec.plot_key
     df = plot_spec.data
@@ -351,8 +315,33 @@ def route_plot(plot_spec: PlotSpec, plot_engine=None) -> Optional[str]:
     plot_functions = {
         'metric_bar_anomaly': metric_bar_anomaly,
         'hypo_bar_scored': hypo_bar_scored,
-        'summary_report': plot_summary_report
+        'summary_report': plot_summary_report,
+        'l8_concentration': l8_concentration_plot,
+        'plot_closed_lost_overindex': plot_closed_lost_overindex
     }
+    
+    # Check if this is an L8 concentration plot in the context of summary reports
+    # If so, don't save standalone plots
+    is_l8_in_summary = False
+    if plot_key == 'l8_concentration' and context:
+        # Check if this L8 plot is coming from a summary context
+        if context.get('hypothesis_name') and context.get('focus_region'):
+            is_l8_in_summary = True
+    
+    # Skip saving plots for L8 concentration when used in summary reports
+    if is_l8_in_summary and plot_engine and plot_engine.plot_mode == 'batch':
+        # Create figure and axes
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Apply the l8_concentration_plot function
+        plot_fn = plot_functions.get(plot_key)
+        plot_fn(ax=ax, df=df, **context)
+        
+        # Close the figure without saving
+        plt.close(fig)
+        
+        # Return None to indicate no file was saved
+        return None
     
     # Dynamic mapping for future extensions
     # Check if plot_key matches any of our prefixes (metric_* or hypo_*)
@@ -362,52 +351,95 @@ def route_plot(plot_spec: PlotSpec, plot_engine=None) -> Optional[str]:
         elif plot_key.startswith('hypo_'):
             plot_functions[plot_key] = hypo_bar_scored  # Default for all hypo_* plots
     
-    # Route to the appropriate plot function based on plot_key
-    try:
-        # Get the appropriate plotting function
-        plot_func = plot_functions.get(plot_key)
-        
-        if not plot_func:
-            logger.error(f"Unknown plot type: {plot_key}")
-            return None
-            
-        # Handle special case for summary report
-        if plot_func == plot_summary_report:
-            return plot_summary_report(df=df, **context)
-            
-        # For standard plots that need a figure and axes
+    # Generate plot in the appropriate mode
+    if plot_engine and plot_engine.plot_mode == 'batch':
+        # Batch mode (save to file)
         fig, ax = plt.subplots(figsize=(10, 6))
+        plot_fn = plot_functions.get(plot_key)
         
-        # Create a clean context without df to avoid duplicate parameter
-        context_without_df = {k: v for k, v in context.items() if k != 'df'}
+        if plot_fn is None:
+            logger.error(f"No plotting function found for '{plot_key}'")
+            plt.close(fig)
+            return None
         
-        # Call the appropriate plotting function
-        if plot_key.startswith('metric_'):
-            logger.info(f"{plot_key} called for {context.get('metric_name')}, value_col={context.get('value_col')}, columns in df: {list(df.columns)}")
-        
-        plot_func(ax=ax, df=df, **context_without_df)
+        try:
+            # Pass the data and context to the plotting function
+            plot_fn(ax=ax, df=df, **context)
             
-        # Ensure tight layout
-        fig.tight_layout()
-            
-        # In batch mode, save the figure using the plot engine
-        if plot_engine:
-            # Determine the filename based on the plot key and context
+            # Generate a meaningful filename based on the plot content
             if plot_key.startswith('metric_'):
-                filename = f"metric_{context.get('metric_name')}.png"
+                metric_name = context.get('metric_name')
+                if metric_name:
+                    filename = f"metric_{metric_name}.png"
+                else:
+                    # Fallback if no metric name
+                    plot_id = plot_spec.data_key or str(abs(hash(str(df) + str(context))))
+                    filename = f"{plot_key}_{plot_id}.png"
             elif plot_key.startswith('hypo_'):
-                filename = f"hypo_{context.get('hypothesis_name')}_for_{context.get('metric_name')}.png"
-            else:
-                # Fallback filename
-                filename = f"{plot_key}_{hash(str(context))}.png"
+                hypo_name = context.get('hypothesis_name')
+                metric_name = context.get('metric_name')
+                if hypo_name and metric_name:
+                    filename = f"hypo_{hypo_name}_for_{metric_name}.png"
+                else:
+                    # Fallback if no hypothesis or metric name
+                    plot_id = plot_spec.data_key or str(abs(hash(str(df) + str(context))))
+                    filename = f"{plot_key}_{plot_id}.png"
+            elif plot_key == 'l8_concentration':
+                # Specific naming for L8 concentration plots
+                metric_name = context.get('metric_name')
+                region = context.get('primary_region')
+                if metric_name and region:
+                    filename = f"l8_concentration_{metric_name}_{region}.png"
+                else:
+                    # Fallback
+                    plot_id = plot_spec.data_key or str(abs(hash(str(df) + str(context))))
+                    filename = f"{plot_key}_{plot_id}.png"
+            elif plot_key == 'plot_closed_lost_overindex':
+                # Specific naming for closed lost reason plots
+                metric_name = context.get('metric_name')
+                region = context.get('focus_region')  # Use focus_region instead of primary_region
                 
-            # Save the plot using the engine
-            return plot_engine.save_plot(fig, filename)
-        
-        # Otherwise return the figure object directly (inline mode)
-        return fig
+                # If metric_name isn't directly available, try to extract from title
+                if not metric_name and context.get('title'):
+                    title = context.get('title')
+                    if 'cli_closed_pct' in title.lower():
+                        metric_name = 'cli_closed_pct'
+                    elif 'cli_qualified' in title.lower():
+                        metric_name = 'cli_qualified_within_14d_pct'
+                    elif 'cli_pitched' in title.lower():
+                        metric_name = 'cli_pitched_within_28d_pct'
+                
+                if region:
+                    if metric_name:
+                        filename = f"closed_lost_reasons_{metric_name}_{region}.png"
+                    else:
+                        # If we couldn't extract a metric name, just use the region
+                        filename = f"closed_lost_reasons_{region}.png"
+                else:
+                    # Fallback
+                    plot_id = plot_spec.data_key or str(abs(hash(str(df) + str(context))))
+                    filename = f"{plot_key}_{plot_id}.png"
+            else:
+                # Generic fallback for other plot types
+                plot_id = plot_spec.data_key or str(abs(hash(str(df) + str(context))))
+                filename = f"{plot_key}_{plot_id}.png"
             
-    except Exception as e:
-        logger.error(f"Error generating plot '{plot_key}': {e}")
-        logger.exception(e)
+            # Get the output directory from the plot engine
+            output_dir = plot_engine.output_dir
+            os.makedirs(output_dir, exist_ok=True)
+            filepath = os.path.join(output_dir, filename)
+            
+            fig.savefig(filepath, bbox_inches='tight', dpi=150)
+            plt.close(fig)
+            
+            logger.debug(f"Saved plot to {filepath}")
+            return filepath
+            
+        except Exception as e:
+            logger.error(f"Error generating plot for '{plot_key}': {e}")
+            plt.close(fig)
+            return None
+    else:
+        # Inline mode (return fig)
+        logger.error("Inline mode not fully implemented yet")
         return None 

@@ -135,9 +135,45 @@ class AnomalyGate:
         # Determine max votes
         max_votes = max(r['votes'] for r in results) if results else 0
         
+        # Get all regions with max votes
+        max_vote_regions = [r for r in results if r['votes'] == max_votes and max_votes > 0]
+        
+        # If we have multiple regions with max votes, apply tiebreaker
+        if len(max_vote_regions) > 1:
+            # First tiebreaker: prioritize "bad" anomalies (based on higher_is_better setting)
+            bad_anomalies = []
+            for r in max_vote_regions:
+                delta = r['delta_pct']
+                # A "bad" anomaly is one where the metric is worse than expected
+                is_bad = (delta < 0 if higher_is_better else delta > 0)
+                if is_bad:
+                    bad_anomalies.append(r)
+            
+            # If we found bad anomalies, use only those; otherwise keep all max_vote_regions
+            chosen_regions = bad_anomalies if bad_anomalies else max_vote_regions
+            
+            # Second tiebreaker: highest absolute delta
+            if len(chosen_regions) > 1:
+                chosen_regions.sort(key=lambda r: abs(r['delta_pct']), reverse=True)
+                # Only the first one (highest abs delta) becomes the anomaly
+                for i, r in enumerate(results):
+                    # Find this region in the original results
+                    for cr in chosen_regions:
+                        if r.get('region') == cr.get('region'):
+                            # Only mark the top one as anomaly
+                            r['is_anomaly'] = (r.get('region') == chosen_regions[0].get('region'))
+            else:
+                # Only one region after first tiebreaker
+                chosen_region = chosen_regions[0]['region']
+                for r in results:
+                    r['is_anomaly'] = (r.get('region') == chosen_region)
+        else:
+            # No tiebreaker needed - just mark regions with max votes as anomalies
+            for r in results:
+                r['is_anomaly'] = (r['votes'] == max_votes and max_votes > 0)
+        
         # Determine final anomaly status and create enrichment map
         for r in results:
-             r['is_anomaly'] = (r['votes'] == max_votes and max_votes > 0)
              # Calculate good/bad based on final status and directionality
              is_bad = r['is_anomaly'] and ( (r['dir'] == 'higher' and not higher_is_better) or \
                                            (r['dir'] == 'lower' and higher_is_better) )

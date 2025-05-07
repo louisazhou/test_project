@@ -22,126 +22,117 @@ SCOPES = [
 ]
 
 def get_credentials():
-    """Gets user credentials for Google APIs, handling token refresh/creation."""
     creds = None
-    # Assume token.json and credentials.json are in the ROOT directory of the project
-    # Adjust path relative to this utils.py file (src/core/utils.py)
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    token_path = os.path.join(project_root, 'token.json')
-    credentials_path = os.path.join(project_root, 'credentials.json')
-
-    if not os.path.exists(credentials_path):
-         print(f"ERROR: credentials.json not found at {credentials_path}")
-         print("Please download credentials from Google Cloud Console and place it in the project root.")
-         return None
-
+    # Get the base directory (RCA_automation folder)
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    token_path = os.path.join(base_dir, 'token.json')
+    credentials_path = os.path.join(base_dir, 'credentials.json')
+    
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first time.
     if os.path.exists(token_path):
-        try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        except Exception as e:
-            print(f"Error loading token.json: {e}. Will attempt re-authentication.")
-            creds = None # Force re-auth
-
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    
+    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                print(f"Error refreshing token: {e}. Please re-authenticate.")
-                # Optionally delete token.json to force full re-auth
-                # if os.path.exists(token_path): os.remove(token_path)
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
+            creds.refresh(Request())
         else:
-            try:
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-            except FileNotFoundError:
-                 print(f"ERROR: credentials.json not found at {credentials_path}")
-                 return None
-            except Exception as e:
-                 print(f"Error during authentication flow: {e}")
-                 return None
-        try:
-            with open(token_path, 'w') as token:
-                token.write(creds.to_json())
-        except Exception as e:
-            print(f"Error saving token to {token_path}: {e}")
-
+            flow = InstalledAppFlow.from_client_secrets_file(
+                credentials_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open(token_path, 'w') as token:
+            token.write(creds.to_json())
+    
     return creds
 
 def generate_ppt(analysis_results: dict, output_dir: str, ppt_filename: str = "RCA_Summary.pptx", report_format: str = "detailed"):
-    """Generates a PowerPoint presentation from RCA results and visualizations.
+    """Generates a simplified PowerPoint presentation from RCA results and visualizations.
+    Only embeds figures without titles or additional elements.
 
     Args:
-        analysis_results: Dictionary containing processed analysis results per metric,
-                          structured like {metric_name: {'primary_region': ..., ...}}.
+        analysis_results: Dictionary containing processed analysis results per metric.
         output_dir: Directory where visualization PNG files are saved and
                     where the PowerPoint file will be saved.
         ppt_filename: The name for the output PowerPoint file.
-        report_format: Type of report/visualization expected ("detailed", "succinct", "individual").
+        report_format: Type of report/visualization expected.
     """
     prs = Presentation()
-    # Use a blank slide layout (ensure layout index 6 is indeed blank in default template)
+    # Use a blank slide layout
     try:
         blank_slide_layout = prs.slide_layouts[6]
     except IndexError:
         logger.warning("Blank slide layout (index 6) not found. Using first layout.")
         blank_slide_layout = prs.slide_layouts[0]
 
-    logger.info(f"Generating PowerPoint presentation: {ppt_filename} using {report_format} format preference")
+    logger.info(f"Generating simplified PowerPoint presentation: {ppt_filename}")
 
     metrics_processed = 0
+    
+    # Step 1: First add all metric plots
+    for metric, results in analysis_results.items():
+        # Check for metric plot
+        metric_filename = f"metric_{metric}.png"
+        metric_path = os.path.join(output_dir, metric_filename)
+        
+        if os.path.exists(metric_path):
+            slide = prs.slides.add_slide(blank_slide_layout)
+            try:
+                # Use full slide for image
+                img_width_inches = 10.0
+                left = Inches(0.0)
+                top = Inches(0.0)
+                
+                slide.shapes.add_picture(metric_path, left, top, width=Inches(img_width_inches))
+                metrics_processed += 1
+                logger.info(f"Added metric plot for '{metric}': {metric_filename}")
+            except Exception as e:
+                logger.error(f"Error adding metric image {metric_path} to slide: {e}")
+    
+    # Step 2: Add all ranked views
     for metric, results in analysis_results.items():
         primary_region = results.get('primary_region', 'Unknown')
-
-        # Determine the expected summary image filename based on report_format
-        img_filename = None
-        if report_format in ["detailed", "succinct"] and primary_region not in ["NoAnomaly", "NoData", None]:
-             # TODO: Need the actual summary plot generation logic first
-             # This filename assumes a summary plot is generated with this convention
-             img_filename = f"{metric}_{primary_region}_{report_format}_summary.png"
-        elif report_format == "individual" or primary_region in ["NoAnomaly", "NoData", None]:
-             # Fallback to the individual metric plot
-             img_filename = f"metric_{metric}.png"
-        # Add more specific fallbacks if needed (e.g., anomaly_only plot)
-
-        img_path = None
-        if img_filename:
-            candidate_path = os.path.join(output_dir, img_filename)
-            if os.path.exists(candidate_path):
-                img_path = candidate_path
-                logger.info(f"Found image file for metric '{metric}': {img_filename}")
-            else:
-                 logger.warning(f"Expected image file not found for metric '{metric}': {candidate_path}")
-                 # Try falling back to basic metric plot if summary wasn't found
-                 fallback_filename = f"metric_{metric}.png"
-                 fallback_path = os.path.join(output_dir, fallback_filename)
-                 if os.path.exists(fallback_path):
-                     img_path = fallback_path
-                     logger.info(f"Using fallback image file: {fallback_filename}")
-                 else:
-                      logger.warning(f"Fallback image file also not found: {fallback_path}")
-        else:
-            logger.warning(f"Could not determine image filename for metric '{metric}' with format '{report_format}'.")
-
-
-        if img_path:
-            logger.info(f"Adding slide for metric: {metric}")
+        if primary_region in ["NoAnomaly", "NoData", None]:
+            continue
+            
+        # Check for ranked view
+        summary_plot_paths = results.get('summary_plot_paths', {})
+        if 'ranked' in summary_plot_paths and os.path.exists(summary_plot_paths['ranked']):
             slide = prs.slides.add_slide(blank_slide_layout)
-
-            # Adjust layout based on image type. Standard slide is 10x7.5 inches
-            # These dimensions assume landscape summary plots; adjust if needed
-            img_width_inches = 9.8
-            left = Inches(0.1)
-            top = Inches(0.1)
-
             try:
-                slide.shapes.add_picture(img_path, left, top, width=Inches(img_width_inches))
+                # Use full slide for image
+                img_width_inches = 10.0
+                left = Inches(0.0)
+                top = Inches(0.0)
+                
+                slide.shapes.add_picture(summary_plot_paths['ranked'], left, top, width=Inches(img_width_inches))
                 metrics_processed += 1
+                logger.info(f"Added ranked view for '{metric}'")
             except Exception as e:
-                logger.error(f"Error adding image {img_path} to slide: {e}")
-        # else: (logging already handled above)
+                logger.error(f"Error adding ranked view image to slide: {e}")
+    
+    # Step 3: Add all descriptive views
+    for metric, results in analysis_results.items():
+        primary_region = results.get('primary_region', 'Unknown')
+        if primary_region in ["NoAnomaly", "NoData", None]:
+            continue
+            
+        # Check for descriptive view
+        summary_plot_paths = results.get('summary_plot_paths', {})
+        if 'descriptive' in summary_plot_paths and os.path.exists(summary_plot_paths['descriptive']):
+            slide = prs.slides.add_slide(blank_slide_layout)
+            try:
+                # Use full slide for image
+                img_width_inches = 10.0
+                left = Inches(0.0)
+                top = Inches(0.0)
+                
+                slide.shapes.add_picture(summary_plot_paths['descriptive'], left, top, width=Inches(img_width_inches))
+                metrics_processed += 1
+                logger.info(f"Added descriptive view for '{metric}'")
+            except Exception as e:
+                logger.error(f"Error adding descriptive view image to slide: {e}")
 
     # Save the presentation
     if metrics_processed > 0:
@@ -152,10 +143,10 @@ def generate_ppt(analysis_results: dict, output_dir: str, ppt_filename: str = "R
             return ppt_path
         except Exception as e:
             logger.error(f"Error saving PowerPoint presentation to {ppt_path}: {e}")
-            return None # Return None if save fails
+            return None
     else:
-        logger.warning("No metric images were found or added to the PowerPoint presentation.")
-        return None # Return None if no slides added
+        logger.warning("No images were found or added to the PowerPoint presentation.")
+        return None
 
 def upload_to_drive(file_path: str, folder_id: Optional[str] = None, mime_type: str = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'):
     """Upload a file (e.g., the generated PPTX) to Google Drive.

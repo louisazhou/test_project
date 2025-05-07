@@ -3,7 +3,7 @@ metrics:
     description: "Percentage of CLI that was Closed Lost"
     natural_name: "% CLI Closed Lost"
     dependencies: []
-    hypothesis: ["sli_closed_won_pct", "CI_per_CLI", "CI_w_KI_pct"]
+    hypothesis: ["sli_closed_won_pct", "CI_per_CLI", "CI_w_KI_pct", "closed_lost_reason_overindex"]
     higher_is_better: false
     input_data:
       dataset: "pipeline_metrics"
@@ -18,3 +18,13 @@ metrics:
     input_data:
       dataset: "pipeline_metrics"
       columns: ["cli_pitched_within_28d_pct", "territory_l4_name"]
+
+  cli_qualified_within_14d_pct:
+    description: "Percentage of CLI qualified within 14 days"
+    natural_name: "% CLI Qualified Within 14d"
+    dependencies: []
+    hypothesis: ["l8_concentration"]
+    higher_is_better: true
+    input_data:
+      dataset: "pipeline_metrics"
+      columns: ["cli_qualified_within_14d_pct", "territory_l4_name"]

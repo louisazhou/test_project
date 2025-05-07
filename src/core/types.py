@@ -28,20 +28,26 @@ class HypoResult:
     Attributes:
         name: Identifier for the hypothesis
         type: Type of hypothesis (e.g., 'single_dim', 'multi_dim')
-        narrative: Generated text explaining the hypothesis evaluation
-        score: Score value indicating how well the hypothesis explains the anomaly
+        narrative: Generated text explaining the hypothesis evaluation (will be populated by NarrativeEngine)
+        score: Score value indicating how well the hypothesis explains the anomaly (used for ranking single_dim hypotheses)
+        descriptive_score: Score for descriptive (non-single_dim) hypotheses, kept separate from ranking score
         display_rank: Ranking position for display (lower is better)
         natural_name: Human-readable name of the hypothesis
         value: The value of the hypothesis for the affected region
         global_value: The global reference value for the hypothesis
         is_percentage: Whether the hypothesis value should be formatted as a percentage
         z_score: Z-score of the hypothesis value relative to other regions
-        plot_data: The DataFrame with all regions' data for this hypothesis
+        plot_data: The DataFrame with all regions' data for this hypothesis (can be used by simple bar plots)
+        plots: List of PlotSpec objects for more complex visualizations associated with the hypothesis.
+        plot_path: Optional path to a pre-rendered standalone plot by handler
+        narrative_context: Optional dictionary of key-value pairs provided by the handler for use in narrative templates.
+                           Handlers should pre-format values as strings if specific precision or "N/A" representation is needed.
     """
     name: str
     type: str
-    narrative: str
+    narrative: Optional[str] = None # Populated by NarrativeEngine
     score: Optional[float] = None
+    descriptive_score: Optional[float] = None  # For non-single_dim hypotheses 
     display_rank: Optional[int] = None
     natural_name: Optional[str] = None
     value: Optional[float] = None
@@ -49,6 +55,9 @@ class HypoResult:
     is_percentage: bool = False
     z_score: Optional[float] = None
     plot_data: Optional[pd.DataFrame] = None
+    plots: List[PlotSpec] = field(default_factory=list)
+    plot_path: Optional[str] = None # ADDED: Path to a pre-rendered standalone plot by handler
+    narrative_context: Optional[Dict[str, Any]] = None
     
     def get_formatted_value(self) -> str:
         """Get the formatted value of the hypothesis."""
