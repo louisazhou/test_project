@@ -17,22 +17,26 @@ Ensure alignment between DS and DE on the architecture, data format, and handoff
 
 ```mermaid
 flowchart TD
-  A[Raw Inputs - SQL Queries] --> B[DataCatalog - Column Filtering and Renaming]
-  B --> B2[Load Configs - metrics.yaml & hypotheses.yaml]
-  B2 --> C[Metric Frame - Aggregated by Region]
-  C --> D[Anomaly Detection - Global Z-Score]
-  D --> E{Is Region Anomalous?}
-  E -- Yes --> F[Run Hypotheses Loop - Defined per Metric]
-  F --> G[Evaluate by Type - e.g. single_dim, reason_mix]
-  G --> H[Generate Narrative, Score (if any), Figures]
-  H --> I[Append to Hypothesis Results]
-  E -- No --> J[Record 'No Anomaly']
-  I --> K[Assemble Metric-Region Output JSON]
-  J --> K
-  K --> L[Write Structured Output - JSON / SQLite / DataFrame]
-  L --> M1[Google Slide Generator]
-  L --> M2[LLM Agent]
-  L --> M3[Unidash Dashboard]
+  subgraph Input & Config
+    A[Raw SQL Inputs]
+    B[DataCatalog]
+    C[Load YAML Configs]
+  end
+  A --> D
+  B --> D
+  C --> D
+
+  subgraph Analysis
+    C --> D[Metric Frame Generation]
+    D --> E[Anomaly Detection]
+    E --> F[Run Hypotheses if Anomalous]
+    F --> G[Evaluate & Generate Output]
+  end
+
+  subgraph Output
+    G --> H[Write JSON + Plots]
+    H --> I[Send to Slides / LLM / Dashboards]
+  end
 ```
 
 **To confirm with DE:**
