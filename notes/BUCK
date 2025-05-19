@@ -1,0 +1,80 @@
+load("//tools/build_defs:python_rules.bzl", "python_library", "python_binary")
+
+# Main RCA package library
+python_library(
+    name = "rca_package",
+    srcs = glob([
+        "rca_package/**/*.py",
+        "!rca_package/**/__pycache__/**",
+        "!rca_package/**/*.pyc",
+    ]),
+    deps = [
+        "//third_party/python:pandas",
+        "//third_party/python:numpy",
+        "//third_party/python:matplotlib",
+        "//third_party/python:seaborn",
+        "//third_party/python:scipy",
+        "//third_party/python:jinja2",
+        "//third_party/python:pyyaml",
+        "//third_party/python:python-pptx",
+    ],
+    resources = glob([
+        "configs/**/*.yaml",
+        "rca_package/**/*.yaml",
+    ]),
+    visibility = ["PUBLIC"],
+)
+
+# CLI binary
+python_binary(
+    name = "rca-tools",
+    main_module = "rca_package.cli",
+    deps = [":rca_package"],
+)
+
+# Optional Google API integration
+python_library(
+    name = "rca_package_google",
+    srcs = glob([
+        "rca_package/google/**/*.py",
+        "!rca_package/google/**/__pycache__/**",
+        "!rca_package/google/**/*.pyc",
+    ]),
+    deps = [
+        ":rca_package",
+        "//third_party/python:google-api-python-client",
+        "//third_party/python:google-auth-httplib2",
+        "//third_party/python:google-auth-oauthlib",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Test targets
+python_library(
+    name = "rca_package_test",
+    srcs = glob([
+        "tests/**/*.py",
+        "!tests/**/__pycache__/**",
+        "!tests/**/*.pyc",
+    ]),
+    deps = [
+        ":rca_package",
+        "//third_party/python:pytest",
+        "//third_party/python:pytest-cov",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Example analysis script
+python_binary(
+    name = "example_analysis",
+    main_module = "notebooks.example_analysis",
+    deps = [":rca_package"],
+)
+
+# Make slides script
+python_binary(
+    name = "make_slides",
+    main_module = "rca_package.make_slides",
+    deps = [":rca_package"],
+) 
