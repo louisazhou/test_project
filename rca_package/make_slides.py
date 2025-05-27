@@ -19,19 +19,19 @@ SCOPES = ['https://www.googleapis.com/auth/presentations',
           'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/drive']
 
-# Standardized layout constants
+# Standardized layout constants for 16:9 slides
 LAYOUT = {
     'title': {
         'left': 0.3,      # Left-aligned, not centered
         'top': 0.2,       # Higher up to save space
         'width': 9.0,
-        'height': 0.6,
-        'font_size': 20,  # Smaller than before
+        'height': 0.4,    # Reduced from 0.6 to 0.4 to minimize title box height
+        'font_size': 18,  # Updated to size 18
         'font_bold': True
     },
     'content': {
-        'top': 1.0,       # Start content below title
-        'available_height': 6.5  # Available space for content
+        'top': 0.7,       # Reduced from 1.0 to 0.7 (half the previous spacing)
+        'available_height': 6.3  # Fixed: 7.3125 total - 0.7 top - 0.3 bottom margin = 6.3125
     },
     'text': {
         'font_size': 11,  # Consistent text size
@@ -70,6 +70,45 @@ def add_bw_table_to_slide_with_colors(
         Inches(left), Inches(top), Inches(width), Inches(height)
     )
     table = table_shape.table
+
+    # Calculate intelligent column widths
+    if include_index:
+        # Calculate index column width based on content length
+        max_index_length = max(len(str(idx)) for idx in df.index)
+        max_column_length = max(len(str(col)) for col in df.columns)
+        
+        # Also consider the length of "Index" or longest index value vs column headers
+        effective_index_length = max(max_index_length, 5)  # Minimum for readability
+        effective_column_length = max(max_column_length, 8)  # Minimum for readability
+        
+        # Base widths (as fraction of total width) - more nuanced calculation
+        if effective_index_length > 20:  # Very long index names
+            index_width_fraction = 0.45  # 45% for index
+        elif effective_index_length > 15:  # Long index names
+            index_width_fraction = 0.4   # 40% for index
+        elif effective_index_length > 10:  # Medium index names
+            index_width_fraction = 0.3   # 30% for index
+        elif effective_index_length > 6:   # Short-medium index names
+            index_width_fraction = 0.25  # 25% for index
+        else:  # Very short index names
+            index_width_fraction = 0.2   # 20% for index
+        
+        # Adjust based on number of columns - fewer columns can have wider index
+        if df.shape[1] <= 3:
+            index_width_fraction = min(index_width_fraction + 0.05, 0.4)  # Add 5% but cap at 40%
+        
+        # Remaining width distributed equally among data columns
+        data_width_fraction = (1.0 - index_width_fraction) / df.shape[1]
+        
+        # Set column widths
+        table.columns[0].width = Inches(width * index_width_fraction)
+        for i in range(1, num_cols):
+            table.columns[i].width = Inches(width * data_width_fraction)
+    else:
+        # Equal width for all columns when no index
+        col_width = width / num_cols
+        for i in range(num_cols):
+            table.columns[i].width = Inches(col_width)
 
     # Header
     for col_idx in range(num_cols):
@@ -211,7 +250,22 @@ def create_metrics_summary_slide(
     
     # Use standardized layout positions
     content_top = LAYOUT['content']['top']
-    available_height = LAYOUT['content']['available_height']
+    
+    # Calculate table height based on number of rows (metrics + header)
+    num_rows = len(metrics_df_transposed) + 1  # +1 for header
+    row_height = 0.4  # Height per row in inches
+    table_height = num_rows * row_height
+    
+    # Calculate appropriate table width based on content
+    # Estimate width needed: index column + data columns
+    max_index_length = max(len(str(idx)) for idx in metrics_df_transposed.index)
+    max_column_length = max(len(str(col)) for col in metrics_df_transposed.columns)
+    
+    # Estimate table width (rough calculation based on character count)
+    # Each character ≈ 0.08 inches, plus padding
+    index_width_estimate = max(max_index_length * 0.08, 1.3)  # Minimum 1.3 inches
+    data_width_estimate = max_column_length * 0.08 * len(metrics_df_transposed.columns)
+    total_table_width = min(index_width_estimate + data_width_estimate + 0.5, 6.0)  # Cap at 6 inches
     
     # Add styled table on the left side of the slide
     table = add_bw_table_to_slide_with_colors(
@@ -220,15 +274,15 @@ def create_metrics_summary_slide(
         highlight_cells=highlight_cells,
         left=0.5,
         top=content_top,
-        width=5.0,
-        height=available_height
+        width=total_table_width,  # Use calculated width instead of fixed 5.0
+        height=table_height  # Use calculated height instead of full available height
     )
     
-    # Create text area on the right side for explanation
-    text_left = Inches(6.0)  # 0.5 + 5.0 + 0.5
-    text_width = Inches(4.0)
+    # Create text area on the right side for explanation - positioned close to right edge
+    text_left = Inches(0.5 + total_table_width + 0.3)  # Table left + width + small gap
+    text_width = Inches(13.0 - (0.5 + total_table_width + 0.3) - 0.2)  # Remaining space minus right margin
     text_top = Inches(content_top)
-    text_height = Inches(available_height)
+    text_height = Inches(LAYOUT['content']['available_height'])  # Text can use full available height
     
     # Add text box for explanations
     text_box = slide.shapes.add_textbox(
@@ -382,15 +436,110 @@ def create_slide_with_title(prs: Presentation, title: str):
     return slide
 
 
+def calculate_dynamic_layout(text: str, slide_type: str = 'standard') -> Dict[str, float]:
+    """
+    Calculate dynamic layout proportions based on text content and slide type.
+    
+    Args:
+        text: The text content to be displayed
+        slide_type: Type of slide ('standard', 'depth_analysis', 'bar_chart')
+    
+    Returns:
+        Dictionary with layout proportions and dimensions
+    """
+    available_height = LAYOUT['content']['available_height']
+    
+    # Estimate text height based on content
+    if not text:
+        text_lines = 0
+    else:
+        # Count actual lines (including \n) and estimate wrapped lines
+        explicit_lines = text.count('\n') + 1
+        
+        # More accurate character wrapping estimation
+        # Consider that PowerPoint text boxes are ~9 inches wide with 11pt font
+        # At 11pt, approximately 100-110 characters fit per line in a 9-inch box
+        chars_per_line = 100
+        
+        # Split by explicit line breaks and calculate wrapping for each line
+        lines = text.split('\n')
+        total_wrapped_lines = 0
+        for line in lines:
+            if len(line) <= chars_per_line:
+                total_wrapped_lines += 1
+            else:
+                # This line will wrap
+                wrapped_count = (len(line) + chars_per_line - 1) // chars_per_line  # Ceiling division
+                total_wrapped_lines += wrapped_count
+        
+        text_lines = total_wrapped_lines
+    
+    # Calculate required text height (line height ~0.18 inches at 11pt with 1.2 spacing)
+    line_height = 0.18
+    text_height_needed = text_lines * line_height + 0.4  # +0.4 for padding
+    
+    # Define layout themes based on slide type
+    if slide_type == 'depth_analysis':
+        # Depth analysis needs more text space, smaller figure
+        min_text_height = 2.2  # Minimum for tables and explanations
+        max_text_height = 4.5  # Maximum to leave space for figure
+        text_height = min(max(text_height_needed, min_text_height), max_text_height)
+        figure_height = available_height - text_height
+        
+        # Ensure figure isn't too small
+        if figure_height < 2.0:
+            figure_height = 2.0
+            text_height = available_height - figure_height
+            
+    elif slide_type == 'bar_chart':
+        # Bar charts need less text space, more figure space
+        min_text_height = 0.6  # Minimum for short explanations
+        max_text_height = 2.0  # Maximum to prioritize figure
+        text_height = min(max(text_height_needed, min_text_height), max_text_height)
+        figure_height = available_height - text_height
+        
+        # Ensure figure gets priority
+        if figure_height < 4.5:
+            figure_height = 4.5
+            text_height = available_height - figure_height
+            
+    else:  # 'standard'
+        # Balanced layout
+        min_text_height = 1.0
+        max_text_height = 3.5
+        text_height = min(max(text_height_needed, min_text_height), max_text_height)
+        figure_height = available_height - text_height
+    
+    # Calculate proportions
+    text_proportion = text_height / available_height
+    figure_proportion = figure_height / available_height
+    
+    # Debug logging
+    logger.debug(f"Layout calculation for {slide_type}:")
+    logger.debug(f"  Text lines: {text_lines}, needed height: {text_height_needed:.2f}")
+    logger.debug(f"  Final text height: {text_height:.2f}, figure height: {figure_height:.2f}")
+    logger.debug(f"  Proportions - text: {text_proportion:.1%}, figure: {figure_proportion:.1%}")
+    
+    return {
+        'text_height': text_height,
+        'figure_height': figure_height,
+        'text_proportion': text_proportion,
+        'figure_proportion': figure_proportion,
+        'estimated_lines': text_lines,
+        'content_top': LAYOUT['content']['top']
+    }
+
+
 def create_figure_with_text_slide(
     prs: Presentation,
     title: str,
     figure_path: str,
     text: str,
-    text_position: str = 'bottom'
+    text_position: str = 'bottom',
+    slide_type: str = 'standard'
 ) -> None:
     """
-    Create a slide with a figure and text.
+    Create a slide with a figure and text using dynamic layout.
     
     Args:
         prs: PowerPoint presentation object
@@ -398,39 +547,35 @@ def create_figure_with_text_slide(
         figure_path: Path to the figure file
         text: Text content to add
         text_position: Position of text relative to figure ('bottom', 'top', 'right')
+        slide_type: Type of slide for layout optimization ('standard', 'depth_analysis', 'bar_chart')
     """
     slide = create_slide_with_title(prs, title)
     
-    # Use standardized layout positions
-    content_top = LAYOUT['content']['top']
-    available_height = LAYOUT['content']['available_height']
+    # Calculate dynamic layout
+    layout = calculate_dynamic_layout(text, slide_type)
+    content_top = layout['content_top']
     
     if text_position == 'bottom':
         # Figure on top, text at bottom
-        figure_height = available_height * 0.7  # 70% for figure
-        text_height = available_height * 0.3   # 30% for text
-        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=figure_height)
-        add_text_to_slide(slide, text, left=0.5, top=content_top + figure_height, 
-                         width=9.0, height=text_height, alignment='left')
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=layout['figure_height'])
+        add_text_to_slide(slide, text, left=0.5, top=content_top + layout['figure_height'], 
+                         width=9.0, height=layout['text_height'], alignment='left')
     elif text_position == 'top':
         # Text on top, figure at bottom
-        text_height = available_height * 0.25   # 25% for text
-        figure_height = available_height * 0.75 # 75% for figure
         add_text_to_slide(slide, text, left=0.5, top=content_top, 
-                         width=9.0, height=text_height, alignment='left')
-        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top + text_height, height=figure_height)
+                         width=9.0, height=layout['text_height'], alignment='left')
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top + layout['text_height'], 
+                           height=layout['figure_height'])
     elif text_position == 'right':
-        # Figure on left, text on right
-        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=available_height)
+        # Figure on left, text on right - use full height for both
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=LAYOUT['content']['available_height'])
         add_text_to_slide(slide, text, left=5.5, top=content_top, 
-                         width=4.0, height=available_height, alignment='left')
+                         width=4.0, height=LAYOUT['content']['available_height'], alignment='left')
     else:
-        # Default to bottom
-        figure_height = available_height * 0.7
-        text_height = available_height * 0.3
-        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=figure_height)
-        add_text_to_slide(slide, text, left=0.5, top=content_top + figure_height, 
-                         width=9.0, height=text_height, alignment='left')
+        # Default to bottom with dynamic layout
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=layout['figure_height'])
+        add_text_to_slide(slide, text, left=0.5, top=content_top + layout['figure_height'], 
+                         width=9.0, height=layout['text_height'], alignment='left')
 
 def add_section_slide(prs: Presentation, title: str, subtitle: str = None) -> None:
     """
@@ -470,8 +615,8 @@ def create_flexible_presentation(
         ppt_filename: Filename for the presentation
         upload_to_gdrive: Whether to upload to Google Drive
         gdrive_folder_id: Google Drive folder ID
-        gdrive_credentials_path: Path to credentials.json file (optional, defaults to base directory)
-        gdrive_token_path: Path to token.json file (optional, defaults to base directory)
+        gdrive_credentials_path: Path to credentials.json file (required for upload)
+        gdrive_token_path: Path to token.json file (required for upload)
         
     Returns:
         Dictionary containing:
@@ -491,8 +636,11 @@ def create_flexible_presentation(
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         ppt_filename = f"Presentation_{timestamp}.pptx"
     
-    # Create presentation
+    # Create presentation with 16:9 aspect ratio
     prs = Presentation()
+    # Set slide size to 16:9 (13 inches wide, 7.3125 inches tall)
+    prs.slide_width = Inches(13)
+    prs.slide_height = Inches(7.3125)
     
     def save_and_upload():
         """Save the presentation and optionally upload to Google Drive."""
@@ -551,14 +699,15 @@ def create_flexible_presentation(
         # Add figure to slide
         add_figure_to_slide(slide, figure_path, left=0.1, top=top, height=height)
     
-    def add_figure_with_text_slide_func(title, figure_path, text, text_position='bottom'):
-        """Add a slide with figure and text."""
+    def add_figure_with_text_slide_func(title, figure_path, text, text_position='bottom', slide_type='standard'):
+        """Add a slide with figure and text using dynamic layout."""
         create_figure_with_text_slide(
             prs=prs,
             title=title,
             figure_path=figure_path,
             text=text,
-            text_position=text_position
+            text_position=text_position,
+            slide_type=slide_type
         )
     
     def add_section_slide_func(title, subtitle=None):
@@ -589,8 +738,8 @@ def get_credentials(credentials_path: str = None, token_path: str = None):
     Get Google API credentials using OAuth2 flow.
     
     Args:
-        credentials_path: Path to credentials.json file. If None, looks in base directory.
-        token_path: Path to token.json file. If None, looks in base directory.
+        credentials_path: Path to credentials.json file (required if no token.json exists)
+        token_path: Path to token.json file (required if no credentials.json exists)
     
     Returns:
         Google API credentials object
@@ -606,19 +755,14 @@ def get_credentials(credentials_path: str = None, token_path: str = None):
         )
         raise
     
-    # Set default paths if not provided
-    if credentials_path is None or token_path is None:
-        # Get the base directory (RCA_automation folder)
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if credentials_path is None:
-            credentials_path = os.path.join(base_dir, 'credentials.json')
-        if token_path is None:
-            token_path = os.path.join(base_dir, 'token.json')
+    # Check if we have either credentials or token path
+    if not credentials_path and not token_path:
+        raise ValueError("Either credentials_path or token_path must be provided for Google Drive upload")
     
     creds = None
     # The file token.json stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first time.
-    if os.path.exists(token_path):
+    if token_path and os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
     
     # If there are no (valid) credentials available, let the user log in.
@@ -626,14 +770,18 @@ def get_credentials(credentials_path: str = None, token_path: str = None):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # Need credentials.json for OAuth flow
+            if not credentials_path:
+                raise ValueError("credentials_path is required when token.json doesn't exist or is invalid")
             if not os.path.exists(credentials_path):
                 raise FileNotFoundError(f"Credentials file not found: {credentials_path}")
             flow = InstalledAppFlow.from_client_secrets_file(
                 credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open(token_path, 'w') as token:
-            token.write(creds.to_json())
+        # Save the credentials for the next run (only if token_path is provided)
+        if token_path:
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
     
     return creds
 

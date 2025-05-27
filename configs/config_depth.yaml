@@ -31,23 +31,23 @@ metrics:
     type: "rate"
     numerator_col: "conversions"
     denominator_col: "visits"
-    template: "{{ metric_name }} in {{ anomalous_region }} is {{ (region_rate*100)|round(1) }}% compared to {{ (row_rate*100)|round(1) }}% in the rest of world.\n\n{{ summary_table }}\n\n**Coverage** shows each sub-region's share of total volume. **Contribution** shows each sub-region's share of the performance gap."
+    template: "{{ metric_name }} in {{ anomalous_region }} is {{ (region_rate*100)|round(1) }}% compared to {{ (row_rate*100)|round(1) }}% in the rest of world.\n\n{{ summary_table }}\n\nCoverage shows each sub-region's share of total volume. Contribution shows each sub-region's share of the performance gap."
 
   "Average Order Value":
     technical_name: "avg_order_value"
     type: "additive"
     metric_col: "revenue"
-    template: "{{ metric_name }} in {{ anomalous_region }} totals {{ '{:,.0f}'.format(region_total) }} compared to {{ '{:,.0f}'.format(row_total) }} in the rest of world.\n\n{{ summary_table }}\n\n**Coverage** shows each sub-region's share of total volume. **Contribution** shows each sub-region's share of the performance gap."
+    template: "{{ metric_name }} in {{ anomalous_region }} totals {{ '{:,.0f}'.format(region_total) }} compared to {{ '{:,.0f}'.format(row_total) }} in the rest of world.\n\n{{ summary_table }}\n\nCoverage shows each sub-region's share of total volume. Contribution shows each sub-region's share of the performance gap."
 
   "Customer Satisfaction":
     technical_name: "customer_satisfaction"
     type: "rate"
     numerator_col: "sum_csat"
     denominator_col: "surveys"
-    template: "{{ metric_name }} in {{ anomalous_region }} averages {{ region_rate|round(2) }} compared to {{ row_rate|round(2) }} in the rest of world.\n\n{{ summary_table }}\n\n**Coverage** shows each sub-region's share of total volume. **Contribution** shows each sub-region's share of the performance gap."
+    template: "{{ metric_name }} in {{ anomalous_region }} averages {{ region_rate|round(2) }} compared to {{ row_rate|round(2) }} in the rest of world.\n\n{{ summary_table }}\n\nCoverage shows each sub-region's share of total volume. Contribution shows each sub-region's share of the performance gap."
 
   "Revenue":
     technical_name: "revenue"
     type: "additive"
     metric_col: "revenue"
-    template: "{{ metric_name }} in {{ anomalous_region }} totals {{ '{:,.0f}'.format(region_total) }} compared to {{ '{:,.0f}'.format(row_total) }} in the rest of world.\n\n{{ summary_table }}\n\n**Coverage** shows each sub-region's share of total volume. **Contribution** shows each sub-region's share of the performance gap." 
+    template: "{{ metric_name }} in {{ anomalous_region }} totals {{ '{:,.0f}'.format(region_total) }} compared to {{ '{:,.0f}'.format(row_total) }} in the rest of world.\n\n{{ summary_table }}\n\nCoverage shows each sub-region's share of total volume. Contribution shows each sub-region's share of the performance gap." 

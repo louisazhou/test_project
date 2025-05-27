@@ -8,7 +8,7 @@ from jinja2 import Template
 import scipy.stats as stats
 
 
-# Scorecard colors for hypothesis scoring components
+# Color scheme for visualizations
 COLORS = {
     'metric_negative': '#e74c3c',     # Red for bad metric anomalies
     'metric_positive': '#2ecc71',     # Green for good metric anomalies
@@ -25,6 +25,40 @@ COLORS = {
     'sign_score_components': {
         'sign_agreement': '#3498DB',       # Blue (reusing direction_alignment color)
         'explained_ratio': '#FF9F43'       # Orange (reusing)
+    }
+}
+
+# Font styling constants for consistent appearance
+FONTS = {
+    'title': {
+        'size': 16,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'axis_label': {
+        'size': 14,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'tick_label': {
+        'size': 12,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'annotation': {
+        'size': 12,
+        'weight': 'bold',
+        'family': 'Arial'
+    },
+    'score_card': {
+        'size': 11,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'legend': {
+        'size': 11,
+        'weight': 'normal',
+        'family': 'Arial'
     }
 }
 
@@ -286,7 +320,7 @@ def plot_bars(
     
     # Set x-ticks with region names
     ax.set_xticks(x_positions)
-    ax.set_xticklabels(regions, rotation=0, ha='center', fontsize=9)
+    ax.set_xticklabels(regions, rotation=0, ha='center', fontsize=FONTS['tick_label']['size'])
     
     # Add global reference line if 'Global' in the data
     if 'Global' in df.index:
@@ -297,10 +331,10 @@ def plot_bars(
     for i, val in enumerate(values):
         display_val = val * 100 if is_percent else val
         format_str = '{:.1f}%' if is_percent else '{:.1f}'
-        ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=8)
+        ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
     
     # Set y-axis label using display name
-    ax.set_ylabel(display_name, fontsize=10)
+    ax.set_ylabel(display_name, fontsize=FONTS['axis_label']['size'])
     
     # Format y-axis as percentage if needed
     if is_percent:
@@ -373,7 +407,7 @@ def plot_bars(
             ax.text(
                 x_pos + card_width/2, y_pos + card_height/2,
                 f"{comp_value:.2f}", ha='center', va='center',
-                fontweight='bold', color=color, fontsize=8,
+                fontweight='bold', color=color, fontsize=FONTS['score_card']['size'],
                 transform=ax.transAxes
             )
     
@@ -524,7 +558,7 @@ def create_multi_hypothesis_plot(
         metric_anomaly_info, 
         plot_type='metric'
     )
-    ax_metric.set_title(f"Metric: {metric_display_name}", fontsize=12)
+    ax_metric.set_title(f"Metric: {metric_display_name}", fontsize=FONTS['title']['size'])
     
     # Plot best hypothesis
     plot_bars(
@@ -537,7 +571,7 @@ def create_multi_hypothesis_plot(
     )
     ax_best_hypo.set_title(
         f"Best Hypothesis: {best_hypo_display_name}", 
-        fontsize=12
+        fontsize=FONTS['title']['size']
     )
     
     # Create axes and plot for other hypotheses
@@ -568,7 +602,7 @@ def create_multi_hypothesis_plot(
             )
             # Since we now use display names as column headers, hypo_name is already the display name
             hypo_display_name = hypo_name
-            ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=10)
+            ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=FONTS['title']['size'])
     
     return fig
 
@@ -829,7 +863,7 @@ def plot_scatter(
             (x[i], y[i]),
             xytext=(offset_x, offset_y),
             textcoords='offset points',
-            fontsize=9,
+            fontsize=FONTS['tick_label']['size'],
             ha='center', 
             va='bottom'
         )
@@ -855,14 +889,14 @@ def plot_scatter(
         0.05, 0.95, 
         f"Correlation: {corr:.2f}\nExpected Direction: {expected_direction}",
         transform=ax.transAxes,
-        fontsize=9,
+        fontsize=FONTS['annotation']['size'],
         verticalalignment='top',
         bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7)
     )
     
     # Set axis labels using display names
-    ax.set_xlabel(metric_display_name, fontsize=10)
-    ax.set_ylabel(hypo_display_name, fontsize=10)
+    ax.set_xlabel(metric_display_name, fontsize=FONTS['axis_label']['size'])
+    ax.set_ylabel(hypo_display_name, fontsize=FONTS['axis_label']['size'])
     
     # Add grid
     ax.grid(True, linestyle='--', alpha=0.3)
@@ -932,7 +966,7 @@ def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
             fig.text(
                 curr_x + card_width/2, formula_y + card_height/2,
                 "Score", ha='center', va='center',
-                fontweight='bold', color=color, fontsize=8,
+                fontweight='bold', color=color, fontsize=FONTS['score_card']['size'],
                 transform=fig.transFigure
             )
             
@@ -942,7 +976,7 @@ def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
             fig.text(
                 curr_x, formula_y + card_height/2,
                 "=", ha='center', va='center',
-                color=color, fontsize=8,
+                color=color, fontsize=FONTS['score_card']['size'],
                 transform=fig.transFigure
             )
             
@@ -954,7 +988,7 @@ def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
                 fig.text(
                     curr_x, formula_y + card_height/2,
                     "+", ha='center', va='center',
-                    color=color, fontsize=8,
+                    color=color, fontsize=FONTS['score_card']['size'],
                     transform=fig.transFigure
                 )
                 curr_x += 0.02 + spacing
@@ -963,7 +997,7 @@ def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
             fig.text(
                 curr_x, formula_y + card_height/2,
                 f"{weight:.1f}×", ha='center', va='center',
-                color=color, fontsize=8,
+                color=color, fontsize=FONTS['score_card']['size'],
                 transform=fig.transFigure
             )
             curr_x += 0.03
@@ -978,37 +1012,32 @@ def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
             fig.text(
                 curr_x + card_width/2, formula_y + card_height/2,
                 name, ha='center', va='center',
-                fontweight='bold', color=color, fontsize=8,
+                fontweight='bold', color=color, fontsize=FONTS['score_card']['size'],
                 transform=fig.transFigure
             )
             
             curr_x += card_width + spacing
 
 
-def add_template_text(
-    fig: plt.Figure, 
+def render_template_text(
     template: str, 
     best_hypo_name: str,
     best_hypo_result: Dict[str, Any], 
     metric_anomaly_info: Dict[str, Any],
-    metric_col: str,
-    position: Tuple[float, float] = (0.05, 0.97),
-    max_width: float = 0.9,
-    fontsize: int = 12
-) -> None:
+    metric_col: str
+) -> str:
     """
-    Add text to the figure using a Jinja2 template filled with values from the results.
+    Render a Jinja2 template with values from the results.
     
     Args:
-        fig: The figure to add the text to
         template: Text template with placeholders in {{variable}} using Jinja2 syntax
         best_hypo_name: Name of the best hypothesis
         best_hypo_result: Results from the best hypothesis
         metric_anomaly_info: Metric anomaly information
         metric_col: Name of the metric column
-        position: (x, y) coordinates for the text (figure coordinates)
-        max_width: Maximum width for the text as fraction of figure width
-        fontsize: Font size for the text
+    
+    Returns:
+        Rendered text string
     """
     # Prepare template values - only include what's actually in the template
     context = {
@@ -1030,8 +1059,44 @@ def add_template_text(
         jinja_template = Template(template)
         # Render template with values
         filled_text = jinja_template.render(**context)
+        return filled_text
     except Exception as e:
-        filled_text = f"Error filling template: {str(e)}"
+        return f"Error filling template: {str(e)}"
+
+
+def add_template_text(
+    fig: plt.Figure, 
+    template: str, 
+    best_hypo_name: str,
+    best_hypo_result: Dict[str, Any], 
+    metric_anomaly_info: Dict[str, Any],
+    metric_col: str,
+    position: Tuple[float, float] = (0.05, 0.85),  # Moved down from 0.97 to 0.85 to reduce spacing
+    max_width: float = 0.9,
+    fontsize: int = 12
+) -> None:
+    """
+    Add text to the figure using a Jinja2 template filled with values from the results.
+    
+    Args:
+        fig: The figure to add the text to
+        template: Text template with placeholders in {{variable}} using Jinja2 syntax
+        best_hypo_name: Name of the best hypothesis
+        best_hypo_result: Results from the best hypothesis
+        metric_anomaly_info: Metric anomaly information
+        metric_col: Name of the metric column
+        position: (x, y) coordinates for the text (figure coordinates)
+        max_width: Maximum width for the text as fraction of figure width
+        fontsize: Font size for the text
+    """
+    # Render the template text
+    filled_text = render_template_text(
+        template=template,
+        best_hypo_name=best_hypo_name,
+        best_hypo_result=best_hypo_result,
+        metric_anomaly_info=metric_anomaly_info,
+        metric_col=metric_col
+    )
     
     # Add text to figure
     fig.text(
@@ -1172,7 +1237,6 @@ def process_metrics_with_structured_results(
             metric_anomaly_info=metric_anomaly_map[metric_col],
             hypo_results=hypo_results,
             config=config,
-
             get_template_func=get_template_func,
             best_hypo_name=best_hypo_name
         )

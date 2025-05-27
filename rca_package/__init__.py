@@ -22,7 +22,10 @@ from .hypothesis_scorer import (
     create_scatter_grid,
     plot_scatter,
     build_structured_hypothesis_results,
-    process_metrics_with_structured_results
+    process_metrics_with_structured_results,
+    add_score_formula,
+    add_template_text,
+    render_template_text
 )
 
 # Import key functions from yaml_processor
@@ -75,6 +78,9 @@ __all__ = [
     'create_multi_hypothesis_plot',
     'create_scatter_grid',
     'plot_scatter',
+    'add_score_formula',
+    'add_template_text',
+    'render_template_text',
     
     # YAML configuration functions
     'load_config',

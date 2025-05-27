@@ -22,8 +22,20 @@ from typing import Dict, Any, List
 from jinja2 import Template
 import json
 
+# Auto-detect working directory and adjust paths accordingly
+current_dir = Path.cwd()
+if current_dir.name == 'notebooks':
+    # Running from notebooks directory (cell-by-cell)
+    base_dir = current_dir.parent
+    os.chdir(base_dir)  # Change to parent directory
+    print(f"Detected notebook execution. Changed working directory to: {base_dir}")
+else:
+    # Running from parent directory (as script)
+    base_dir = current_dir
+    print(f"Detected script execution from: {base_dir}")
+
 # Add package to path
-sys.path.append(str(Path.cwd().parent))
+sys.path.append(str(base_dir))
 
 from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
 
@@ -46,7 +58,8 @@ from rca_package.hypothesis_scorer import (
     create_multi_hypothesis_plot,
     create_scatter_grid,
     add_score_formula,
-    add_template_text
+    add_template_text,
+    render_template_text
 )
 from rca_package.make_slides import create_flexible_presentation
 from rca_package.depth_spotter import (
@@ -183,21 +196,18 @@ for metric_name in metric_names:
         ordered_hypos=ranked_hypos
     )
     
-    # Style bar plot
-    fig.suptitle(metric_name, fontsize=14)
-            
-    
     # Add template text and score formula
     template = get_template(config, metric_name, best_hypo_name, 'template')
-    if template:
-        add_template_text(
-            fig=fig,
-            template=template,
-            best_hypo_name=best_hypo_name,
-            best_hypo_result=best_hypo_result,
-            metric_anomaly_info=metric_anomaly_map[metric_name],
-            metric_col=metric_name
-        )
+    # Comment out add_template_text - we'll add text to slide instead
+    # if template:
+    #     add_template_text(
+    #         fig=fig,
+    #         template=template,
+    #         best_hypo_name=best_hypo_name,
+    #         best_hypo_result=best_hypo_result,
+    #         metric_anomaly_info=metric_anomaly_map[metric_name],
+    #         metric_col=metric_name
+    #     )
     
     scoring_method = get_scoring_method(config)
     # Add score formula
@@ -209,6 +219,17 @@ for metric_name in metric_names:
     fig.savefig(bar_figure_path, dpi=120, bbox_inches='tight')
     plt.close(fig)
     
+    # Render template text for slide
+    template_text = ""
+    if template:
+        template_text = render_template_text(
+            template=template,
+            best_hypo_name=best_hypo_name,
+            best_hypo_result=best_hypo_result,
+            metric_anomaly_info=metric_anomaly_map[metric_name],
+            metric_col=metric_name
+        )
+    
     # Create scatter plot
     scatter_fig = create_scatter_grid(
         df=df,
@@ -217,9 +238,6 @@ for metric_name in metric_names:
         metric_anomaly_info=metric_anomaly_map[metric_name],
         expected_directions=get_expected_directions(config)
     )
-    
-    # Style scatter plot
-    scatter_fig.suptitle(metric_name, fontsize=14)
     
     # Save scatter plot using technical name for filename
     scatter_figure_path = os.path.join(output_dir, f"scatter_{metric_technical_name}.png")
@@ -231,7 +249,8 @@ for metric_name in metric_names:
     figure_paths = [
         {
             'path': bar_figure_path,
-            'title': metric_name
+            'title': metric_name,
+            'text': template_text  # Add rendered template text
         },
         {
             'path': scatter_figure_path,
@@ -241,37 +260,6 @@ for metric_name in metric_names:
     
     # Add figure paths to the existing metric result
     all_metric_results[metric_name]['figure_paths'] = figure_paths
-
-# Save results to JSON
-results_file = os.path.join(output_dir, f"analysis_results_{scoring_method}.json")
-print(f"\nSaving analysis results to: {results_file}")
-
-# Convert numpy types to Python native types for JSON serialization
-def convert_numpy_types(obj):
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, np.bool_): 
-        return bool(obj)
-    elif isinstance(obj, pd.DataFrame):
-        return obj.to_dict(orient='index')
-    elif isinstance(obj, pd.Series):
-        return obj.to_dict()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    return obj
-
-# Convert and save results
-json_results = convert_numpy_types(all_metric_results)
-with open(results_file, 'w') as f:
-    json.dump(json_results, f, indent=2)
-
-print(f"Successfully saved results to {results_file}")
 
 print("\nCreated visualizations:")
 for metric, result in all_metric_results.items():
@@ -384,12 +372,32 @@ for hypo_name, result in depth_results.items():
         print(f"Template Text:\n{rendered_text}")
 
 # %% [markdown]
-# ## 7. Save Results and Create Presentation
+# ## 7. Save Results 
 
 # %% [save_results]
 # Save results to JSON
 results_file = os.path.join(output_dir, f"analysis_results.json")
-print(f"\nSaving analysis results: {results_file}")
+print(f"\nSaving analysis results to: {results_file}")
+
+# Convert numpy types to Python native types for JSON serialization
+def convert_numpy_types(obj):
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.bool_): 
+        return bool(obj)
+    elif isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient='index')
+    elif isinstance(obj, pd.Series):
+        return obj.to_dict()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    return obj
 
 # Convert and save results
 json_results = convert_numpy_types(all_metric_results)
@@ -411,11 +419,13 @@ for metric_name, metric_result in all_metric_results.items():
         # Use the metric name directly as the key (no conversion needed!)
         metrics_text[metric_name] = Template(best_hypo['summary_template']).render(**best_hypo['parameters'])
 
-# Create presentation using flexible system
+# Create presentation
 builder = create_flexible_presentation(
     output_dir=output_dir,
     ppt_filename="Metrics_Analysis.pptx",
-    upload_to_gdrive=True
+    upload_to_gdrive=True,
+    gdrive_credentials_path="credentials.json",  # Explicit path required
+    gdrive_token_path="token.json"  # Explicit path required
 )
 
 # Add metrics summary slide
@@ -433,14 +443,23 @@ for fig_info in figure_paths:
     title = fig_info.get('title')
     text = fig_info.get('text')  # Get rendered text if available
     
-    # Check if this is a chart with text (like depth analysis)
+    # Check if this is a chart with text (like depth analysis or bar charts)
     if text:
-        # Create figure with text slide
+        # Determine slide type based on content
+        if 'Depth Analysis' in title:
+            slide_type = 'depth_analysis'
+        elif 'bar_' in figure_path:
+            slide_type = 'bar_chart'
+        else:
+            slide_type = 'standard'
+            
+        # Create figure with text slide - use 'top' position with appropriate slide type
         builder['add_figure_with_text_slide'](
             title=title,
             figure_path=figure_path,
             text=text,
-            text_position='bottom'
+            text_position='top',  # Changed from 'bottom' to 'top'
+            slide_type=slide_type  # Use dynamic slide type
         )
     else:
         # Add regular figure slide

@@ -16,12 +16,36 @@ from jinja2 import Template
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Colors for visualization
+# Font styling constants for consistent appearance
+FONTS = {
+    'title': {
+        'size': 16,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'axis_label': {
+        'size': 14,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'tick_label': {
+        'size': 12,
+        'weight': 'normal',
+        'family': 'Arial'
+    },
+    'annotation': {
+        'size': 12,
+        'weight': 'bold',
+        'family': 'Arial'
+    }
+}
+
+# Color scheme for visualizations (matching hypothesis_scorer.py exactly)
 COLORS = {
-    'positive': '#2ecc71',      # Green for positive contributions
-    'negative': '#e74c3c',      # Red for negative contributions
-    'neutral': '#95a5a6',       # Gray for neutral/small contributions
-    'baseline': '#34495e'       # Dark blue-gray for baseline
+    'metric_negative': '#e74c3c',     # Red for bad metric anomalies
+    'metric_positive': '#2ecc71',     # Green for good metric anomalies
+    'default_bar': '#BDC3C7',         # Light gray for default bars
+    'global_line': '#34495e',         # Dark blue-gray for reference line
 }
 
 
@@ -67,6 +91,14 @@ def rate_contrib(
     # Calculate contribution to the gap
     df['contribution'] = (df[conversions_col] - df['expected']) / delta if delta != 0 else 0
     
+    # Calculate heuristic score: sqrt(|contribution| + max(|contribution| - coverage, 0) / coverage)
+    # Floor coverage at 1% to avoid division by zero
+    coverage_floored = df['coverage'].clip(lower=0.01)
+    df['score'] = np.sqrt(
+        np.abs(df['contribution']) + 
+        np.maximum(np.abs(df['contribution']) - df['coverage'], 0) / coverage_floored
+    )
+    
     # Add actual rate using the proper metric name
     df[metric_name] = df[conversions_col] / df[visits_col]
     
@@ -105,6 +137,14 @@ def additive_contrib(
     # Calculate contribution to the gap
     df['contribution'] = (df[metric_col] - df['expected']) / delta if delta != 0 else 0
     
+    # Calculate heuristic score: sqrt(|contribution| + max(|contribution| - coverage, 0) / coverage)
+    # Floor coverage at 1% to avoid division by zero
+    coverage_floored = df['coverage'].clip(lower=0.01)
+    df['score'] = np.sqrt(
+        np.abs(df['contribution']) + 
+        np.maximum(np.abs(df['contribution']) - df['coverage'], 0) / coverage_floored
+    )
+    
     return df, delta
 
 
@@ -113,24 +153,22 @@ def plot_subregion_bars(
     metric_col: str,
     title: str,
     config: Dict[str, Any] = None,
-    get_display_name_func: callable = None,
     row_value: float = None,
-    figsize: Tuple[int, int] = (8, 5)
+    figsize: Tuple[int, int] = (12, 6)
 ) -> plt.Figure:
     """
-    Create a bar chart showing actual data values for sub-regions.
+    Create a meaningful bar chart showing sub-regions color-coded by their contribution to the performance gap.
     
     Args:
-        df_slice: DataFrame containing the slice-level data
+        df_slice: DataFrame containing the slice-level data with contribution analysis
         metric_col: Name of the metric column to plot
         title: Chart title
         config: Configuration dictionary (optional, for display names)
-        get_display_name_func: Function to get display names (optional)
         row_value: Rest-of-world value to show as reference line (optional)
         figsize: Figure size as (width, height) tuple
     
     Returns:
-        Matplotlib figure with the bar chart
+        Matplotlib figure with the contribution-aware bar chart
     """
     # Create figure and axis
     fig, ax = plt.subplots(figsize=figsize)
@@ -139,11 +177,12 @@ def plot_subregion_bars(
     values = df_slice[metric_col].values
     labels = df_slice['slice'].values
     
+    # Get contribution and score values for color-coding
+    contributions = df_slice['contribution'].values if 'contribution' in df_slice.columns else np.zeros(len(values))
+    scores = df_slice['score'].values if 'score' in df_slice.columns else np.zeros(len(values))
+    
     # Get display name for y-axis
-    if config and get_display_name_func:
-        ylabel = get_display_name_func(config, metric_col)
-    else:
-        ylabel = metric_col.replace('_', ' ').title()
+    ylabel = metric_col.replace('_', ' ').title()
     
     # Format values based on metric name
     is_percent = ('_pct' in metric_col or '%' in metric_col or 'rate' in metric_col.lower())
@@ -152,11 +191,22 @@ def plot_subregion_bars(
     else:
         value_formatter = lambda x: f"{x:,.0f}"
     
-    # Use consistent colors
-    colors = [COLORS['baseline']] * len(values)
+    # Identify top-3 by score
+    top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
     
-    # Create bars
-    bars = ax.bar(range(len(values)), values, width=0.6, color=colors, alpha=0.8)
+    # Color-code bars: only highlight top-3, color by contribution sign
+    colors = []
+    for i, contrib in enumerate(contributions):
+        if i in top_3_indices:  # Only highlight top-3 by score
+            if contrib < 0:  # Negative contribution (making problem worse)
+                colors.append(COLORS['metric_negative'])  # Red
+            else:  # Positive contribution (helping performance)
+                colors.append(COLORS['metric_positive'])  # Green
+        else:  # Not in top-3
+            colors.append(COLORS['default_bar'])  # Gray
+    
+    # Create bars (no alpha)
+    bars = ax.bar(range(len(values)), values, width=0.6, color=colors, edgecolor='black', linewidth=0.5)
     
     # Add value labels on bars
     for i, val in enumerate(values):
@@ -166,21 +216,42 @@ def plot_subregion_bars(
         
         # Format and add text
         ax.text(i, text_y, value_formatter(val), ha="center", va="bottom", 
-               fontweight='bold', fontsize=9)
+               fontweight=FONTS['annotation']['weight'], fontsize=FONTS['annotation']['size'])
+    
+    # Add contribution percentages below bars if available
+    if 'contribution' in df_slice.columns:
+        for i, contrib in enumerate(contributions):
+            # Position text below the bar
+            min_val = min(values) if len(values) > 0 else 0
+            text_y = min_val - (max(values) - min_val) * 0.05
+            
+            # Add contribution percentage
+            ax.text(i, text_y, f"{contrib*100:.0f}%", ha="center", va="top", 
+                   fontsize=FONTS['tick_label']['size'], style='italic', alpha=0.7)
     
     # Customize the plot
     ax.set_xticks(range(len(values)))
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=FONTS['tick_label']['size'])
+    ax.set_ylabel(ylabel, fontsize=FONTS['axis_label']['size'])
+    ax.set_title(title, fontsize=FONTS['title']['size'], fontweight=FONTS['title']['weight'])
     
     # Add reference line if row_value is provided
     if row_value is not None:
-        ax.axhline(row_value, color=COLORS['negative'], linestyle='--', linewidth=2, alpha=0.7, label='Rest-of-World')
-        ax.legend()
+        ax.axhline(row_value, color=COLORS['global_line'], linestyle='--', linewidth=2, alpha=0.7, label='Rest-of-World')
+        ax.legend(fontsize=FONTS['tick_label']['size'])
     
     # Add grid for better readability
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
+    
+    # Add color legend if contribution data is available
+    if 'contribution' in df_slice.columns and 'score' in df_slice.columns:
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=COLORS['metric_negative'], label='Top-3: Negative Contribution'),
+            Patch(facecolor=COLORS['metric_positive'], label='Top-3: Positive Contribution'),
+            Patch(facecolor=COLORS['default_bar'], label='Other Sub-regions')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=FONTS['tick_label']['size'])
     
     # Adjust layout
     fig.tight_layout()
@@ -271,10 +342,10 @@ def analyze_region_depth(
                 continue
             
             # Prepare data for markdown table (top 3 contributors)
-            sorted_contrib = contrib_df.sort_values('contribution', key=abs, ascending=False)
+            sorted_contrib = contrib_df.sort_values('score', ascending=False)
             
-            # Create summary table with slice, metric value, contribution, and coverage
-            summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage']
+            # Create summary table with slice, metric value, contribution, coverage, and score
+            summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score']
             summary_df = sorted_contrib[summary_cols].head(3).copy()
             
             # Prepare template parameters
