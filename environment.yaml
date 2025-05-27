@@ -1,0 +1,18 @@
+name: rca
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pandas=2.0.3
+  - numpy=1.24.4
+  - matplotlib=3.7.2
+  - seaborn=0.13.2
+  - scipy=1.13.1
+  - jinja2=3.1.6
+  - pyyaml=6.0.1
+  - pip
+  - pip:
+      - python-pptx=1.0.0
+      - google-api-python-client
+      - google-auth-httplib2
+      - google-auth-oauthlib

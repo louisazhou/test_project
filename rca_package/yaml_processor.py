@@ -31,60 +31,60 @@ def load_config(yaml_path: str) -> Dict[str, Any]:
         logger.error(f"Error parsing YAML configuration: {e}")
         raise
 
-def get_metric_info(config: Dict[str, Any], metric_col: str) -> Dict[str, Any]:
+def get_metric_info(config: Dict[str, Any], metric_name: str) -> Dict[str, Any]:
     """
     Get information for a specific metric from the configuration.
     
     Args:
         config: Loaded configuration dictionary
-        metric_col: Name of the metric column
+        metric_name: Display name of the metric
         
     Returns:
         Dictionary containing metric information
     """
     metrics = config.get('metrics', {})
-    return metrics.get(metric_col, {})
+    return metrics.get(metric_name, {})
 
-def get_hypothesis_info(config: Dict[str, Any], metric_col: str, hypo_col: str) -> Dict[str, Any]:
+def get_hypothesis_info(config: Dict[str, Any], metric_name: str, hypo_name: str) -> Dict[str, Any]:
     """
     Get information for a specific hypothesis from the configuration.
     
     Args:
         config: Loaded configuration dictionary
-        metric_col: Name of the metric column
-        hypo_col: Name of the hypothesis column
+        metric_name: Display name of the metric
+        hypo_name: Display name of the hypothesis
         
     Returns:
         Dictionary containing hypothesis information
     """
-    metric_info = get_metric_info(config, metric_col)
+    metric_info = get_metric_info(config, metric_name)
     hypotheses = metric_info.get('hypotheses', {})
-    return hypotheses.get(hypo_col, {})
+    return hypotheses.get(hypo_name, {})
 
 def get_all_metrics(config: Dict[str, Any]) -> List[str]:
     """
-    Get all metric column names from the configuration.
+    Get all metric names from the configuration.
     
     Args:
         config: Loaded configuration dictionary
         
     Returns:
-        List of metric column names
+        List of metric display names
     """
     return list(config.get('metrics', {}).keys())
 
-def get_relevant_hypotheses(config: Dict[str, Any], metric_col: str) -> List[str]:
+def get_relevant_hypotheses(config: Dict[str, Any], metric_name: str) -> List[str]:
     """
     Get hypotheses relevant to a specific metric.
     
     Args:
         config: Loaded configuration dictionary
-        metric_col: Name of the metric column
+        metric_name: Display name of the metric
         
     Returns:
-        List of hypothesis column names relevant to the metric
+        List of hypothesis display names relevant to the metric
     """
-    metric_info = get_metric_info(config, metric_col)
+    metric_info = get_metric_info(config, metric_name)
     return list(metric_info.get('hypotheses', {}).keys())
 
 def get_expected_directions(config: Dict[str, Any]) -> Dict[str, str]:
@@ -99,10 +99,10 @@ def get_expected_directions(config: Dict[str, Any]) -> Dict[str, str]:
     """
     expected_directions = {}
     
-    for metric_col, metric_info in config.get('metrics', {}).items():
-        for hypo_col, hypo_info in metric_info.get('hypotheses', {}).items():
+    for metric_name, metric_info in config.get('metrics', {}).items():
+        for hypo_name, hypo_info in metric_info.get('hypotheses', {}).items():
             # Store the expected direction for this hypothesis
-            expected_directions[hypo_col] = hypo_info.get('expected_direction', 'same')
+            expected_directions[hypo_name] = hypo_info.get('expected_direction', 'same')
     
     return expected_directions
 
@@ -118,51 +118,28 @@ def get_metric_hypothesis_map(config: Dict[str, Any]) -> Dict[str, List[str]]:
     """
     metric_hypo_map = {}
     
-    for metric_col, metric_info in config.get('metrics', {}).items():
-        # Get the hypothesis columns for this metric
-        hypo_cols = list(metric_info.get('hypotheses', {}).keys())
-        metric_hypo_map[metric_col] = hypo_cols
+    for metric_name, metric_info in config.get('metrics', {}).items():
+        # Get the hypothesis names for this metric
+        hypo_names = list(metric_info.get('hypotheses', {}).keys())
+        metric_hypo_map[metric_name] = hypo_names
     
     return metric_hypo_map
 
-def get_template(config: Dict[str, Any], metric_col: str, hypo_col: str, template_type: str = 'template') -> str:
+def get_template(config: Dict[str, Any], metric_name: str, hypo_name: str, template_type: str = 'template') -> str:
     """
     Get the template for a specific metric-hypothesis pair.
     
     Args:
         config: Loaded configuration dictionary
-        metric_col: Name of the metric column
-        hypo_col: Name of the hypothesis column
+        metric_name: Display name of the metric
+        hypo_name: Display name of the hypothesis
         template_type: Type of template to get ('template' or 'summary_template')
         
     Returns:
         Template string for the metric-hypothesis pair
     """
-    hypo_info = get_hypothesis_info(config, metric_col, hypo_col)
+    hypo_info = get_hypothesis_info(config, metric_name, hypo_name)
     return hypo_info.get(template_type, '')
-
-def get_display_name(config: Dict[str, Any], col_name: str, col_type: str = 'metric') -> str:
-    """
-    Get the display name for a metric or hypothesis.
-    
-    Args:
-        config: Loaded configuration dictionary
-        col_name: Technical column name
-        col_type: 'metric' or 'hypothesis'
-        
-    Returns:
-        Display name for the column
-    """
-    if col_type == 'metric':
-        metric_info = get_metric_info(config, col_name)
-        return metric_info.get('name', col_name)
-    else:
-        # For hypothesis, search across all metrics
-        for metric_col, metric_info in config.get('metrics', {}).items():
-            for hypo_col, hypo_info in metric_info.get('hypotheses', {}).items():
-                if hypo_col == col_name:
-                    return hypo_info.get('name', col_name)
-        return col_name
 
 def get_scoring_method(config: Dict[str, Any]) -> str:
     """
@@ -175,122 +152,6 @@ def get_scoring_method(config: Dict[str, Any]) -> str:
         String indicating the scoring method ('standard' or 'sign_based')
     """
     return config.get('scoring_method', 'standard')
-
-def create_anomaly_info_from_data(
-    df: pd.DataFrame,
-    config: Dict[str, Any],
-    metric_col: str,
-    anomalous_region: str
-) -> Dict[str, Any]:
-    """
-    Create metric anomaly info dictionary from data.
-    
-    Args:
-        df: DataFrame containing the metric data
-        config: Loaded configuration dictionary
-        metric_col: Name of the metric column
-        anomalous_region: Name of the anomalous region
-        
-    Returns:
-        Dictionary with metric anomaly information
-    """
-    # Get the metric value for the anomalous region
-    metric_val = df.loc[anomalous_region, metric_col]
-    
-    # Get the global reference value
-    if 'Global' in df.index:
-        global_val = df.loc['Global', metric_col]
-    else:
-        # If no 'Global' row, use the mean of all regions
-        global_val = df[metric_col].mean()
-    
-    # Calculate the direction and magnitude
-    direction = 'higher' if metric_val > global_val else 'lower'
-    magnitude = abs((metric_val - global_val) / global_val * 100) if global_val != 0 else 0
-    
-    # Get higher_is_better from config
-    metric_info = get_metric_info(config, metric_col)
-    higher_is_better = metric_info.get('higher_is_better', True)
-    
-    # Get the global scoring method
-    scoring_method = get_scoring_method(config)
-    
-    # Create the anomaly info dictionary
-    anomaly_info = {
-        'anomalous_region': anomalous_region,
-        'metric_val': metric_val,
-        'global_val': global_val,
-        'direction': direction,
-        'magnitude': magnitude,
-        'higher_is_better': higher_is_better,
-        'scoring_method': scoring_method
-    }
-    
-    return anomaly_info
-
-def create_metric_anomaly_map(
-    df: pd.DataFrame,
-    config: Dict[str, Any],
-    anomalous_region: str = None,
-    metric_cols: List[str] = None
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Create a dictionary mapping metrics to their anomaly information.
-    
-    Args:
-        df: DataFrame containing the metric data
-        config: Loaded configuration dictionary
-        anomalous_region: Name of the anomalous region (if None, will be detected)
-        metric_cols: List of metric columns to process (if None, all metrics from config)
-        
-    Returns:
-        Dictionary mapping metric names to their anomaly information
-    """
-    # If no metric columns specified, use all from config
-    if metric_cols is None:
-        metric_cols = get_all_metrics(config)
-    
-    # Create empty map
-    metric_anomaly_map = {}
-    
-    # Process each metric
-    for metric_col in metric_cols:
-        # Skip if metric is not in dataframe
-        if metric_col not in df.columns:
-            logger.warning(f"Metric {metric_col} not found in DataFrame. Skipping.")
-            continue
-        
-        # If no anomalous region specified, detect the one with largest deviation
-        if anomalous_region is None:
-            # Use largest absolute relative deviation from Global
-            if 'Global' in df.index:
-                global_val = df.loc['Global', metric_col]
-                deviations = df[metric_col].copy()
-                deviations = deviations.drop('Global') if 'Global' in deviations.index else deviations
-                # Calculate relative deviations
-                deviations = deviations.apply(lambda x: abs((x - global_val) / global_val) if global_val != 0 else 0)
-                # Find region with largest deviation
-                detected_region = deviations.idxmax()
-            else:
-                # If no 'Global' row, use the region furthest from mean
-                mean_val = df[metric_col].mean()
-                deviations = df[metric_col].apply(lambda x: abs((x - mean_val) / mean_val) if mean_val != 0 else 0)
-                detected_region = deviations.idxmax()
-            
-            current_anomalous_region = detected_region
-            logger.info(f"Detected anomalous region for {metric_col}: {current_anomalous_region}")
-        else:
-            current_anomalous_region = anomalous_region
-        
-        # Create anomaly info for this metric
-        anomaly_info = create_anomaly_info_from_data(
-            df, config, metric_col, current_anomalous_region
-        )
-        
-        # Store in map
-        metric_anomaly_map[metric_col] = anomaly_info
-    
-    return metric_anomaly_map
 
 def run_analysis_from_config(
     df: pd.DataFrame,
@@ -313,28 +174,35 @@ def run_analysis_from_config(
     from rca_package.hypothesis_scorer import (
         process_metrics, save_results_to_dataframe, get_ranked_hypotheses,
         create_multi_hypothesis_plot, create_scatter_grid, add_template_text,
-        add_score_formula, plot_scatter
+        add_score_formula, plot_scatter, score_all_hypotheses
     )
+    from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
     
     # Load configuration
     logger.info(f"Loading configuration from {config_path}")
     config = load_config(config_path)
     
     # Get all metrics from config
-    metric_cols = get_all_metrics(config)
-    logger.debug(f"Found {len(metric_cols)} metrics in configuration")
+    metric_names = get_all_metrics(config)
+    logger.debug(f"Found {len(metric_names)} metrics in configuration")
     
     # Get all unique hypotheses from config
-    all_hypo_cols = set()
-    for metric_col in metric_cols:
-        hypo_cols = get_relevant_hypotheses(config, metric_col)
-        all_hypo_cols.update(hypo_cols)
-    all_hypo_cols = list(all_hypo_cols)
-    logger.debug(f"Found {len(all_hypo_cols)} unique hypotheses in configuration")
+    all_hypo_names = set()
+    for metric_name in metric_names:
+        hypo_names = get_relevant_hypotheses(config, metric_name)
+        all_hypo_names.update(hypo_names)
+    all_hypo_names = list(all_hypo_names)
+    logger.debug(f"Found {len(all_hypo_names)} unique hypotheses in configuration")
     
-    # Create metric anomaly map
+    # Create metric anomaly map using the anomaly detector
     logger.info("Creating metric anomaly map")
-    metric_anomaly_map = create_metric_anomaly_map(df, config, anomalous_region, metric_cols)
+    metric_anomaly_map = {}
+    for metric_name in metric_names:
+        anomaly_info = detect_snapshot_anomaly_for_column(df, 'Global', column=metric_name)
+        if anomaly_info:
+            metric_anomaly_map[metric_name] = anomaly_info
+            if anomalous_region:  # Override detected region if specified
+                metric_anomaly_map[metric_name]['anomalous_region'] = anomalous_region
     
     # Get expected directions
     expected_directions = get_expected_directions(config)
@@ -345,39 +213,38 @@ def run_analysis_from_config(
     # Process each metric with its relevant hypotheses
     logger.info("Processing metrics and scoring hypotheses")
     all_results = {}
-    for metric_col, metric_info in config.get('metrics', {}).items():
+    for metric_name, metric_info in config.get('metrics', {}).items():
         # Skip if metric not in DataFrame
-        if metric_col not in df.columns:
+        if metric_name not in df.columns:
             continue
             
         # Get relevant hypotheses for this metric
-        hypo_cols = metric_hypo_map.get(metric_col, [])
+        hypo_names = metric_hypo_map.get(metric_name, [])
         
         # Skip if no hypotheses for this metric
-        if not hypo_cols:
-            logger.warning(f"No hypotheses found for metric {metric_col}. Skipping.")
+        if not hypo_names:
+            logger.warning(f"No hypotheses found for metric {metric_name}. Skipping.")
             continue
         
         # Get scoring method from config
         scoring_method = metric_info.get('scoring_method', 'standard')
         
         # Process this metric with its relevant hypotheses
-        logger.debug(f"Scoring {len(hypo_cols)} hypotheses for metric {metric_col}")
-        from rca_package.scoring_tools.hypothesis_scorer import score_all_hypotheses
+        logger.debug(f"Scoring {len(hypo_names)} hypotheses for metric {metric_name}")
         try:
             hypo_results = score_all_hypotheses(
                 df=df,
-                metric_col=metric_col,
-                hypo_cols=hypo_cols,
-                metric_anomaly_info=metric_anomaly_map[metric_col],
+                metric_col=metric_name,
+                hypo_cols=hypo_names,
+                metric_anomaly_info=metric_anomaly_map[metric_name],
                 expected_directions=expected_directions,
                 scoring_method=scoring_method
             )
             
             # Store results
-            all_results[metric_col] = hypo_results
+            all_results[metric_name] = hypo_results
         except Exception as e:
-            logger.error(f"Error processing {metric_col}: {str(e)}")
+            logger.error(f"Error processing {metric_name}: {str(e)}")
             continue
     
     # Check if we got any results
@@ -400,81 +267,75 @@ def run_analysis_from_config(
     # Create visualizations for each metric
     logger.info("Creating visualizations")
     import matplotlib.pyplot as plt
-    for metric_col, hypo_results in all_results.items():
+    for metric_name, hypo_results in all_results.items():
         # Skip if no results for this metric
         if not hypo_results:
             continue
             
         # Get relevant hypotheses for this metric
-        hypo_cols = metric_hypo_map.get(metric_col, [])
+        hypo_names = metric_hypo_map.get(metric_name, [])
         
         # Skip if no hypotheses for this metric
-        if not hypo_cols:
+        if not hypo_names:
             continue
             
-        # Get metric display name
-        metric_display_name = get_display_name(config, metric_col, 'metric')
-        
         # Get scoring method from config
-        metric_info = get_metric_info(config, metric_col)
+        metric_info = get_metric_info(config, metric_name)
         scoring_method = metric_info.get('scoring_method', 'standard')
         
         # 1. Scatter plots for each hypothesis
-        for hypo_col in hypo_cols:
+        for hypo_name in hypo_names:
             # Skip if hypothesis not in DataFrame
-            if hypo_col not in df.columns:
-                logger.warning(f"Hypothesis {hypo_col} not found in DataFrame. Skipping visualization.")
+            if hypo_name not in df.columns:
+                logger.warning(f"Hypothesis {hypo_name} not found in DataFrame. Skipping visualization.")
                 continue
                 
-            # Get hypothesis display name
-            hypo_display_name = get_display_name(config, hypo_col, 'hypothesis')
-            
             # Get expected direction
-            expected_direction = expected_directions.get(hypo_col, 'same')
+            expected_direction = expected_directions.get(hypo_name, 'same')
             
             # Create and save single scatter plot
             try:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 plot_scatter(
                     ax=ax,
-                    df=df[[metric_col, hypo_col]],
-                    metric_anomaly_info=metric_anomaly_map[metric_col],
+                    df=df[[metric_name, hypo_name]],
+                    metric_anomaly_info=metric_anomaly_map[metric_name],
                     expected_direction=expected_direction
                 )
                 
                 # Set more descriptive title
-                ax.set_title(f"Relationship between {metric_display_name} and {hypo_display_name}")
-                ax.set_xlabel(metric_display_name)
-                ax.set_ylabel(hypo_display_name)
+                ax.set_title(f"Relationship between {metric_name} and {hypo_name}")
+                ax.set_xlabel(metric_name)
+                ax.set_ylabel(hypo_name)
                 
                 plt.tight_layout()
                 
                 # Save with descriptive filename
-                filename = f"{save_path}/scatter_{metric_col}_{hypo_col}_{scoring_method}.png"
+                filename = f"{save_path}/scatter_{metric_name}_{hypo_name}_{scoring_method}.png"
                 plt.savefig(filename, dpi=120, bbox_inches='tight')
                 plt.close(fig)
                 logger.debug(f"Created scatter plot: {filename}")
             except Exception as e:
-                logger.error(f"Error creating scatter plot for {metric_col} and {hypo_col}: {str(e)}")
+                logger.error(f"Error creating scatter plot for {metric_name} and {hypo_name}: {str(e)}")
         
         # 2. Scatter grid
         try:
             scatter_grid = create_scatter_grid(
                 df=df,
-                metric_col=metric_col,
-                hypo_cols=hypo_cols,
-                metric_anomaly_info=metric_anomaly_map[metric_col],
+                metric_col=metric_name,
+                hypo_cols=hypo_names,
+                metric_anomaly_info=metric_anomaly_map[metric_name],
                 expected_directions=expected_directions,
                 figsize=(15, 10)
             )
             
             # Save with descriptive filename
-            filename = f"{save_path}/scatter_grid_{metric_col}_{scoring_method}.png"
+            filename = f"{save_path}/scatter_grid_{metric_name}_{scoring_method}.png"
             scatter_grid.savefig(filename, dpi=120, bbox_inches='tight')
             plt.close(scatter_grid)
             logger.debug(f"Created scatter grid: {filename}")
         except Exception as e:
-            logger.error(f"Error creating scatter grid for {metric_col}: {str(e)}")
+            logger.error(f"Error creating scatter grid for {metric_name}: {str(e)}")
         
         # 3. Multi-hypothesis bar plot
         try:
@@ -484,9 +345,9 @@ def run_analysis_from_config(
             # Create visualization
             fig = create_multi_hypothesis_plot(
                 df=df,
-                metric_col=metric_col,
-                hypo_cols=hypo_cols,
-                metric_anomaly_info=metric_anomaly_map[metric_col],
+                metric_col=metric_name,
+                hypo_cols=hypo_names,
+                metric_anomaly_info=metric_anomaly_map[metric_name],
                 hypo_results=hypo_results,
                 ordered_hypos=ranked_hypos
             )
@@ -495,7 +356,7 @@ def run_analysis_from_config(
             best_hypo_name, best_hypo_result = ranked_hypos[0]
             
             # Get template from config
-            template = get_template(config, metric_col, best_hypo_name)
+            template = get_template(config, metric_name, best_hypo_name)
             
             # Add template text and score formula
             add_template_text(
@@ -503,21 +364,155 @@ def run_analysis_from_config(
                 template, 
                 best_hypo_name,
                 best_hypo_result, 
-                metric_anomaly_map[metric_col],
-                metric_col
+                metric_anomaly_map[metric_name],
+                metric_name
             )
             add_score_formula(fig, is_sign_based=(scoring_method == 'sign_based'))
             
             # Save with descriptive filename
-            filename = f"{save_path}/multi_hypo_{metric_col}_{scoring_method}.png"
+            filename = f"{save_path}/bar_{metric_name}_{scoring_method}.png"
             fig.savefig(filename, dpi=120, bbox_inches='tight')
             plt.close(fig)
             logger.debug(f"Created multi-hypothesis visualization: {filename}")
         except Exception as e:
-            logger.error(f"Error creating multi-hypothesis plot for {metric_col}: {str(e)}")
+            logger.error(f"Error creating multi-hypothesis plot for {metric_name}: {str(e)}")
     
     logger.info("Analysis completed successfully")
 
+def get_technical_name(config: Dict[str, Any], display_name: str, col_type: str = None) -> str:
+    """
+    Get the technical name for a display name from the configuration.
+    
+    Args:
+        config: Loaded configuration dictionary
+        display_name: Display name to look up
+        col_type: Type of column ('metric' or 'hypothesis'). If None, will auto-detect.
+        
+    Returns:
+        Technical name for the display name, or the display name itself if not found
+    """
+    metrics = config.get('metrics', {})
+    
+    # If col_type is specified, search only in that category
+    if col_type == 'metric':
+        metric_info = metrics.get(display_name, {})
+        return metric_info.get('technical_name', display_name)
+    elif col_type == 'hypothesis':
+        # Search through all metrics' hypotheses
+        for metric_name, metric_info in metrics.items():
+            hypotheses = metric_info.get('hypotheses', {})
+            if display_name in hypotheses:
+                return hypotheses[display_name].get('technical_name', display_name)
+        return display_name
+    
+    # Auto-detect: first check if it's a metric
+    if display_name in metrics:
+        return metrics[display_name].get('technical_name', display_name)
+    
+    # Then check if it's a hypothesis
+    for metric_name, metric_info in metrics.items():
+        hypotheses = metric_info.get('hypotheses', {})
+        if display_name in hypotheses:
+            return hypotheses[display_name].get('technical_name', display_name)
+    
+    # If not found, return the display name as-is
+    return display_name
+
+def get_display_name_from_technical(config: Dict[str, Any], technical_name: str, col_type: str = None) -> str:
+    """
+    Get the display name for a technical name from the configuration.
+    
+    Args:
+        config: Loaded configuration dictionary
+        technical_name: Technical name to look up
+        col_type: Type of column ('metric' or 'hypothesis'). If None, will auto-detect.
+        
+    Returns:
+        Display name for the technical name, or the technical name itself if not found
+    """
+    metrics = config.get('metrics', {})
+    
+    # If col_type is specified, search only in that category
+    if col_type == 'metric':
+        for display_name, metric_info in metrics.items():
+            if metric_info.get('technical_name') == technical_name:
+                return display_name
+        return technical_name
+    elif col_type == 'hypothesis':
+        # Search through all metrics' hypotheses
+        for metric_name, metric_info in metrics.items():
+            hypotheses = metric_info.get('hypotheses', {})
+            for hypo_display_name, hypo_info in hypotheses.items():
+                if hypo_info.get('technical_name') == technical_name:
+                    return hypo_display_name
+        return technical_name
+    
+    # Auto-detect: first check if it's a metric
+    for display_name, metric_info in metrics.items():
+        if metric_info.get('technical_name') == technical_name:
+            return display_name
+    
+    # Then check if it's a hypothesis
+    for metric_name, metric_info in metrics.items():
+        hypotheses = metric_info.get('hypotheses', {})
+        for hypo_display_name, hypo_info in hypotheses.items():
+            if hypo_info.get('technical_name') == technical_name:
+                return hypo_display_name
+    
+    # If not found, return the technical name as-is
+    return technical_name
+
+def convert_dataframe_to_display_names(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
+    """
+    Convert a DataFrame with technical column names to display names.
+    
+    Args:
+        df: DataFrame with technical column names
+        config: Loaded configuration dictionary
+        
+    Returns:
+        DataFrame with display names as column headers
+    """
+    # Create a copy to avoid modifying the original
+    df_display = df.copy()
+    
+    # Create mapping from technical names to display names
+    column_mapping = {}
+    for col in df.columns:
+        display_name = get_display_name_from_technical(config, col)
+        if display_name != col:  # Only map if we found a display name
+            column_mapping[col] = display_name
+    
+    # Rename columns
+    df_display = df_display.rename(columns=column_mapping)
+    
+    return df_display
+
+def get_technical_names_for_metrics(config: Dict[str, Any], metric_display_names: List[str]) -> List[str]:
+    """
+    Get technical names for a list of metric display names.
+    
+    Args:
+        config: Loaded configuration dictionary
+        metric_display_names: List of metric display names
+        
+    Returns:
+        List of technical names
+    """
+    return [get_technical_name(config, name, 'metric') for name in metric_display_names]
+
+def get_technical_names_for_hypotheses(config: Dict[str, Any], hypo_display_names: List[str]) -> List[str]:
+    """
+    Get technical names for a list of hypothesis display names.
+    
+    Args:
+        config: Loaded configuration dictionary
+        hypo_display_names: List of hypothesis display names
+        
+    Returns:
+        List of technical names
+    """
+    return [get_technical_name(config, name, 'hypothesis') for name in hypo_display_names]
 
 # Example usage
 if __name__ == "__main__":

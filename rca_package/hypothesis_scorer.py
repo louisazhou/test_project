@@ -183,7 +183,7 @@ def sign_based_score_hypothesis(
     sign_agreement_score = sign_agreements.sum() / len(regions)
     
     # Calculate binomial p-value (not used in score but included for reference)
-    p_binom = stats.binom_test(sign_agreements.sum(), n=len(regions), p=0.5)
+    p_binom = stats.binomtest(sign_agreements.sum(), n=len(regions), p=0.5)
     
     # Calculate explained ratio for the anomalous region
     explained_ratio = min(abs(hypo_delta) / abs(metric_delta), 1.0) if abs(metric_delta) > 1e-6 else 0
@@ -209,7 +209,7 @@ def sign_based_score_hypothesis(
         'scores': {
             'sign_agreement': sign_agreement_score,
             'explained_ratio': explained_ratio,
-            'p_value': p_binom,
+            'p_value': p_binom.pvalue,
             'final_score': final_score,
             'explains': final_score > 0.5,
             'is_sign_based': True  # Flag to indicate this is a sign-based score
@@ -248,8 +248,11 @@ def plot_bars(
     else:
         col_to_plot = df.columns[1]  # Second column is hypothesis
     
+    # Since we now use display names as column headers, col_to_plot is already the display name
+    display_name = col_to_plot
+    
     # Format y-axis as percentage if needed
-    is_percent = ('_pct' in col_to_plot or '%' in col_to_plot or 
+    is_percent = ('pct' in col_to_plot or '%' in col_to_plot or 
                  (hypo_result and 'pp' in hypo_result['magnitude']))
     
     # Extract regions and values (excluding Global)
@@ -296,8 +299,8 @@ def plot_bars(
         format_str = '{:.1f}%' if is_percent else '{:.1f}'
         ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=8)
     
-    # Set y-axis label
-    ax.set_ylabel(col_to_plot, fontsize=10)
+    # Set y-axis label using display name
+    ax.set_ylabel(display_name, fontsize=10)
     
     # Format y-axis as percentage if needed
     if is_percent:
@@ -510,6 +513,10 @@ def create_multi_hypothesis_plot(
     ax_metric = fig.add_subplot(gs[0, 0])
     ax_best_hypo = fig.add_subplot(gs[1, 0])
     
+    # Since we now use display names as column headers, these are already display names
+    metric_display_name = metric_col
+    best_hypo_display_name = best_hypo_name
+    
     # Plot metric
     plot_bars(
         ax_metric, 
@@ -517,7 +524,7 @@ def create_multi_hypothesis_plot(
         metric_anomaly_info, 
         plot_type='metric'
     )
-    ax_metric.set_title(f"Metric: {metric_col}", fontsize=12)
+    ax_metric.set_title(f"Metric: {metric_display_name}", fontsize=12)
     
     # Plot best hypothesis
     plot_bars(
@@ -529,7 +536,7 @@ def create_multi_hypothesis_plot(
         highlight_region=True  # Only highlight region in best hypothesis
     )
     ax_best_hypo.set_title(
-        f"Best Hypothesis: {best_hypo_name} (Score: {best_hypo_result['scores']['final_score']:.2f})", 
+        f"Best Hypothesis: {best_hypo_display_name}", 
         fontsize=12
     )
     
@@ -559,7 +566,9 @@ def create_multi_hypothesis_plot(
                 plot_type='hypothesis',
                 highlight_region=False  # Don't highlight region in other hypotheses
             )
-            ax.set_title(f"{hypo_name} (Score: {hypo_result['scores']['final_score']:.2f})", fontsize=10)
+            # Since we now use display names as column headers, hypo_name is already the display name
+            hypo_display_name = hypo_name
+            ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=10)
     
     return fig
 
@@ -773,6 +782,10 @@ def plot_scatter(
     # Extract metric and hypothesis columns
     metric_col, hypo_col = df.columns
     
+    # Since we now use display names as column headers, these are already display names
+    metric_display_name = metric_col
+    hypo_display_name = hypo_col
+    
     # Get all regions (including Global)
     regions = df.index.tolist()
     
@@ -847,15 +860,15 @@ def plot_scatter(
         bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7)
     )
     
-    # Set axis labels
-    ax.set_xlabel(metric_col, fontsize=10)
-    ax.set_ylabel(hypo_col, fontsize=10)
+    # Set axis labels using display names
+    ax.set_xlabel(metric_display_name, fontsize=10)
+    ax.set_ylabel(hypo_display_name, fontsize=10)
     
     # Add grid
     ax.grid(True, linestyle='--', alpha=0.3)
     
     # Set title
-    ax.set_title(f"Correlation between {metric_col} and {hypo_col}", fontsize=12)
+    # ax.set_title(f"Correlation between {metric_col} and {hypo_col}", fontsize=12)
     
     return ax
 
@@ -1001,7 +1014,7 @@ def add_template_text(
     context = {
         'region': metric_anomaly_info['anomalous_region'],
         'metric_name': metric_col,
-        'metric_deviation': abs(metric_anomaly_info.get('magnitude', 0)),
+        'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),  # Use string magnitude directly
         'metric_dir': metric_anomaly_info['direction'],
         'hypo_name': best_hypo_name,
         'hypo_dir': best_hypo_result['direction'],
@@ -1030,6 +1043,147 @@ def add_template_text(
         transform=fig.transFigure,
         bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5')
     )
+
+
+def build_structured_hypothesis_results(
+    metric_col: str,
+    metric_anomaly_info: Dict[str, Any],
+    hypo_results: Dict[str, Dict[str, Any]],
+    config: Dict[str, Any] = None,
+    get_template_func: callable = None,
+    best_hypo_name: str = None
+) -> Dict[str, Any]:
+    """
+    Build structured hypothesis results in the final format needed for presentations.
+    
+    Args:
+        metric_col: Name of the metric column
+        metric_anomaly_info: Dictionary containing anomaly information
+        hypo_results: Dictionary mapping hypothesis names to their score results
+        config: Configuration dictionary (optional, for display names and templates)
+        get_display_name_func: Function to get display names (optional)
+        get_template_func: Function to get templates (optional)
+        best_hypo_name: Name of the best hypothesis (if None, will be determined from scores)
+    
+    Returns:
+        Dictionary containing structured hypothesis results
+    """
+    # Determine best hypothesis if not provided
+    if best_hypo_name is None:
+        best_hypo_name = max(
+            hypo_results.keys(),
+            key=lambda h: hypo_results[h]['scores']['final_score']
+        )
+    
+    # Build structured hypotheses
+    hypotheses = {}
+    for hypo_name, hypo_result in hypo_results.items():
+        # Since we now use display names as column headers, these are already display names
+        metric_display_name = metric_col
+        hypo_display_name = hypo_name
+        
+        # Get templates
+        template = ""
+        summary_template = ""
+        if get_template_func and config:
+            template = get_template_func(config, metric_col, hypo_name, 'template')
+            summary_template = get_template_func(config, metric_col, hypo_name, 'summary_template')
+        
+        # Prepare parameters for templates
+        parameters = {
+            'region': metric_anomaly_info['anomalous_region'],
+            'metric_name': metric_display_name,
+            'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),
+            'metric_dir': metric_anomaly_info['direction'],
+            'hypo_name': hypo_display_name,
+            'hypo_dir': hypo_result['direction'],
+            'hypo_delta': hypo_result['magnitude'],
+            'ref_hypo_val': hypo_result['ref_hypo_val'],
+            'score': hypo_result['scores']['final_score']
+        }
+        
+        # Store hypothesis info in structured format
+        hypotheses[hypo_name] = {
+            "hypothesis": hypo_name,
+            "name": hypo_display_name,
+            "type": "directional",
+            "selected": hypo_name == best_hypo_name,
+            "template": template,
+            "summary_template": summary_template,
+            "parameters": parameters,
+            "payload": hypo_result
+        }
+    
+    return hypotheses
+
+
+def process_metrics_with_structured_results(
+    df: pd.DataFrame,
+    metric_cols: List[str],
+    hypo_cols: List[str],
+    metric_anomaly_map: Dict[str, Dict[str, Any]],
+    expected_directions: Dict[str, str],
+    scoring_method: str = 'standard',
+    metric_hypothesis_map: Dict[str, List[str]] = None,
+    config: Dict[str, Any] = None,
+    get_template_func: callable = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Process multiple metrics and return structured results ready for presentations.
+    
+    Args:
+        df: DataFrame containing all metrics and hypotheses
+        metric_cols: List of metric column names to process
+        hypo_cols: List of hypothesis column names to evaluate (used only if metric_hypothesis_map is None)
+        metric_anomaly_map: Dictionary mapping metric names to their anomaly info
+        expected_directions: Dictionary mapping hypothesis names to their expected directions
+        scoring_method: Which scoring method to use ('standard' or 'sign_based')
+        metric_hypothesis_map: Optional mapping from metrics to their relevant hypotheses
+        config: Configuration dictionary (optional, for display names and templates)
+        get_display_name_func: Function to get display names (optional)
+        get_template_func: Function to get templates (optional)
+    
+    Returns:
+        Dictionary mapping metric names to structured results including hypotheses
+    """
+    # First get the raw scoring results
+    raw_results = process_metrics(
+        df=df,
+        metric_cols=metric_cols,
+        hypo_cols=hypo_cols,
+        metric_anomaly_map=metric_anomaly_map,
+        expected_directions=expected_directions,
+        scoring_method=scoring_method,
+        metric_hypothesis_map=metric_hypothesis_map
+    )
+    
+    # Build structured results for each metric
+    structured_results = {}
+    for metric_col, hypo_results in raw_results.items():
+        # Get the best hypothesis
+        best_hypo_name = max(
+            hypo_results.keys(),
+            key=lambda h: hypo_results[h]['scores']['final_score']
+        )
+        
+        # Build structured hypotheses
+        structured_hypotheses = build_structured_hypothesis_results(
+            metric_col=metric_col,
+            metric_anomaly_info=metric_anomaly_map[metric_col],
+            hypo_results=hypo_results,
+            config=config,
+
+            get_template_func=get_template_func,
+            best_hypo_name=best_hypo_name
+        )
+        
+        # Create the complete metric result structure
+        structured_results[metric_col] = {
+            **metric_anomaly_map[metric_col],  # Include all fields from metric_anomaly_info
+            "hypotheses": structured_hypotheses
+        }
+    
+    return structured_results
 
 
 def main(save_path='.', results_path=None):
@@ -1066,33 +1220,15 @@ def main(save_path='.', results_path=None):
     metric_cols = ['conversion_rate_pct', 'avg_order_value', 'customer_satisfaction']
     hypo_cols = ['bounce_rate_pct', 'page_load_time', 'session_duration', 'pages_per_session', 'new_users_pct']
     
-    # Create a dictionary of metric anomaly info for each metric
-    metric_anomaly_map = {
-        'conversion_rate_pct': {
-            'anomalous_region': 'North America',
-            'metric_val': df.loc['North America', 'conversion_rate_pct'],
-            'global_val': df.loc['Global', 'conversion_rate_pct'],
-            'direction': 'lower',
-            'magnitude': 33.3,
-            'higher_is_better': True
-        },
-        'avg_order_value': {
-            'anomalous_region': 'North America',
-            'metric_val': df.loc['North America', 'avg_order_value'],
-            'global_val': df.loc['Global', 'avg_order_value'],
-            'direction': 'lower',
-            'magnitude': 13.3,
-            'higher_is_better': True
-        },
-        'customer_satisfaction': {
-            'anomalous_region': 'North America',
-            'metric_val': df.loc['North America', 'customer_satisfaction'],
-            'global_val': df.loc['Global', 'customer_satisfaction'],
-            'direction': 'lower',
-            'magnitude': 9.5,
-            'higher_is_better': True
-        }
-    }
+    # Import anomaly detector
+    from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
+    
+    # Create metric anomaly map using the anomaly detector
+    metric_anomaly_map = {}
+    for metric_col in metric_cols:
+        anomaly_info = detect_snapshot_anomaly_for_column(df, 'Global', column=metric_col)
+        if anomaly_info:
+            metric_anomaly_map[metric_col] = anomaly_info
     
     # Define expected directions for each hypothesis
     expected_directions = {
@@ -1188,7 +1324,7 @@ def main(save_path='.', results_path=None):
     )
     
     # Use the template with Jinja2 double-brace syntax
-    template = "{{metric_name}} in {{region}} is {{metric_deviation}}% {{metric_dir}} than Global mean.\n"\
+    template = "{{metric_name}} in {{region}} is {{metric_deviation}} {{metric_dir}} than Global mean.\n"\
                "Root cause: {{region}} has {{hypo_delta}} {{hypo_dir}} of {{hypo_name}} than the global mean ({{ref_hypo_val}}). "\
                "This suggests Account Managers have different interaction volumes, potentially impacting their ability to "\
                "effectively manage and prioritize CLIs in their portfolio."
@@ -1206,7 +1342,7 @@ def main(save_path='.', results_path=None):
     add_score_formula(fig, is_sign_based=(scoring_method == 'sign_based'))
     
     # Save with descriptive filename
-    filename = f"{save_path}/multi_metric_{metric_col}_{scoring_method}.png"
+    filename = f"{save_path}/bar_{metric_col}_{scoring_method}.png"
     fig.savefig(filename, dpi=120, bbox_inches='tight')
     plt.close(fig)
     print(f"Created multi-metric visualization: {filename}")

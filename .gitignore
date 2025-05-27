@@ -10,3 +10,6 @@ credentials.json
 *.json
 *.xlsx
 *.xls
+*.egg-info*
+*/__pycache__/*
+*__pycache__*

@@ -20,7 +20,9 @@ from .hypothesis_scorer import (
     get_ranked_hypotheses,
     create_multi_hypothesis_plot,
     create_scatter_grid,
-    plot_scatter
+    plot_scatter,
+    build_structured_hypothesis_results,
+    process_metrics_with_structured_results
 )
 
 # Import key functions from yaml_processor
@@ -33,46 +35,32 @@ from .yaml_processor import (
     get_expected_directions,
     get_metric_hypothesis_map,
     get_template,
-    get_display_name,
     get_scoring_method,
-    create_metric_anomaly_map
+    get_technical_name,
+    get_display_name_from_technical,
+    convert_dataframe_to_display_names,
+    get_technical_names_for_metrics,
+    get_technical_names_for_hypotheses
 )
 
 # Import key functions from make_slides
 from .make_slides import (
     create_metrics_summary_slide,
-    create_metrics_presentation
+    add_figure_to_slide,
+    add_text_to_slide,
+    create_slide_with_title,
+    create_figure_with_text_slide,
+    create_flexible_presentation,
+    add_section_slide
 )
 
-def run_analysis(
-    df,
-    config_path: str,
-    save_path: str = '.',
-    results_path: Optional[str] = None,
-    region: Optional[str] = None
-):
-    """
-    Run a complete analysis using configuration from a YAML file.
-    
-    Args:
-        df: DataFrame containing metric and hypothesis data
-        config_path: Path to the YAML configuration file
-        save_path: Directory to save generated figures
-        results_path: Path to save DataFrame results (if None, results are not saved)
-        region: Name of the anomalous region (if None, will be detected)
-        
-    Returns:
-        Dictionary containing all analysis results
-    """
-    from .yaml_processor import run_analysis_from_config
-    
-    return run_analysis_from_config(
-        df=df,
-        config_path=config_path,
-        anomalous_region=region,
-        save_path=save_path,
-        results_path=results_path
-    )
+# Import key functions from depth_spotter
+from .depth_spotter import (
+    rate_contrib,
+    additive_contrib,
+    plot_subregion_bars,
+    analyze_region_depth
+)
 
 # Define what should be available in "from rca_package import *"
 __all__ = [
@@ -80,6 +68,8 @@ __all__ = [
     'score_all_hypotheses',
     'process_metrics',
     'get_ranked_hypotheses',
+    'build_structured_hypothesis_results',
+    'process_metrics_with_structured_results',
     
     # Visualization functions
     'create_multi_hypothesis_plot',
@@ -95,13 +85,28 @@ __all__ = [
     'get_expected_directions',
     'get_metric_hypothesis_map',
     'get_template',
-    'get_display_name',
-    'create_metric_anomaly_map',
     'get_scoring_method',
+    'get_technical_name',
+    'get_display_name_from_technical',
+    'convert_dataframe_to_display_names',
+    'get_technical_names_for_metrics',
+    'get_technical_names_for_hypotheses',
+    
     # High-level functions
     'run_analysis',
     
     # Presentation functions
     'create_metrics_summary_slide',
-    'create_metrics_presentation'
+    'add_figure_to_slide',
+    'add_text_to_slide',
+    'create_slide_with_title',
+    'create_figure_with_text_slide',
+    'create_flexible_presentation',
+    'add_section_slide',
+    
+    # Depth analysis functions
+    'rate_contrib',
+    'additive_contrib',
+    'plot_subregion_bars',
+    'analyze_region_depth'
 ] 

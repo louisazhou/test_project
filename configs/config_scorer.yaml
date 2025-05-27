@@ -6,12 +6,12 @@
 #                                    # - 'standard': Uses correlation, direction, and z-score
 #                                    # - 'sign_based': Uses sign agreement, better for small sample sizes
 # metrics:
-#   <metric_column>:                 # Technical name of the metric column in the dataframe
-#     name: <display_name>           # Human-readable name for display in visualizations
+#   <metric_display_name>:           # Human-readable name of the metric (used internally)
+#     technical_name: <tech_name>    # Technical column name in the DataFrame
 #     higher_is_better: true|false   # Whether higher values of this metric are considered positive
 #     hypotheses:                    # List of hypotheses relevant to this metric
-#       <hypothesis_column>:         # Technical name of the hypothesis column in the dataframe
-#         name: <display_name>       # Human-readable name for display in visualizations
+#       <hypothesis_display_name>:   # Human-readable name of the hypothesis (used internally)
+#         technical_name: <tech_name> # Technical column name in the DataFrame
 #         expected_direction:        # Expected relationship between metric and hypothesis:
 #                                    # - 'same': Hypothesis and metric move in same direction
 #                                    # - 'opposite': Hypothesis and metric move in opposite directions
@@ -20,66 +20,66 @@
 # =================== TEMPLATE VARIABLES ===================
 # The following variables are available in templates:
 # - region: Name of the anomalous region
-# - metric_name: Name of the metric (uses the 'name' field above, not the column name)
+# - metric_name: Name of the metric (display name)
 # - metric_deviation: Magnitude of the deviation as a percentage
 # - metric_dir: Direction of the deviation ('higher' or 'lower')
-# - hypo_name: Name of the hypothesis (uses the 'name' field above, not the column name)
+# - hypo_name: Name of the hypothesis (display name)
 # - hypo_dir: Direction of the hypothesis value ('higher' or 'lower')
 # - hypo_delta: Magnitude of the hypothesis deviation
 # - ref_hypo_val: Reference (global) value of the hypothesis
 # - score: Final score of the hypothesis
-# - explained_ratio: Percentage of the metric deviation explained by the hypothesis
+
 # ============================================================
 
 scoring_method: "sign_based"  # Global scoring method for all metrics
 
 metrics:
-  conversion_rate_pct:
-    name: "Conversion Rate"
+  "Conversion Rate":
+    technical_name: "conversion_rate_pct"
     higher_is_better: true
     hypotheses:
-      bounce_rate_pct:
-        name: "Bounce Rate"
+      "Bounce Rate":
+        technical_name: "bounce_rate_pct"
         expected_direction: "opposite"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than Global mean. This likely contributes to the {{ metric_dir }} overall performance.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} of {{ hypo_name }} than the global mean ({{ ref_hypo_val }}). Higher bounce rates typically result in lower conversion."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean. This likely contributes to the {{ metric_dir }} overall performance.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} of {{ hypo_name }} than the global mean ({{ ref_hypo_val }}). Higher bounce rates typically result in lower conversion."
         summary_template: "TBA"
-      page_load_time:
-        name: "Page Load Time"
+      "Page Load Time":
+        technical_name: "page_load_time"
         expected_direction: "opposite"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Slower pages ({{ hypo_dir }} load times) typically result in {{ metric_dir }} conversion rates, explaining about {{ explained_ratio|int }}% of the observed difference."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Slower pages ({{ hypo_dir }} load times) typically result in {{ metric_dir }} conversion rates."
         summary_template: "TBA"
-      new_users_pct:
-        name: "New User Percentage"
+      "New User Percentage":
+        technical_name: "new_users_pct"
         expected_direction: "opposite"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than the global baseline.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} percentage of new users ({{ hypo_name }}) compared to the global average ({{ ref_hypo_val }}). New users typically convert at lower rates than returning users, which explains this pattern."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than the global baseline.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} percentage of new users ({{ hypo_name }}) compared to the global average ({{ ref_hypo_val }}). New users typically convert at lower rates than returning users, which explains this pattern."
         summary_template: "TBA"
 
-  avg_order_value:
-    name: "Average Order Value"
+  "Average Order Value":
+    technical_name: "avg_order_value"
     higher_is_better: true
     hypotheses:
-      session_duration:
-        name: "Session Duration"
+      "Session Duration":
+        technical_name: "session_duration"
         expected_direction: "same"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than the global average.\n\nRoot cause: {{ region }} shows {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} compared to the global average ({{ ref_hypo_val }}). Users who spend more time browsing tend to make larger purchases, explaining about {{ explained_ratio|int }}% of the observed difference in order value."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than the global average.\n\nRoot cause: {{ region }} shows {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} compared to the global average ({{ ref_hypo_val }}). Users who spend more time browsing tend to make larger purchases."
         summary_template: "TBA"
-      pages_per_session:
-        name: "Pages per Session"
+      "Pages per Session":
+        technical_name: "pages_per_session"
         expected_direction: "same"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Users who view more pages typically explore more products, resulting in larger cart sizes and {{ hypo_dir }} order values."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Users who view more pages typically explore more products, resulting in larger cart sizes and {{ hypo_dir }} order values."
         summary_template: "TBA"
 
-  customer_satisfaction:
-    name: "Customer Satisfaction"
+  "Customer Satisfaction":
+    technical_name: "customer_satisfaction"
     higher_is_better: true
     hypotheses:
-      page_load_time:
-        name: "Page Load Time"
+      "Page Load Time":
+        technical_name: "page_load_time"
         expected_direction: "opposite"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}s). Slower page loading creates friction in the user experience, resulting in {{ metric_dir }} satisfaction scores."
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}s). Slower page loading creates friction in the user experience, resulting in {{ metric_dir }} satisfaction scores."
         summary_template: "TBA"
-      bounce_rate_pct:
-        name: "Bounce Rate"
+      "Bounce Rate":
+        technical_name: "bounce_rate_pct"
         expected_direction: "opposite"
-        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }}% {{ metric_dir }} than Global benchmark.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Higher bounce rates often indicate poor user experience or content mismatch, explaining the {{ metric_dir }} satisfaction scores." 
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global benchmark.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Higher bounce rates often indicate poor user experience or content mismatch, explaining the {{ metric_dir }} satisfaction scores." 
         summary_template: "TBA"

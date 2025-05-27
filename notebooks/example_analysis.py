@@ -25,6 +25,8 @@ import json
 # Add package to path
 sys.path.append(str(Path.cwd().parent))
 
+from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
+
 from rca_package import (
     load_config,
     get_metric_info,
@@ -34,24 +36,33 @@ from rca_package import (
     get_expected_directions,
     get_metric_hypothesis_map,
     get_template,
-    get_display_name,
-    get_scoring_method
+    get_scoring_method,
+    convert_dataframe_to_display_names,
+    get_technical_name
 )
 from rca_package.hypothesis_scorer import (
-    score_all_hypotheses,
+    process_metrics_with_structured_results,
     get_ranked_hypotheses,
     create_multi_hypothesis_plot,
     create_scatter_grid,
-    add_score_formula
+    add_score_formula,
+    add_template_text
 )
-from rca_package.make_slides import create_metrics_presentation
+from rca_package.make_slides import create_flexible_presentation
+from rca_package.depth_spotter import (
+    create_synthetic_data,
+    analyze_region_depth,
+    plot_subregion_bars
+)
+
+
 
 # %% [markdown]
 # ## 1. Load Configuration
 
 # %% [load_config]
 # Load configuration
-config_path = '../configs/config_scorer.yaml'
+config_path = 'configs/config_scorer.yaml'
 config = load_config(config_path)
 print("Loaded configuration successfully")
 
@@ -59,18 +70,18 @@ print("Loaded configuration successfully")
 # ## 2. Create Sample Data
 
 # %% [create_data]
-# Create sample data
+# Create sample data using technical names as column headers (as they come from real data sources)
 np.random.seed(42)
 regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
 
-# Create test data with multiple metrics and hypotheses
+# Create test data with technical names as column headers (realistic scenario)
 data = {
-    # Metrics
+    # Metrics (using technical names)
     'conversion_rate_pct': np.array([0.12, 0.08, 0.11, 0.13, 0.10]),
     'avg_order_value': np.array([75.0, 65.0, 80.0, 85.0, 72.0]),
     'customer_satisfaction': np.array([4.2, 3.8, 4.3, 4.5, 4.0]),
     
-    # Hypotheses
+    # Hypotheses (using technical names)
     'bounce_rate_pct': np.array([0.35, 0.45, 0.32, 0.28, 0.34]),
     'page_load_time': np.array([2.4, 3.8, 2.2, 1.9, 2.5]),
     'session_duration': np.array([180, 120, 190, 210, 175]),
@@ -78,9 +89,14 @@ data = {
     'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23])
 }
 
-# Create DataFrame
-df = pd.DataFrame(data, index=regions)
-print("\nSample Data:")
+# Create DataFrame with technical names (as it comes from data sources)
+df_technical = pd.DataFrame(data, index=regions)
+print("\nOriginal Data (Technical Names):")
+print(df_technical)
+
+# Convert to display names for processing
+df = convert_dataframe_to_display_names(df_technical, config)
+print("\nConverted Data (Display Names):")
 print(df)
 
 # %% [markdown]
@@ -88,24 +104,17 @@ print(df)
 
 # %% [prepare_analysis]
 # Get all metrics and their hypotheses
-metric_cols = get_all_metrics(config)
+metric_names = get_all_metrics(config)
 metric_hypo_map = get_metric_hypothesis_map(config)
 expected_directions = get_expected_directions(config)
+scoring_method = get_scoring_method(config)
 
 # Create metric anomaly map
 metric_anomaly_map = {}
-for metric_col in metric_cols:
-    metric_info = get_metric_info(config, metric_col)
-    anomalous_region = 'North America'  # For this example
-    
-    metric_anomaly_map[metric_col] = {
-        'anomalous_region': anomalous_region,
-        'metric_val': df.loc[anomalous_region, metric_col],
-        'global_val': df.loc['Global', metric_col],
-        'direction': 'higher' if df.loc[anomalous_region, metric_col] > df.loc['Global', metric_col] else 'lower',
-        'magnitude': abs((df.loc[anomalous_region, metric_col] - df.loc['Global', metric_col]) / df.loc['Global', metric_col] * 100),
-        'higher_is_better': metric_info.get('higher_is_better', True)
-    }
+for metric_name in metric_names:
+    anomaly_info = detect_snapshot_anomaly_for_column(df, 'Global', column=metric_name)
+    if anomaly_info:
+        metric_anomaly_map[metric_name] = anomaly_info
 
 print("\nMetric Anomaly Map:")
 for metric, info in metric_anomaly_map.items():
@@ -117,88 +126,36 @@ for metric, info in metric_anomaly_map.items():
 # ## 4. Score Hypotheses
 
 # %% [score_hypotheses]
-# Score hypotheses for each metric
-all_results = {}
-for metric_col in metric_cols:
-    hypo_cols = metric_hypo_map[metric_col]
-    metric_info = get_metric_info(config, metric_col)
-    scoring_method = metric_info.get('scoring_method', 'standard')
-    
-    hypo_results = score_all_hypotheses(
-        df=df,
-        metric_col=metric_col,
-        hypo_cols=hypo_cols,
-        metric_anomaly_info=metric_anomaly_map[metric_col],
-        expected_directions=expected_directions,
-        scoring_method=scoring_method
-    )
-    all_results[metric_col] = hypo_results
+# Score hypotheses for each metric using the new streamlined approach
+all_metric_results = process_metrics_with_structured_results(
+    df=df,
+    metric_cols=metric_names,
+    hypo_cols=[],  # Not used since we have metric_hypothesis_map
+    metric_anomaly_map=metric_anomaly_map,
+    expected_directions=expected_directions,
+    scoring_method=scoring_method,
+    metric_hypothesis_map=metric_hypo_map,
+    config=config,
+    get_template_func=get_template
+)
 
 print("\nHypothesis Scores:")
-for metric, results in all_results.items():
+for metric, metric_result in all_metric_results.items():
     print(f"\n{metric}:")
-    for hypo, result in results.items():
-        print(f"  {hypo}: {result['scores']['final_score']:.2f}")
+    for hypo_name, hypo_info in metric_result['hypotheses'].items():
+        score = hypo_info['payload']['scores']['final_score']
+        print(f"  {hypo_name}: {score:.2f}")
 
-all_results
+# Extract raw results for visualization
+all_results = {}
+for metric_name, metric_result in all_metric_results.items():
+    all_results[metric_name] = {
+        hypo_name: hypo_info['payload'] 
+        for hypo_name, hypo_info in metric_result['hypotheses'].items()
+    }
 
 # %% [markdown]
 # ## 5. Create Visualizations
-
-def structure_metric_results(
-    metric_col: str,
-    metric_anomaly_info: Dict[str, Any],
-    hypo_results: Dict[str, Dict[str, Any]],
-    figure_paths: List[Dict[str, str]],
-    config: Dict[str, Any],
-    best_hypo_name: str = None
-) -> Dict[str, Any]:
-    """
-    Structure the results for a metric in the requested format.
-    """
-    # Get all hypotheses for this metric
-    hypotheses = {}
-    for hypo_name, hypo_result in hypo_results.items():
-        # Get templates
-        template = get_template(config, metric_col, hypo_name, 'template')
-        summary_template = get_template(config, metric_col, hypo_name, 'summary_template')
-        
-        # Prepare parameters for templates
-        parameters = {
-            'region': metric_anomaly_info['anomalous_region'],
-            'metric_name': get_display_name(config, metric_col),
-            'metric_deviation': metric_anomaly_info['magnitude'],
-            'metric_dir': metric_anomaly_info['direction'],
-            'hypo_name': get_display_name(config, hypo_name, 'hypothesis'),
-            'hypo_dir': hypo_result['direction'],
-            'hypo_delta': hypo_result['magnitude'],
-            'ref_hypo_val': hypo_result['ref_hypo_val'],
-            'score': hypo_result['scores']['final_score'],
-            'explained_ratio': hypo_result['scores']['explained_ratio'] * 100
-        }
-        
-        # Store hypothesis info
-        hypotheses[hypo_name] = {
-            "hypothesis": hypo_name,
-            "name": get_display_name(config, hypo_name, 'hypothesis'),
-            "type": "directional",
-            "scoring_method": hypo_result.get('scoring_method', 'standard'),
-            "score": hypo_result['scores']['final_score'],
-            "selected": hypo_name == best_hypo_name,
-            "template": template,
-            "summary_template": summary_template,
-            "parameters": parameters,
-            "payload": hypo_result
-        }
-    
-    # Create the complete metric result structure
-    metric_result = {
-        **metric_anomaly_info,  # Include all fields from metric_anomaly_info
-        "figure_paths": figure_paths,
-        "hypotheses": hypotheses
-    }
-    
-    return metric_result
 
 # %% [create_visualizations]
 # Create output directory with absolute path (outside notebooks)
@@ -206,59 +163,48 @@ output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'outp
 print(f"\nCreating output directory at: {output_dir}")
 os.makedirs(output_dir, exist_ok=True)
 
-# Store all metric results
-all_metric_results = {}
-
-# Create visualizations for each metric
-for metric_col in metric_cols:
-    hypo_cols = metric_hypo_map[metric_col]
-    hypo_results = all_results[metric_col]
+# Create visualizations for each metric and add figure paths to results
+for metric_name in metric_names:
+    # Get technical name for file naming
+    metric_technical_name = get_technical_name(config, metric_name, 'metric')
+    
+    hypo_names = metric_hypo_map[metric_name]
+    hypo_results = all_results[metric_name]
     ranked_hypos = get_ranked_hypotheses(hypo_results)
     best_hypo_name, best_hypo_result = ranked_hypos[0]
-    
-    # Get metric display name
-    metric_display_name = get_display_name(config, metric_col)
     
     # Create multi-hypothesis plot (bar chart)
     fig = create_multi_hypothesis_plot(
         df=df,
-        metric_col=metric_col,
-        hypo_cols=hypo_cols,
-        metric_anomaly_info=metric_anomaly_map[metric_col],
+        metric_col=metric_name,
+        hypo_cols=hypo_names,
+        metric_anomaly_info=metric_anomaly_map[metric_name],
         hypo_results=hypo_results,
         ordered_hypos=ranked_hypos
     )
     
-    # Add title and axis labels using YAML config
-    fig.suptitle(f"Hypothesis Analysis for {metric_display_name}", fontsize=14)
-    ax = fig.axes[0]
-    ax.set_xlabel(get_display_name(config, metric_col, 'metric'), fontsize=12)
-    ax.set_ylabel("Hypothesis Score", fontsize=12)
+    # Style bar plot
+    fig.suptitle(metric_name, fontsize=14)
+            
     
-    # Add score cards and template text
-    template = get_template(config, metric_col, best_hypo_name, 'template')
+    # Add template text and score formula
+    template = get_template(config, metric_name, best_hypo_name, 'template')
     if template:
-        context = {
-            'region': metric_anomaly_map[metric_col]['anomalous_region'],
-            'metric_name': metric_display_name,
-            'metric_deviation': metric_anomaly_map[metric_col]['magnitude'],
-            'metric_dir': metric_anomaly_map[metric_col]['direction'],
-            'hypo_name': get_display_name(config, best_hypo_name, 'hypothesis'),
-            'hypo_dir': best_hypo_result['direction'],
-            'hypo_delta': best_hypo_result['magnitude'],
-            'ref_hypo_val': best_hypo_result['ref_hypo_val'],
-            'score': best_hypo_result['scores']['final_score'],
-            'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
-        }
-        template_text = Template(template).render(**context)
-        fig.text(0.5, 0.95, template_text, ha='center', va='top', fontsize=10, wrap=True)
+        add_template_text(
+            fig=fig,
+            template=template,
+            best_hypo_name=best_hypo_name,
+            best_hypo_result=best_hypo_result,
+            metric_anomaly_info=metric_anomaly_map[metric_name],
+            metric_col=metric_name
+        )
     
     scoring_method = get_scoring_method(config)
     # Add score formula
     add_score_formula(fig, is_sign_based=(scoring_method == 'sign_based'))
     
-    # Save bar chart
-    bar_figure_path = os.path.join(output_dir, f"bar_{metric_col}.png")
+    # Save bar chart using technical name for filename
+    bar_figure_path = os.path.join(output_dir, f"bar_{metric_technical_name}_{scoring_method}.png")
     print(f"\nSaving bar chart to: {bar_figure_path}")
     fig.savefig(bar_figure_path, dpi=120, bbox_inches='tight')
     plt.close(fig)
@@ -266,46 +212,35 @@ for metric_col in metric_cols:
     # Create scatter plot
     scatter_fig = create_scatter_grid(
         df=df,
-        metric_col=metric_col,
-        hypo_cols=hypo_cols,
-        metric_anomaly_info=metric_anomaly_map[metric_col],
+        metric_col=metric_name,
+        hypo_cols=hypo_names,
+        metric_anomaly_info=metric_anomaly_map[metric_name],
         expected_directions=get_expected_directions(config)
     )
     
     # Style scatter plot
-    scatter_fig.suptitle(f"Scatter Analysis for {metric_display_name}", fontsize=14)
-    for ax in scatter_fig.axes:
-        ax.set_xlabel(get_display_name(config, metric_col, 'metric'), fontsize=12)
-        ax.set_ylabel(get_display_name(config, ax.get_title(), 'hypothesis'), fontsize=12)
+    scatter_fig.suptitle(metric_name, fontsize=14)
     
-    # Save scatter plot
-    scatter_figure_path = os.path.join(output_dir, f"scatter_{metric_col}.png")
+    # Save scatter plot using technical name for filename
+    scatter_figure_path = os.path.join(output_dir, f"scatter_{metric_technical_name}.png")
     print(f"Saving scatter plot to: {scatter_figure_path}")
     scatter_fig.savefig(scatter_figure_path, dpi=120, bbox_inches='tight')
     plt.close(scatter_fig)
     
-    # Store figure paths
+    # Add figure paths to the existing structured results
     figure_paths = [
         {
             'path': bar_figure_path,
-            'title': f"Bar Analysis for {metric_display_name}"
+            'title': metric_name
         },
         {
             'path': scatter_figure_path,
-            'title': f"Scatter Analysis for {metric_display_name}"
+            'title': metric_name
         }
     ]
     
-    # Structure and store the results
-    metric_result = structure_metric_results(
-        metric_col=metric_col,
-        metric_anomaly_info=metric_anomaly_map[metric_col],
-        hypo_results=hypo_results,
-        figure_paths=figure_paths,
-        config=config,
-        best_hypo_name=best_hypo_name
-    )
-    all_metric_results[metric_col] = metric_result
+    # Add figure paths to the existing metric result
+    all_metric_results[metric_name]['figure_paths'] = figure_paths
 
 # Save results to JSON
 results_file = os.path.join(output_dir, f"analysis_results_{scoring_method}.json")
@@ -319,8 +254,12 @@ def convert_numpy_types(obj):
         return float(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, np.bool_):  # Handle numpy boolean type
+    elif isinstance(obj, np.bool_): 
         return bool(obj)
+    elif isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient='index')
+    elif isinstance(obj, pd.Series):
+        return obj.to_dict()
     elif isinstance(obj, dict):
         return {key: convert_numpy_types(value) for key, value in obj.items()}
     elif isinstance(obj, list):
@@ -345,30 +284,170 @@ for metric, result in all_metric_results.items():
             print(f"  ✗ File not found")
 
 # %% [markdown]
-# ## 6. Create Presentation
+# ## 6. Depth Analysis
+
+# %% [depth_analysis]
+# Create synthetic sub-regional data for depth analysis
+print("\n" + "="*60)
+print("DEPTH ANALYSIS")
+print("="*60)
+
+# Get synthetic sub-regional data
+sub_df = create_synthetic_data()
+print(f"\nCreated synthetic sub-regional data with {len(sub_df)} slices")
+print("\nSub-regional data preview:")
+print(sub_df.head())
+
+# Run depth analysis for the anomalous region
+anomalous_region = "North America"  # This matches our synthetic data
+depth_config_path = 'configs/config_depth.yaml'
+
+print(f"\nRunning depth analysis for: {anomalous_region}")
+
+# Load depth config using yaml_processor
+depth_config = load_config(depth_config_path)
+
+depth_results = analyze_region_depth(
+    sub_df=sub_df,
+    anomalous_region=anomalous_region,
+    config=depth_config
+)
+
+print(f"\nDepth analysis found {len(depth_results)} metrics")
+
+# Create bar charts for depth analysis and integrate into results
+for hypo_name, result in depth_results.items():
+    if result['type'] == 'depth_spotter':
+        payload = result['payload']
+        region_df = payload['region_df']
+        metric_col = payload['metric_col']
+        display_name = result['name']
+        
+        # Get technical name for file naming
+        metric_technical_name = get_technical_name(config, display_name, 'metric')
+        
+        # Create actual data bar chart
+        title = f"{display_name} by {anomalous_region} sub-regions"
+        
+        fig = plot_subregion_bars(
+            df_slice=region_df,
+            metric_col=metric_col,
+            title=title,
+            config=depth_config,
+            row_value=payload.get('row_value'),
+            figsize=(12, 6)
+        )
+        
+        # Save figure using technical name for filename
+        filename = f"{output_dir}/subregion_{metric_technical_name}.png"
+        fig.savefig(filename, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        
+        # Render template text
+        rendered_text = ""
+        if result.get('template') and result.get('parameters'):
+            template = Template(result['template'])
+            rendered_text = template.render(**result['parameters'])
+        
+        # Add to the corresponding metric's results
+        metric_name = hypo_name.replace('_in_subregion', '')
+        for metric_col, metric_result in all_metric_results.items():
+            if metric_col == metric_name:
+                # Add depth hypothesis to this metric's hypotheses
+                metric_result['hypotheses'][hypo_name] = result
+                
+                # Add subregion figure with rendered text to figure paths
+                subregion_figure = {
+                    'path': filename,
+                    'title': f"{display_name} - Depth Analysis",
+                    'text': rendered_text  # Store rendered text for slides
+                }
+                metric_result['figure_paths'].append(subregion_figure)
+                break
+
+print("\nDepth analysis completed and integrated into results")
+
+# Print structured depth results
+print(f"\n{'-'*40}")
+print("DEPTH ANALYSIS STRUCTURED RESULTS")
+print(f"{'-'*40}")
+
+for hypo_name, result in depth_results.items():
+    print(f"\nHypothesis: {hypo_name}")
+    print(f"Name: {result['name']}")
+    print(f"Type: {result['type']}")
+    
+    # Render template
+    if result['template']:
+        template = Template(result['template'])
+        rendered_text = template.render(**result['parameters'])
+        print(f"Template Text:\n{rendered_text}")
+
+# %% [markdown]
+# ## 7. Save Results and Create Presentation
+
+# %% [save_results]
+# Save results to JSON
+results_file = os.path.join(output_dir, f"analysis_results.json")
+print(f"\nSaving analysis results: {results_file}")
+
+# Convert and save results
+json_results = convert_numpy_types(all_metric_results)
+with open(results_file, 'w') as f:
+    json.dump(json_results, f, indent=2)
+
+print(f"Successfully saved results to {results_file}")
+
+# %% [markdown]
+# ## 8. Create Presentation
 
 # %% [create_presentation]
 # Prepare metrics text using summary templates from best hypotheses
 metrics_text = {}
-for metric_col, metric_result in all_metric_results.items():
+for metric_name, metric_result in all_metric_results.items():
     # Find the selected (best) hypothesis
-    best_hypo = next((h for h in metric_result['hypotheses'].values() if h['selected']), None)
-    if best_hypo and best_hypo['summary_template']:
-        # Use summary template and parameters from the best hypothesis
-        metrics_text[metric_col] = Template(best_hypo['summary_template']).render(**best_hypo['parameters'])
+    best_hypo = next((h for h in metric_result['hypotheses'].values() if h.get('selected', False)), None)
+    if best_hypo and best_hypo.get('summary_template'):
+        # Use the metric name directly as the key (no conversion needed!)
+        metrics_text[metric_name] = Template(best_hypo['summary_template']).render(**best_hypo['parameters'])
 
-# Create presentation
-result = create_metrics_presentation(
+# Create presentation using flexible system
+builder = create_flexible_presentation(
+    output_dir=output_dir,
+    ppt_filename="Metrics_Analysis.pptx",
+    upload_to_gdrive=True
+)
+
+# Add metrics summary slide
+builder['add_summary_slide'](
     df=df,
     metrics_text=metrics_text,
     metric_anomaly_map=metric_anomaly_map,
-    figure_paths=[path for metric in all_metric_results.values() for path in metric['figure_paths']],
-    output_dir=output_dir,
-    ppt_filename="Metrics_Analysis.pptx",
-    upload_to_gdrive=True,
-    gdrive_credentials_path="../credentials.json",
-    use_oauth=True
+    title="Metrics Summary"
 )
+
+# Add figure slides
+figure_paths = [path for metric in all_metric_results.values() for path in metric['figure_paths']]
+for fig_info in figure_paths:
+    figure_path = fig_info.get('path')
+    title = fig_info.get('title')
+    text = fig_info.get('text')  # Get rendered text if available
+    
+    # Check if this is a chart with text (like depth analysis)
+    if text:
+        # Create figure with text slide
+        builder['add_figure_with_text_slide'](
+            title=title,
+            figure_path=figure_path,
+            text=text,
+            text_position='bottom'
+        )
+    else:
+        # Add regular figure slide
+        builder['add_figure_slide'](figure_path=figure_path, title=title)
+
+# Save and upload
+result = builder['save_and_upload']()
 
 print("\nPresentation Results:")
 print(f"Local path: {result['local_path']}")
@@ -376,7 +455,7 @@ if 'gdrive_url' in result:
     print(f"Google Drive URL: {result['gdrive_url']}")
 
 # %% [markdown]
-# ## 7. Cleanup (Optional)
+# ## 9. Cleanup (Optional)
 
 # %% [cleanup]
 # Close any remaining plots

@@ -19,177 +19,216 @@ SCOPES = ['https://www.googleapis.com/auth/presentations',
           'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/drive']
 
-def _style_cell(cell, value: Any, is_anomalous: bool = False, 
-               direction: str = None, higher_is_better: bool = True, 
-               font_size: int = 10, alignment: str = 'center') -> None:
+# Standardized layout constants
+LAYOUT = {
+    'title': {
+        'left': 0.3,      # Left-aligned, not centered
+        'top': 0.2,       # Higher up to save space
+        'width': 9.0,
+        'height': 0.6,
+        'font_size': 20,  # Smaller than before
+        'font_bold': True
+    },
+    'content': {
+        'top': 1.0,       # Start content below title
+        'available_height': 6.5  # Available space for content
+    },
+    'text': {
+        'font_size': 11,  # Consistent text size
+        'line_spacing': 1.2
+    }
+}
+
+def add_bw_table_to_slide_with_colors(
+    slide,
+    df: pd.DataFrame,
+    highlight_cells: Optional[Dict[Tuple[str, str], str]] = None,
+    left: float = 0.5,
+    top: float = 1.0,
+    width: float = 9.0,
+    height: float = 3.0
+):
+    """Adds a styled B/W table with support for red/green/custom color highlighting.
+
+    Args:
+        slide: pptx Slide object to which the table will be added.
+        df: DataFrame to visualize.
+        highlight_cells: Dict of (row_label, column_name) → color ('red', 'green', or RGB tuple).
+        left, top, width, height: Placement of the table in inches.
+
+    Returns:
+        The pptx Table object.
     """
-    Style a table cell with the given parameters.
+    highlight_cells = highlight_cells or {}
+
+    include_index = not isinstance(df.index, pd.RangeIndex)
+    num_rows = df.shape[0] + 1
+    num_cols = df.shape[1] + (1 if include_index else 0)
+
+    table_shape = slide.shapes.add_table(
+        num_rows, num_cols,
+        Inches(left), Inches(top), Inches(width), Inches(height)
+    )
+    table = table_shape.table
+
+    # Header
+    for col_idx in range(num_cols):
+        cell = table.cell(0, col_idx)
+        if include_index and col_idx == 0:
+            cell.text = ""
+        else:
+            actual_col_idx = col_idx - 1 if include_index else col_idx
+            cell.text = df.columns[actual_col_idx]
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        for paragraph in cell.text_frame.paragraphs:
+            paragraph.alignment = PP_ALIGN.CENTER
+            for run in paragraph.runs:
+                run.font.bold = True
+                run.font.size = Pt(12)
+                run.font.color.rgb = RGBColor(255, 255, 255)
+
+    # Data
+    for row_idx, row_label in enumerate(df.index):
+        for col_idx in range(num_cols):
+            cell = table.cell(row_idx + 1, col_idx)
+            if include_index and col_idx == 0:
+                val = str(row_label)
+            else:
+                actual_col_idx = col_idx - 1 if include_index else col_idx
+                cell_value = df.iloc[row_idx, actual_col_idx]
+                # Format the value (handle percentage detection)
+                if isinstance(cell_value, (int, float)) and not np.isnan(cell_value):
+                    col_name = df.columns[actual_col_idx]
+                    row_name = str(row_label)
+                    
+                    # Check if this is a percentage based on column or row name
+                    is_percent = ('_pct' in col_name or '%' in col_name or 'pct' in col_name.lower() or
+                                 '_pct' in row_name or '%' in row_name or 'pct' in row_name.lower() or
+                                 'rate' in row_name.lower() or 'ratio' in row_name.lower())
+                    
+                    if is_percent:
+                        val = f"{cell_value*100:.0f}%"
+                    else:
+                        val = f"{cell_value:.2f}"
+                else:
+                    val = "N/A"
+            cell.text = val
+            cell.fill.solid()
+            shade = RGBColor(242, 244, 248) if row_idx % 2 == 0 else RGBColor(255, 255, 255)
+            cell.fill.fore_color.rgb = shade
+
+            if include_index and col_idx == 0:
+                color_rgb = RGBColor(0, 0, 0)
+            else:
+                key = (row_label, df.columns[actual_col_idx])
+                color = highlight_cells.get(key)
+                if color == "red":
+                    color_rgb = RGBColor(255, 0, 0)
+                elif color == "green":
+                    color_rgb = RGBColor(0, 153, 0)
+                elif isinstance(color, tuple) and len(color) == 3:
+                    color_rgb = RGBColor(*color)
+                else:
+                    color_rgb = RGBColor(0, 0, 0)
+
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.alignment = PP_ALIGN.CENTER
+                for run in paragraph.runs:
+                    run.font.size = Pt(12)
+                    run.font.color.rgb = color_rgb
+
+    return table
+
+def _create_highlight_cells_map(
+    df: pd.DataFrame,
+    metric_anomaly_map: Dict[str, Dict[str, Any]]
+) -> Dict[Tuple[str, str], str]:
+    """
+    Create a highlight_cells dictionary for the table based on anomaly information.
     
     Args:
-        cell: Cell object to style
-        value: Value to display in the cell
-        is_anomalous: Whether this cell represents an anomalous value
-        direction: Direction of anomaly ('higher' or 'lower')
-        higher_is_better: Whether higher values are better for this metric
-        font_size: Font size to use
-        alignment: Text alignment ('center', 'left', or 'right')
+        df: DataFrame containing the data (metrics as rows, regions as columns) using display names
+        metric_anomaly_map: Map of metrics to their anomaly information
+        
+    Returns:
+        Dictionary mapping (row_label, column_name) to color ('red' or 'green')
     """
-    # Format the value (handle percentage columns)
-    if isinstance(value, (int, float)) and not np.isnan(value):
-        is_percent = False
-        if isinstance(value, str):
-            is_percent = '_pct' in value or '%' in value
-        if is_percent:
-            value_text = f"{value*100:.1f}%" 
-        else:
-            value_text = f"{value:.2f}" 
-    else:
-        value_text = "N/A"
-        
-    # Add value to cell
-    cell.text = value_text
-    cell.text_frame.paragraphs[0].font.size = Pt(font_size)
+    highlight_cells = {}
     
-    # Set alignment
-    if alignment == 'center':
-        cell.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
-    elif alignment == 'left':
-        cell.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
-    elif alignment == 'right':
-        cell.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
-        
-    # Color the cell if it's anomalous
-    if is_anomalous and direction:
-        # Determine if this is good or bad
-        is_good = (direction == 'higher' and higher_is_better) or \
-                  (direction == 'lower' and not higher_is_better)
-        
-        # Apply cell styling
-        cell.fill.solid()
-        if is_good:
-            cell.fill.fore_color.rgb = RGBColor(200, 255, 200)  # Light green
-        else:
-            cell.fill.fore_color.rgb = RGBColor(255, 200, 200)  # Light red
+    for metric_name, metric_info in metric_anomaly_map.items():
+        # Since we now use display names as column headers, metric_name is already the display name
+        if metric_name in df.index:
+            anomalous_region = metric_info.get('anomalous_region')
+            direction = metric_info.get('direction')
+            higher_is_better = metric_info.get('higher_is_better', True)
+            
+            if anomalous_region and direction and anomalous_region in df.columns:
+                # Determine if this is good or bad
+                is_good = (direction == 'higher' and higher_is_better) or \
+                         (direction == 'lower' and not higher_is_better)
+                
+                color = 'green' if is_good else 'red'
+                # For table: (metric_name, anomalous_region)
+                highlight_cells[(metric_name, anomalous_region)] = color
+    
+    return highlight_cells
 
 def create_metrics_summary_slide(
     prs: Presentation,
     df: pd.DataFrame,
     metrics_text: Dict[str, str],
     metric_anomaly_map: Dict[str, Dict[str, Any]],
-    title: str = "Metrics Summary",
+    title: str = "Metrics Summary"
 ) -> None:
     """
-    Create a summary slide with a table of metrics data and pre-formatted text explanations.
+    Create a summary slide with a styled table of metrics data and pre-formatted text explanations.
     
     Args:
         prs: PowerPoint presentation object
-        df: DataFrame containing the data (index is region)
-        metrics_text: Dictionary mapping metric names to their pre-formatted explanation text
+        df: DataFrame containing the data with display names as column headers (index is region)
+        metrics_text: Dictionary mapping metric display names to their pre-formatted explanation text
         metric_anomaly_map: Map of metrics to their anomaly information
         title: Title for the slide
     """
     # Use a blank slide layout
-    slide_layout = prs.slide_layouts[5]  # Use a blank layout
+    slide_layout = prs.slide_layouts[6]  # Use a blank layout
     slide = prs.slides.add_slide(slide_layout)
     
-    # Add title
-    title_shape = slide.shapes.title
-    if title_shape is None:
-        title_shape = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9.0), Inches(0.75))
-    title_text_frame = title_shape.text_frame
-    title_text_frame.text = title
-    title_text_frame.paragraphs[0].font.size = Pt(28)
-    title_text_frame.paragraphs[0].font.bold = True
+    # Add standardized title
+    add_standardized_title(slide, title)
     
-    # Get metrics and regions for the table
+    # Filter DataFrame to only include metrics we have text for
+    # Since we now use display names as column headers, this is straightforward
     metrics = list(metrics_text.keys())
-    regions = df.index
+    metrics_df = df[metrics]
     
-    # Calculate table dimensions
-    table_rows = len(metrics) + 1  # +1 for header
-    table_cols = len(regions) + 1  # +1 for metric names
+    # Transpose the DataFrame so regions are columns and metrics are rows
+    metrics_df_transposed = metrics_df.T
     
-    # Create table on the left side of the slide
-    table_width = Inches(5.0)  # Adjust as needed
-    table_height = Inches(5.0)  # Adjust as needed
-    table_left = Inches(0.5)
-    table_top = Inches(1.5)
+    # Create highlight cells map for transposed data
+    highlight_cells = _create_highlight_cells_map(metrics_df_transposed, metric_anomaly_map)
     
-    # Create the table with no style
-    table = slide.shapes.add_table(
-        table_rows, table_cols, 
-        table_left, table_top, 
-        table_width, table_height
-    ).table
+    # Use standardized layout positions
+    content_top = LAYOUT['content']['top']
+    available_height = LAYOUT['content']['available_height']
     
-    # Set column widths
-    metric_col_width = Inches(1.5)  # Width for metric names column
-    region_width_inches = (5.0 - 1.5) / len(regions)  # Calculate in inches
-    region_col_width = Inches(region_width_inches)  # Convert to Inches object
-    
-    table.columns[0].width = metric_col_width
-    for i in range(1, table_cols):
-        table.columns[i].width = region_col_width
-    
-    # Set header row
-    header_cells = table.rows[0].cells
-    header_cells[0].text = "Metric"
-    
-    # Add region names to header
-    for i, region in enumerate(regions):
-        header_cells[i+1].text = region
-    
-    # Style header row with minimal formatting
-    for cell in header_cells:
-        # Remove background fill
-        cell.fill.background()
-        
-        # Style text
-        paragraph = cell.text_frame.paragraphs[0]
-        paragraph.font.bold = True
-        paragraph.font.size = Pt(11)
-        paragraph.alignment = PP_ALIGN.CENTER
-    
-    # Add data rows
-    for row_idx, metric in enumerate(metrics):
-        row = table.rows[row_idx + 1].cells
-        
-        # Add metric name in first column
-        row[0].text = metric
-        row[0].text_frame.paragraphs[0].font.size = Pt(10)
-        row[0].text_frame.paragraphs[0].font.bold = True
-        
-        # Get anomaly info for this metric if available
-        metric_info = metric_anomaly_map.get(metric, {})
-        anomalous_region = metric_info.get('anomalous_region')
-        higher_is_better = metric_info.get('higher_is_better', True)
-        direction = metric_info.get('direction')
-        
-        # Add region values
-        for col_idx, region in enumerate(regions):
-            col = col_idx + 1  # +1 for metric names column
-            
-            # Get the value for this metric and region
-            try:
-                value = df.loc[region, metric]
-            except (IndexError, KeyError):
-                value = np.nan
-            
-            # Style the cell
-            is_anomalous = anomalous_region and region == anomalous_region
-            _style_cell(
-                row[col], 
-                value, 
-                is_anomalous=is_anomalous,
-                direction=direction,
-                higher_is_better=higher_is_better
-            )
+    # Add styled table on the left side of the slide
+    table = add_bw_table_to_slide_with_colors(
+        slide=slide,
+        df=metrics_df_transposed,
+        highlight_cells=highlight_cells,
+        left=0.5,
+        top=content_top,
+        width=5.0,
+        height=available_height
+    )
     
     # Create text area on the right side for explanation
-    text_left = table_left + table_width + Inches(0.5)
+    text_left = Inches(6.0)  # 0.5 + 5.0 + 0.5
     text_width = Inches(4.0)
-    text_top = table_top
-    text_height = table_height
+    text_top = Inches(content_top)
+    text_height = Inches(available_height)
     
     # Add text box for explanations
     text_box = slide.shapes.add_textbox(
@@ -199,108 +238,250 @@ def create_metrics_summary_slide(
     text_frame = text_box.text_frame
     text_frame.word_wrap = True
     
-    # Add explanations for each metric
+    # Add explanations for each metric with consistent formatting
     for metric, explanation_text in metrics_text.items():
         # Add header for this metric
         p = text_frame.add_paragraph()
         p.text = f"{metric}:"
         p.font.bold = True
-        p.font.size = Pt(12)
+        p.font.size = Pt(LAYOUT['text']['font_size'])
         p.space_after = Pt(6)
         
         # Add the explanation
         p = text_frame.add_paragraph()
         p.text = explanation_text
-        p.font.size = Pt(10)
+        p.font.size = Pt(LAYOUT['text']['font_size'])
         p.space_after = Pt(12)
 
-def add_figure_slide(
-    prs: Presentation,
+def add_figure_to_slide(
+    slide,
     figure_path: str,
-    title: str = None
+    left: float = 0.1,
+    top: float = 1.5,
+    height: float = 6.0
 ) -> None:
     """
-    Add a slide with a figure.
+    Add a figure to an existing slide.
+    
+    Args:
+        slide: pptx Slide object to add the figure to
+        figure_path: Path to the figure file
+        left: Left position in inches
+        top: Top position in inches
+        height: Height in inches
+    """
+    # Add picture
+    if os.path.exists(figure_path):
+        try:
+            slide.shapes.add_picture(figure_path, Inches(left), Inches(top), height=Inches(height))
+        except Exception as e:
+            logger.error(f"Error adding figure {figure_path}: {e}")
+            # Add a text box with the error message
+            error_box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(8.0), Inches(1.0))
+            error_box.text_frame.text = f"Error loading figure: {figure_path}\n{str(e)}"
+    else:
+        # Add a text box indicating the figure wasn't found
+        error_box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(8.0), Inches(1.0))
+        error_box.text_frame.text = f"Figure not found: {figure_path}"
+
+
+def add_standardized_title(slide, title: str) -> None:
+    """
+    Add a standardized title to a slide using consistent formatting.
+    
+    Args:
+        slide: pptx Slide object
+        title: Title text
+    """
+    title_shape = slide.shapes.add_textbox(
+        Inches(LAYOUT['title']['left']), 
+        Inches(LAYOUT['title']['top']), 
+        Inches(LAYOUT['title']['width']), 
+        Inches(LAYOUT['title']['height'])
+    )
+    title_text_frame = title_shape.text_frame
+    title_text_frame.text = title
+    
+    # Apply consistent formatting
+    paragraph = title_text_frame.paragraphs[0]
+    paragraph.font.size = Pt(LAYOUT['title']['font_size'])
+    paragraph.font.bold = LAYOUT['title']['font_bold']
+    paragraph.alignment = PP_ALIGN.LEFT  # Always left-aligned
+
+
+def add_text_to_slide(
+    slide,
+    text: str,
+    left: float = 0.5,
+    top: float = 7.0,
+    width: float = 9.0,
+    height: float = 1.5,
+    fontsize: int = None,  # Will use default from LAYOUT if None
+    alignment: str = 'left'
+) -> None:
+    """
+    Add text to an existing slide.
+    
+    Args:
+        slide: pptx Slide object to add the text to
+        text: Text content to add
+        left: Left position in inches
+        top: Top position in inches
+        width: Width in inches
+        height: Height in inches
+        fontsize: Font size
+        alignment: Text alignment ('left', 'center', 'right')
+    """
+    # Use default font size if not specified
+    if fontsize is None:
+        fontsize = LAYOUT['text']['font_size']
+    
+    # Add text box
+    text_box = slide.shapes.add_textbox(
+        Inches(left), Inches(top), 
+        Inches(width), Inches(height)
+    )
+    text_frame = text_box.text_frame
+    text_frame.word_wrap = True
+    
+    # Set text content
+    text_frame.text = text
+    
+    # Style the text with consistent formatting
+    for paragraph in text_frame.paragraphs:
+        paragraph.font.size = Pt(fontsize)
+        paragraph.space_after = Pt(6)  # Consistent spacing
+        
+        # Set alignment
+        if alignment == 'center':
+            paragraph.alignment = PP_ALIGN.CENTER
+        elif alignment == 'right':
+            paragraph.alignment = PP_ALIGN.RIGHT
+        else:  # left
+            paragraph.alignment = PP_ALIGN.LEFT
+
+
+def create_slide_with_title(prs: Presentation, title: str):
+    """
+    Create a new slide with a standardized title.
     
     Args:
         prs: PowerPoint presentation object
-        figure_path: Path to the figure file
-        title: Optional title for the slide
+        title: Title for the slide
+        
+    Returns:
+        The created slide object
     """
     # Use a blank slide layout
     blank_slide_layout = prs.slide_layouts[6]
     slide = prs.slides.add_slide(blank_slide_layout)
     
-    # Add title if provided
-    if title:
-        title_shape = slide.shapes.title
-        if title_shape is None:
-            title_shape = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9.0), Inches(0.75))
-        title_text_frame = title_shape.text_frame
-        title_text_frame.text = title
-        title_text_frame.paragraphs[0].font.size = Pt(28)
-        title_text_frame.paragraphs[0].font.bold = True
-        
-        # Adjust figure position if there's a title
-        top = Inches(1.5)
-    else:
-        # Center figure if no title
-        top = Inches(0.75)
+    # Add standardized title
+    add_standardized_title(slide, title)
     
-    # Add figure to slide (centered)
-    left = Inches(0.1)
-    height = Inches(6.0)  # Adjust as needed
-    
-    # Add picture
-    if os.path.exists(figure_path):
-        try:
-            slide.shapes.add_picture(figure_path, left, top, height=height)
-        except Exception as e:
-            logger.error(f"Error adding figure {figure_path}: {e}")
-            # Add a text box with the error message
-            error_box = slide.shapes.add_textbox(left, top, Inches(8.0), Inches(1.0))
-            error_box.text_frame.text = f"Error loading figure: {figure_path}\n{str(e)}"
-    else:
-        # Add a text box indicating the figure wasn't found
-        error_box = slide.shapes.add_textbox(left, top, Inches(8.0), Inches(1.0))
-        error_box.text_frame.text = f"Figure not found: {figure_path}"
+    return slide
 
-def create_metrics_presentation(
-    df: pd.DataFrame,
-    metrics_text: Dict[str, str],
-    metric_anomaly_map: Dict[str, Dict[str, Any]],
-    figure_paths: List[Dict[str, str]] = None,
+
+def create_figure_with_text_slide(
+    prs: Presentation,
+    title: str,
+    figure_path: str,
+    text: str,
+    text_position: str = 'bottom'
+) -> None:
+    """
+    Create a slide with a figure and text.
+    
+    Args:
+        prs: PowerPoint presentation object
+        title: Title for the slide
+        figure_path: Path to the figure file
+        text: Text content to add
+        text_position: Position of text relative to figure ('bottom', 'top', 'right')
+    """
+    slide = create_slide_with_title(prs, title)
+    
+    # Use standardized layout positions
+    content_top = LAYOUT['content']['top']
+    available_height = LAYOUT['content']['available_height']
+    
+    if text_position == 'bottom':
+        # Figure on top, text at bottom
+        figure_height = available_height * 0.7  # 70% for figure
+        text_height = available_height * 0.3   # 30% for text
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=figure_height)
+        add_text_to_slide(slide, text, left=0.5, top=content_top + figure_height, 
+                         width=9.0, height=text_height, alignment='left')
+    elif text_position == 'top':
+        # Text on top, figure at bottom
+        text_height = available_height * 0.25   # 25% for text
+        figure_height = available_height * 0.75 # 75% for figure
+        add_text_to_slide(slide, text, left=0.5, top=content_top, 
+                         width=9.0, height=text_height, alignment='left')
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top + text_height, height=figure_height)
+    elif text_position == 'right':
+        # Figure on left, text on right
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=available_height)
+        add_text_to_slide(slide, text, left=5.5, top=content_top, 
+                         width=4.0, height=available_height, alignment='left')
+    else:
+        # Default to bottom
+        figure_height = available_height * 0.7
+        text_height = available_height * 0.3
+        add_figure_to_slide(slide, figure_path, left=0.1, top=content_top, height=figure_height)
+        add_text_to_slide(slide, text, left=0.5, top=content_top + figure_height, 
+                         width=9.0, height=text_height, alignment='left')
+
+def add_section_slide(prs: Presentation, title: str, subtitle: str = None) -> None:
+    """
+    Add a section divider slide with title and optional subtitle.
+    
+    Args:
+        prs: PowerPoint presentation object
+        title: Main title for the section
+        subtitle: Optional subtitle
+    """
+    # Use title slide layout
+    title_slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(title_slide_layout)
+    
+    # Set title
+    slide.shapes.title.text = title
+    
+    # Set subtitle if provided
+    if subtitle and len(slide.placeholders) > 1:
+        slide.placeholders[1].text = subtitle
+
+
+def create_flexible_presentation(
     output_dir: str = '.',
     ppt_filename: str = None,
     upload_to_gdrive: bool = False,
     gdrive_folder_id: str = None,
     gdrive_credentials_path: str = None,
-    use_oauth: bool = False,
-    token_path: str = None
+    gdrive_token_path: str = None
 ) -> Dict[str, Any]:
     """
-    Create a PowerPoint presentation with metrics summary and figures,
-    optionally upload to Google Drive.
+    Create a flexible presentation builder that returns a presentation object
+    and helper functions for easy slide creation.
     
     Args:
-        df: DataFrame containing the data
-        metrics_text: Dictionary mapping metric names to their pre-formatted explanation text
-        metric_anomaly_map: Map of metrics to their anomaly information
-        figure_paths: List of dictionaries, each with 'path' and optional 'title'
         output_dir: Directory to save the presentation
-        ppt_filename: Filename for the presentation (if None, will generate based on date)
-        region_col: Name of the region column
+        ppt_filename: Filename for the presentation
         upload_to_gdrive: Whether to upload to Google Drive
-        gdrive_folder_id: Google Drive folder ID to upload to
-        gdrive_credentials_path: Path to Google Drive credentials
-        use_oauth: Whether to use OAuth2 flow instead of service account
-        token_path: Path to OAuth token file
+        gdrive_folder_id: Google Drive folder ID
+        gdrive_credentials_path: Path to credentials.json file (optional, defaults to base directory)
+        gdrive_token_path: Path to token.json file (optional, defaults to base directory)
         
     Returns:
-        Dictionary with information about the created presentation:
-        - 'local_path': Path to the local file
-        - 'gdrive_url': Google Drive URL (if uploaded)
-        - 'gdrive_id': Google Drive file ID (if uploaded)
+        Dictionary containing:
+        - 'prs': PowerPoint presentation object
+        - 'save_and_upload': Function to save and optionally upload
+        - 'add_summary_slide': Function to add metrics summary slide
+        - 'add_figure_slide': Function to add figure slide
+        - 'add_figure_with_text_slide': Function to add figure with text
+        - 'add_section_slide': Function to add section divider
+        - 'add_custom_slide': Function to add custom slide with callback
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -308,172 +489,228 @@ def create_metrics_presentation(
     # Generate filename if not provided
     if ppt_filename is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        ppt_filename = f"Metrics_Summary_{timestamp}.pptx"
+        ppt_filename = f"Presentation_{timestamp}.pptx"
     
     # Create presentation
     prs = Presentation()
     
-    # Add metrics summary slide
-    create_metrics_summary_slide(
-        prs=prs,
-        df=df,
-        metrics_text=metrics_text,
-        metric_anomaly_map=metric_anomaly_map,
-        title="Metrics Summary"
-    )
+    def save_and_upload():
+        """Save the presentation and optionally upload to Google Drive."""
+        # Save the presentation
+        ppt_path = os.path.join(output_dir, ppt_filename)
+        prs.save(ppt_path)
+        logger.info(f"Presentation saved to {ppt_path}")
+        
+        result = {
+            'local_path': ppt_path,
+            'filename': ppt_filename
+        }
+        
+        # Upload to Google Drive if requested
+        if upload_to_gdrive:
+            try:
+                gdrive_results = upload_to_google_drive(
+                    file_path=ppt_path,
+                    folder_id=gdrive_folder_id,
+                    credentials_path=gdrive_credentials_path,
+                    token_path=gdrive_token_path
+                )
+                result.update(gdrive_results)
+                logger.info(f"Uploaded to Google Drive: {gdrive_results.get('gdrive_url', 'Unknown URL')}")
+            except Exception as e:
+                logger.error(f"Failed to upload to Google Drive: {e}")
+                result['gdrive_error'] = str(e)
+        
+        return result
     
-    # Add figure slides if provided
-    if figure_paths:
-        for fig_info in figure_paths:
-            figure_path = fig_info.get('path')
-            title = fig_info.get('title')
-            add_figure_slide(prs, figure_path, title)
+    def add_summary_slide(df, metrics_text, metric_anomaly_map, title="Metrics Summary"):
+        """Add a metrics summary slide."""
+        create_metrics_summary_slide(
+            prs=prs,
+            df=df,
+            metrics_text=metrics_text,
+            metric_anomaly_map=metric_anomaly_map,
+            title=title
+        )
     
-    # Save the presentation
-    ppt_path = os.path.join(output_dir, ppt_filename)
-    prs.save(ppt_path)
-    logger.info(f"Presentation saved to {ppt_path}")
+    def add_figure_slide(figure_path, title=None):
+        """Add a slide with just a figure."""
+        # Use a blank slide layout
+        blank_slide_layout = prs.slide_layouts[6]
+        slide = prs.slides.add_slide(blank_slide_layout)
+        
+        # Add title if provided
+        if title:
+            add_standardized_title(slide, title)
+            top = LAYOUT['content']['top']
+            height = LAYOUT['content']['available_height']
+        else:
+            top = 0.75
+            height = 6.0
+        
+        # Add figure to slide
+        add_figure_to_slide(slide, figure_path, left=0.1, top=top, height=height)
     
-    result = {
-        'local_path': ppt_path,
-        'filename': ppt_filename
+    def add_figure_with_text_slide_func(title, figure_path, text, text_position='bottom'):
+        """Add a slide with figure and text."""
+        create_figure_with_text_slide(
+            prs=prs,
+            title=title,
+            figure_path=figure_path,
+            text=text,
+            text_position=text_position
+        )
+    
+    def add_section_slide_func(title, subtitle=None):
+        """Add a section divider slide."""
+        add_section_slide(prs, title, subtitle)
+    
+    def add_custom_slide(slide_builder_func, *args, **kwargs):
+        """Add a custom slide using a user-provided function."""
+        # Create a blank slide
+        blank_slide_layout = prs.slide_layouts[6]
+        slide = prs.slides.add_slide(blank_slide_layout)
+        
+        # Call the user's slide builder function
+        slide_builder_func(slide, *args, **kwargs)
+    
+    return {
+        'prs': prs,
+        'save_and_upload': save_and_upload,
+        'add_summary_slide': add_summary_slide,
+        'add_figure_slide': add_figure_slide,
+        'add_figure_with_text_slide': add_figure_with_text_slide_func,
+        'add_section_slide': add_section_slide_func,
+        'add_custom_slide': add_custom_slide
     }
+
+def get_credentials(credentials_path: str = None, token_path: str = None):
+    """
+    Get Google API credentials using OAuth2 flow.
     
-    # Upload to Google Drive if requested
-    if upload_to_gdrive:
-        try:
-            gdrive_results = upload_to_google_drive(
-                file_path=ppt_path,
-                folder_id=gdrive_folder_id,
-                credentials_path=gdrive_credentials_path,
-                use_oauth=use_oauth,
-                token_path=token_path
-            )
-            result.update(gdrive_results)
-            logger.info(f"Uploaded to Google Drive: {gdrive_results.get('gdrive_url', 'Unknown URL')}")
-        except Exception as e:
-            logger.error(f"Failed to upload to Google Drive: {e}")
-            result['gdrive_error'] = str(e)
+    Args:
+        credentials_path: Path to credentials.json file. If None, looks in base directory.
+        token_path: Path to token.json file. If None, looks in base directory.
     
-    return result
+    Returns:
+        Google API credentials object
+    """
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError:
+        logger.error(
+            "Google Drive upload requires additional packages. "
+            "Install with: pip install google-api-python-client google-auth google-auth-oauthlib"
+        )
+        raise
+    
+    # Set default paths if not provided
+    if credentials_path is None or token_path is None:
+        # Get the base directory (RCA_automation folder)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if credentials_path is None:
+            credentials_path = os.path.join(base_dir, 'credentials.json')
+        if token_path is None:
+            token_path = os.path.join(base_dir, 'token.json')
+    
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first time.
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not os.path.exists(credentials_path):
+                raise FileNotFoundError(f"Credentials file not found: {credentials_path}")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                credentials_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open(token_path, 'w') as token:
+            token.write(creds.to_json())
+    
+    return creds
+
 
 def upload_to_google_drive(
     file_path: str, 
     folder_id: str = None,
     credentials_path: str = None,
-    use_oauth: bool = False,
     token_path: str = None
 ) -> Dict[str, str]:
     """
-    Upload a file to Google Drive using either service account or OAuth2 flow.
+    Upload a file to Google Drive using OAuth2 credentials.
     
     Args:
         file_path: Path to the file to upload
-        folder_id: Google Drive folder ID to upload to
-        credentials_path: Path to Google Drive credentials
-        use_oauth: Whether to use OAuth2 flow instead of service account
-        token_path: Path to OAuth token file
+        folder_id: Google Drive folder ID to upload to (optional)
+        credentials_path: Path to credentials.json file (optional, defaults to base directory)
+        token_path: Path to token.json file (optional, defaults to base directory)
         
     Returns:
         Dictionary with:
         - 'gdrive_id': Google Drive file ID
         - 'gdrive_url': Google Drive URL
     """
+    if not file_path or not os.path.exists(file_path):
+        logger.error(f"File not found or path is invalid: {file_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
+
     try:
         # Import the necessary libraries only when needed
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
         
-        # Define credentials based on authentication method
-        drive_service = None
-        
-        if use_oauth:
-            # OAuth2 flow for user authentication
-            from google_auth_oauthlib.flow import InstalledAppFlow
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            
-            # At least one of credentials_path or token_path must be provided
-            if credentials_path is None and token_path is None:
-                raise ValueError("For OAuth2 flow, either credentials_path or token_path must be provided")
-            
-            # Handle OAuth token flow
-            creds = None
-            
-            # The file token.json stores the user's access and refresh tokens, and is
-            # created automatically when the authorization flow completes for the first time
-            if token_path and os.path.exists(token_path):
-                creds = Credentials.from_authorized_user_info(
-                    json.load(open(token_path)), SCOPES)
-                
-            # If there are no (valid) credentials available, let the user log in
-            if not creds or not creds.valid:
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                else:
-                    if credentials_path is None:
-                        raise ValueError("Need credentials_path for OAuth2 flow")
-                        
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        credentials_path, SCOPES)
-                    creds = flow.run_local_server(port=0)
-                
-                # Save the credentials for the next run
-                if token_path:
-                    with open(token_path, 'w') as token:
-                        token.write(creds.to_json())
-            
-            drive_service = build('drive', 'v3', credentials=creds)
-            
-        else:
-            # Service account authentication
-            from google.oauth2 import service_account
-            
-            # Credentials path must be provided for service account
-            if credentials_path is None:
-                raise ValueError("credentials_path must be provided for service account authentication")
-                
-            if not os.path.exists(credentials_path):
-                raise FileNotFoundError(f"Credentials file not found: {credentials_path}")
-            
-            # Create credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                credentials_path,
-                scopes=SCOPES
-            )
-            
-            # Build the Drive service
-            drive_service = build('drive', 'v3', credentials=credentials)
-        
-        # Prepare metadata
+        # Get credentials using OAuth2 flow
+        creds = get_credentials(credentials_path=credentials_path, token_path=token_path)
+        if not creds:
+            raise ValueError("Failed to get Google credentials. Cannot upload.")
+
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=creds)
+        file_name = os.path.basename(file_path)
+
+        # Prepare metadata for the file on Google Drive
         file_metadata = {
-            'name': os.path.basename(file_path),
-            'mimeType': 'application/vnd.google-apps.presentation'  # Convert to Google Slides
+            'name': file_name,
+            # Optionally convert to Google Slides format on upload
+            'mimeType': 'application/vnd.google-apps.presentation'
         }
-        
-        # Set parent folder if provided
         if folder_id:
             file_metadata['parents'] = [folder_id]
-        
-        # Prepare file upload
+
+        # Prepare the media for upload
         media = MediaFileUpload(
-            file_path,
-            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            file_path, 
+            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation', 
             resumable=True
         )
-        
-        # Upload file
+
+        # Perform the upload
         file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id,webViewLink'
+            fields='id,webViewLink'  # Request fields needed
         ).execute()
-        
+
+        file_id = file.get('id')
+        web_link = file.get('webViewLink')
+
+        logger.info(f"Successfully uploaded '{file_name}' to Google Drive.")
+        logger.info(f"File ID: {file_id}")
+        logger.info(f"Web Link: {web_link}")
+
         return {
-            'gdrive_id': file.get('id'),
-            'gdrive_url': file.get('webViewLink')
+            'gdrive_id': file_id,
+            'gdrive_url': web_link
         }
-        
+
     except ImportError:
         logger.warning(
             "Google Drive upload requires additional packages. "
@@ -481,11 +718,12 @@ def upload_to_google_drive(
         )
         raise
     except Exception as e:
-        logger.error(f"Error uploading to Google Drive: {e}")
+        logger.error(f"Error uploading file '{file_path}' to Google Drive: {e}")
         raise
 
+
 def main(output_dir='.', upload_to_gdrive=False, gdrive_folder_id=None, 
-        gdrive_credentials_path=None, use_oauth=False, token_path=None):
+        gdrive_credentials_path=None, gdrive_token_path=None):
     """
     Example function demonstrating usage with dummy data.
     
@@ -493,22 +731,21 @@ def main(output_dir='.', upload_to_gdrive=False, gdrive_folder_id=None,
         output_dir: Directory for output files
         upload_to_gdrive: Whether to upload to Google Drive
         gdrive_folder_id: Google Drive folder ID to upload to
-        gdrive_credentials_path: Path to Google Drive credentials
-        use_oauth: Whether to use OAuth2 flow instead of service account 
-        token_path: Path to OAuth token file
+        gdrive_credentials_path: Path to credentials.json file
+        gdrive_token_path: Path to token.json file
     """
     # Create output directory if needed
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create sample data
+    # Create sample data with regions as index
     data = {
-        'region': ['Global', 'North America', 'Europe', 'Asia', 'Latin America'],
         'conversion_rate_pct': [0.12, 0.08, 0.11, 0.13, 0.10],
         'avg_order_value': [75.0, 65.0, 80.0, 85.0, 72.0],
         'bounce_rate_pct': [0.35, 0.45, 0.32, 0.28, 0.34],
         'session_duration': [180, 120, 190, 210, 175]
     }
-    df = pd.DataFrame(data)
+    regions = ['Global', 'North America', 'Europe', 'Asia', 'Latin America']
+    df = pd.DataFrame(data, index=regions)
     
     # Pre-formatted explanation texts
     metrics_text = {
@@ -520,16 +757,16 @@ def main(output_dir='.', upload_to_gdrive=False, gdrive_folder_id=None,
     metric_anomaly_map = {
         'conversion_rate_pct': {
             'anomalous_region': 'North America',
-            'metric_val': df.loc[df['region'] == 'North America', 'conversion_rate_pct'].values[0],
-            'global_val': df.loc[df['region'] == 'Global', 'conversion_rate_pct'].values[0],
+            'metric_val': df.loc['North America', 'conversion_rate_pct'],
+            'global_val': df.loc['Global', 'conversion_rate_pct'],
             'direction': 'lower',
             'magnitude': 33.3,
             'higher_is_better': True
         },
         'avg_order_value': {
             'anomalous_region': 'Europe',
-            'metric_val': df.loc[df['region'] == 'Europe', 'avg_order_value'].values[0],
-            'global_val': df.loc[df['region'] == 'Global', 'avg_order_value'].values[0],
+            'metric_val': df.loc['Europe', 'avg_order_value'],
+            'global_val': df.loc['Global', 'avg_order_value'],
             'direction': 'higher',
             'magnitude': 6.7,
             'higher_is_better': True
@@ -570,9 +807,7 @@ def main(output_dir='.', upload_to_gdrive=False, gdrive_folder_id=None,
         ppt_filename="Metrics_Summary_Example.pptx",
         upload_to_gdrive=upload_to_gdrive,
         gdrive_folder_id=gdrive_folder_id,
-        gdrive_credentials_path=gdrive_credentials_path,
-        use_oauth=use_oauth,
-        token_path=token_path
+        gdrive_credentials_path=gdrive_credentials_path
     )
     
     logger.info(f"Example presentation created: {result['local_path']}")
@@ -594,9 +829,8 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', default='output', help='Directory to save output files')
     parser.add_argument('--upload', action='store_true', help='Upload presentation to Google Drive')
     parser.add_argument('--folder-id', help='Google Drive folder ID to upload to')
-    parser.add_argument('--credentials', help='Path to Google credentials file')
-    parser.add_argument('--oauth', action='store_true', help='Use OAuth2 flow instead of service account')
-    parser.add_argument('--token', help='Path to OAuth token file')
+    parser.add_argument('--credentials', help='Path to credentials.json file')
+    parser.add_argument('--token', help='Path to token.json file')
     
     args = parser.parse_args()
     
@@ -606,6 +840,5 @@ if __name__ == "__main__":
         upload_to_gdrive=args.upload,
         gdrive_folder_id=args.folder_id,
         gdrive_credentials_path=args.credentials,
-        use_oauth=args.oauth,
-        token_path=args.token
+        gdrive_token_path=args.token
     ) 
