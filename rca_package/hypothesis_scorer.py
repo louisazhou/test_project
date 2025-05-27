@@ -51,12 +51,12 @@ FONTS = {
         'family': 'Arial'
     },
     'score_card': {
-        'size': 11,
+        'size': 12,
         'weight': 'normal',
         'family': 'Arial'
     },
     'legend': {
-        'size': 11,
+        'size': 12,
         'weight': 'normal',
         'family': 'Arial'
     }

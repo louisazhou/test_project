@@ -205,8 +205,8 @@ def plot_subregion_bars(
         else:  # Not in top-3
             colors.append(COLORS['default_bar'])  # Gray
     
-    # Create bars (no alpha)
-    bars = ax.bar(range(len(values)), values, width=0.6, color=colors, edgecolor='black', linewidth=0.5)
+    # Create bars
+    bars = ax.bar(range(len(values)), values, width=0.6, color=colors, linewidth=0.5)
     
     # Add value labels on bars
     for i, val in enumerate(values):
@@ -217,17 +217,6 @@ def plot_subregion_bars(
         # Format and add text
         ax.text(i, text_y, value_formatter(val), ha="center", va="bottom", 
                fontweight=FONTS['annotation']['weight'], fontsize=FONTS['annotation']['size'])
-    
-    # Add contribution percentages below bars if available
-    if 'contribution' in df_slice.columns:
-        for i, contrib in enumerate(contributions):
-            # Position text below the bar
-            min_val = min(values) if len(values) > 0 else 0
-            text_y = min_val - (max(values) - min_val) * 0.05
-            
-            # Add contribution percentage
-            ax.text(i, text_y, f"{contrib*100:.0f}%", ha="center", va="top", 
-                   fontsize=FONTS['tick_label']['size'], style='italic', alpha=0.7)
     
     # Customize the plot
     ax.set_xticks(range(len(values)))
@@ -244,14 +233,14 @@ def plot_subregion_bars(
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
     
     # Add color legend if contribution data is available
-    if 'contribution' in df_slice.columns and 'score' in df_slice.columns:
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor=COLORS['metric_negative'], label='Top-3: Negative Contribution'),
-            Patch(facecolor=COLORS['metric_positive'], label='Top-3: Positive Contribution'),
-            Patch(facecolor=COLORS['default_bar'], label='Other Sub-regions')
-        ]
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=FONTS['tick_label']['size'])
+    # if 'contribution' in df_slice.columns and 'score' in df_slice.columns:
+    #     from matplotlib.patches import Patch
+    #     legend_elements = [
+    #         Patch(facecolor=COLORS['metric_negative'], label='Top-3: Negative Contribution'),
+    #         Patch(facecolor=COLORS['metric_positive'], label='Top-3: Positive Contribution'),
+    #         Patch(facecolor=COLORS['default_bar'], label='Other Sub-regions')
+    #     ]
+    #     ax.legend(handles=legend_elements, loc='upper right', fontsize=FONTS['tick_label']['size'])
     
     # Adjust layout
     fig.tight_layout()
