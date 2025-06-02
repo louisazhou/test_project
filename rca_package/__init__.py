@@ -5,14 +5,6 @@ This package provides tools for hypothesis scoring, YAML configuration processin
 and slide generation for root cause analysis.
 """
 
-import logging
-import os
-from typing import Dict, Any, List, Optional
-
-# Configure logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
 # Import key functions from hypothesis_scorer
 from .hypothesis_scorer import (
     score_all_hypotheses,
@@ -54,7 +46,8 @@ from .make_slides import (
     create_scatter_plot,
     get_credentials_local,
     get_credentials_enterprise,
-    upload_to_google_drive
+    upload_to_google_drive,
+    create_metrics_summary_slide
 )
 
 # Import key functions from depth_spotter
@@ -62,7 +55,8 @@ from .depth_spotter import (
     rate_contrib,
     additive_contrib,
     plot_subregion_bars,
-    analyze_region_depth
+    analyze_region_depth,
+    create_synthetic_data
 )
 
 # Define what should be available in "from rca_package import *"
@@ -97,9 +91,6 @@ __all__ = [
     'get_technical_names_for_metrics',
     'get_technical_names_for_hypotheses',
     
-    # High-level functions
-    'run_analysis',
-    
     # Presentation functions
     'SlideLayouts',
     'SlideContent',
@@ -109,10 +100,12 @@ __all__ = [
     'get_credentials_local',
     'get_credentials_enterprise',
     'upload_to_google_drive',
+    'create_metrics_summary_slide',
     
     # Depth analysis functions
     'rate_contrib',
     'additive_contrib',
     'plot_subregion_bars',
-    'analyze_region_depth'
+    'analyze_region_depth',
+    'create_synthetic_data'
 ] 

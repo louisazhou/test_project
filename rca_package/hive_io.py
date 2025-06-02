@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from typing import Optional
 
 # Convert numpy types to Python native types for JSON serialization

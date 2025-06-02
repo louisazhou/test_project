@@ -12,24 +12,20 @@ from pptx.enum.text import PP_ALIGN
 from datetime import datetime
 import pandas as pd
 import numpy as np
-from typing import Optional, Dict, Any, Callable, Union, Tuple, List
+from typing import Optional, Dict, Any, Callable, Tuple, List
 from jinja2 import Template
-import logging
 import re
 import matplotlib.pyplot as plt
-
-# Setup logging
-logger = logging.getLogger(__name__)
 
 
 class SlideContent:
     """Container for slide content with support for figure generation functions."""
     
-    def __init__(self, title: str, text_template: str = None, 
-                 df: pd.DataFrame = None, 
-                 figure_generator: Callable = None,
-                 template_params: Dict = None,
-                 additional_dfs: Dict[str, pd.DataFrame] = None,
+    def __init__(self, title: str, text_template: Optional[str] = None, 
+                 df: Optional[pd.DataFrame] = None, 
+                 figure_generator: Optional[Callable] = None,
+                 template_params: Optional[Dict] = None,
+                 additional_dfs: Optional[Dict[str, pd.DataFrame]] = None,
                  show_figures: bool = True):
         self.title = title
         self.text_template = text_template
@@ -232,7 +228,7 @@ class SlideLayouts:
         return text_box
     
     def _add_table(self, slide, df: pd.DataFrame, left: float, top: float, 
-                   width: float, height: float, highlight_cells: Dict = None):
+                   width: float, height: float, highlight_cells: Optional[Dict] = None):
         """Add DataFrame as table with intelligent column sizing."""
         highlight_cells = highlight_cells or {}
         
@@ -411,7 +407,7 @@ class SlideLayouts:
         return width, height
     
     def add_content_slide(self, content: SlideContent, layout_type: str = 'auto', 
-                         highlight_cells: Dict = None):
+                         highlight_cells: Optional[Dict] = None):
         """Add slide based on content and layout type."""
         title = content.title
         text = content.render_text()  # This now automatically removes markdown tables
@@ -440,8 +436,8 @@ class SlideLayouts:
         
         return self._create_slide(title, text, primary_df, figure_path, layout_type, highlight_cells, all_dfs)
     
-    def _create_slide(self, title: str, text: str, df: pd.DataFrame, 
-                     figure_path: str, layout_type: str, highlight_cells: Dict, all_dfs: List[pd.DataFrame]):
+    def _create_slide(self, title: str, text: str, df: Optional[pd.DataFrame], 
+                     figure_path: Optional[str], layout_type: str, highlight_cells: Optional[Dict], all_dfs: List[pd.DataFrame]):
         """Create slide with specified layout."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
         self._add_title(slide, title)
@@ -550,7 +546,7 @@ class SlideLayouts:
         
         return slide
     
-    def save(self, filename: str = None, output_dir: str = '.'):
+    def save(self, filename: Optional[str] = None, output_dir: str = '.'):
         """Save presentation."""
         os.makedirs(output_dir, exist_ok=True)
         
@@ -567,7 +563,7 @@ class SlideLayouts:
 
 # The decorator 
 def dual_output(console: bool = True, slide: bool = True, 
-               slide_builder: SlideLayouts = None,
+               slide_builder: Optional[SlideLayouts] = None,
                layout_type: str = 'auto',
                show_figures: bool = True):
     """
@@ -644,7 +640,7 @@ def create_scatter_plot(save_path: str, df: pd.DataFrame, **params):
 
 
 # Authentication functions for Google Drive (simplified)
-def get_credentials_local(credentials_path: str = None, token_path: str = None):
+def get_credentials_local(credentials_path: Optional[str] = None, token_path: Optional[str] = None):
     """Get credentials using local files (development/personal use)."""
     try:
         from google.auth.transport.requests import Request
@@ -677,7 +673,7 @@ def get_credentials_local(credentials_path: str = None, token_path: str = None):
         raise ImportError("Install: pip install google-auth google-auth-oauthlib")
 
 
-def get_credentials_enterprise(credentials_dict: dict, proxy_info=None, ca_certs: str = None):
+def get_credentials_enterprise(credentials_dict: dict, proxy_info=None, ca_certs: Optional[str] = None):
     """Get credentials for enterprise environments with proxy support."""
     try:
         from oauth2client.service_account import ServiceAccountCredentials
@@ -697,7 +693,7 @@ def get_credentials_enterprise(credentials_dict: dict, proxy_info=None, ca_certs
         raise ImportError("Install: pip install oauth2client httplib2")
 
 
-def upload_to_google_drive(file_path: str, user_email: str = None, **auth_kwargs):
+def upload_to_google_drive(file_path: str, user_email: Optional[str] = None, **auth_kwargs):
     """Upload a file to Google Drive with smart authentication detection."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")

@@ -28,9 +28,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Dict, Any, List
-from jinja2 import Template
-import json
 
 # Auto-detect working directory and adjust paths accordingly
 current_dir = Path.cwd()
