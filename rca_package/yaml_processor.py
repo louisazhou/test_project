@@ -127,31 +127,19 @@ def get_metric_hypothesis_map(config: Dict[str, Any]) -> Dict[str, List[str]]:
 
 def get_template(config: Dict[str, Any], metric_name: str, hypo_name: str, template_type: str = 'template') -> str:
     """
-    Get the template for a specific metric-hypothesis pair.
+    Get a template for a specific metric-hypothesis pair.
     
     Args:
         config: Loaded configuration dictionary
-        metric_name: Display name of the metric
-        hypo_name: Display name of the hypothesis
-        template_type: Type of template to get ('template' or 'summary_template')
+        metric_name: Name of the metric (display name)
+        hypo_name: Name of the hypothesis (display name)
+        template_type: Type of template to retrieve ('template' or 'summary_template')
         
     Returns:
-        Template string for the metric-hypothesis pair
+        String containing the template text
     """
     hypo_info = get_hypothesis_info(config, metric_name, hypo_name)
     return hypo_info.get(template_type, '')
-
-def get_scoring_method(config: Dict[str, Any]) -> str:
-    """
-    Get the global scoring method from the configuration.
-    
-    Args:
-        config: Loaded configuration dictionary
-        
-    Returns:
-        String indicating the scoring method ('standard' or 'sign_based')
-    """
-    return config.get('scoring_method', 'standard')
 
 def run_analysis_from_config(
     df: pd.DataFrame,
@@ -226,10 +214,7 @@ def run_analysis_from_config(
             logger.warning(f"No hypotheses found for metric {metric_name}. Skipping.")
             continue
         
-        # Get scoring method from config
-        scoring_method = metric_info.get('scoring_method', 'standard')
-        
-        # Process this metric with its relevant hypotheses
+        # Process this metric with its relevant hypotheses (always use sign-based scoring)
         logger.debug(f"Scoring {len(hypo_names)} hypotheses for metric {metric_name}")
         try:
             hypo_results = score_all_hypotheses(
@@ -237,8 +222,7 @@ def run_analysis_from_config(
                 metric_col=metric_name,
                 hypo_cols=hypo_names,
                 metric_anomaly_info=metric_anomaly_map[metric_name],
-                expected_directions=expected_directions,
-                scoring_method=scoring_method
+                expected_directions=expected_directions
             )
             
             # Store results
@@ -278,10 +262,6 @@ def run_analysis_from_config(
         # Skip if no hypotheses for this metric
         if not hypo_names:
             continue
-            
-        # Get scoring method from config
-        metric_info = get_metric_info(config, metric_name)
-        scoring_method = metric_info.get('scoring_method', 'standard')
         
         # 1. Scatter plots for each hypothesis
         for hypo_name in hypo_names:
@@ -310,8 +290,8 @@ def run_analysis_from_config(
                 
                 plt.tight_layout()
                 
-                # Save with descriptive filename
-                filename = f"{save_path}/scatter_{metric_name}_{hypo_name}_{scoring_method}.png"
+                # Save with descriptive filename (always sign_based)
+                filename = f"{save_path}/scatter_{metric_name}_{hypo_name}_sign_based.png"
                 plt.savefig(filename, dpi=120, bbox_inches='tight')
                 plt.close(fig)
                 logger.debug(f"Created scatter plot: {filename}")
@@ -329,55 +309,13 @@ def run_analysis_from_config(
                 figsize=(15, 10)
             )
             
-            # Save with descriptive filename
-            filename = f"{save_path}/scatter_grid_{metric_name}_{scoring_method}.png"
+            # Save with descriptive filename (always sign_based)
+            filename = f"{save_path}/scatter_grid_{metric_name}_sign_based.png"
             scatter_grid.savefig(filename, dpi=120, bbox_inches='tight')
             plt.close(scatter_grid)
             logger.debug(f"Created scatter grid: {filename}")
         except Exception as e:
             logger.error(f"Error creating scatter grid for {metric_name}: {str(e)}")
-        
-        # 3. Multi-hypothesis bar plot
-        try:
-            # Get ranked hypotheses
-            ranked_hypos = get_ranked_hypotheses(hypo_results)
-            
-            # Create visualization
-            fig = create_multi_hypothesis_plot(
-                df=df,
-                metric_col=metric_name,
-                hypo_cols=hypo_names,
-                metric_anomaly_info=metric_anomaly_map[metric_name],
-                hypo_results=hypo_results,
-                ordered_hypos=ranked_hypos
-            )
-            
-            # Get best hypothesis
-            best_hypo_name, best_hypo_result = ranked_hypos[0]
-            
-            # Get template from config
-            template = get_template(config, metric_name, best_hypo_name)
-            
-            # Add template text and score formula
-            add_template_text(
-                fig, 
-                template, 
-                best_hypo_name,
-                best_hypo_result, 
-                metric_anomaly_map[metric_name],
-                metric_name
-            )
-            add_score_formula(fig, is_sign_based=(scoring_method == 'sign_based'))
-            
-            # Save with descriptive filename
-            filename = f"{save_path}/bar_{metric_name}_{scoring_method}.png"
-            fig.savefig(filename, dpi=120, bbox_inches='tight')
-            plt.close(fig)
-            logger.debug(f"Created multi-hypothesis visualization: {filename}")
-        except Exception as e:
-            logger.error(f"Error creating multi-hypothesis plot for {metric_name}: {str(e)}")
-    
-    logger.info("Analysis completed successfully")
 
 def get_technical_name(config: Dict[str, Any], display_name: str, col_type: str = None) -> str:
     """

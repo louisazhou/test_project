@@ -255,7 +255,7 @@ def plot_bars(
     ax: plt.Axes, 
     df: pd.DataFrame, 
     metric_anomaly_info: Dict[str, Any], 
-    hypo_result: Dict[str, Any] = None, 
+    hypo_result: Optional[Dict[str, Any]] = None, 
     plot_type: str = 'metric',
     highlight_region: bool = True
 ) -> plt.Axes:
@@ -351,26 +351,12 @@ def plot_bars(
     if plot_type == 'hypothesis' and hypo_result and hypo_result['scores']:
         scores = hypo_result['scores']
         
-        # Determine if this is a sign-based score
-        is_sign_based = scores.get('is_sign_based', False)
-        
-        # Prepare components based on score type
-        if is_sign_based:
-            # For sign-based scoring
-            components = [
-                ('final_score', scores['final_score']),
-                ('sign_agreement', scores['sign_agreement']),
-                ('explained_ratio', scores['explained_ratio'])
-            ]
-        else:
-            # For standard scoring
-            components = [
-                ('final_score', scores['final_score']),
-                ('direction_alignment', scores['direction_alignment']),
-                ('consistency', scores['consistency']),
-                ('hypo_z_score_norm', scores['hypo_z_score_norm']),
-                ('explained_ratio', scores['explained_ratio'])
-            ]
+        # Always use sign-based scoring
+        components = [
+            ('final_score', scores['final_score']),
+            ('sign_agreement', scores['sign_agreement']),
+            ('explained_ratio', scores['explained_ratio'])
+        ]
         
         # Calculate positions - place cards near the top of the axes
         card_width = 0.11
@@ -390,11 +376,7 @@ def plot_bars(
             if comp_name == 'final_score':
                 color = COLORS['score_color']
             else:
-                # Select color based on scoring method
-                if is_sign_based:
-                    color = COLORS['sign_score_components'].get(comp_name, COLORS['default_bar'])
-                else:
-                    color = COLORS['score_components'].get(comp_name, COLORS['default_bar'])
+                color = COLORS['sign_score_components'].get(comp_name, COLORS['default_bar'])
             
             # Add background rectangle
             rect = plt.Rectangle(
@@ -430,7 +412,7 @@ def create_scatter_grid(
         metric_col: Name of the metric column
         hypo_cols: List of hypothesis column names
         metric_anomaly_info: Info about the metric anomaly
-        expected_directions: Dictionary mapping hypothesis names to expected directions
+        expected_directions: Dictionary mapping hypothesis names to their expected directions
         figsize: Figure size as (width, height) tuple
     
     Returns:
@@ -476,7 +458,7 @@ def create_multi_hypothesis_plot(
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
     hypo_results: Dict[str, Dict[str, Any]],
-    ordered_hypos: List[Tuple[str, Dict[str, Any]]] = None,
+    ordered_hypos: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
     figsize: Tuple[int, int] = (15, 10)
 ) -> plt.Figure:
     """
@@ -612,11 +594,10 @@ def score_all_hypotheses(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    expected_directions: Dict[str, str],
-    scoring_method: str = 'standard'
+    expected_directions: Dict[str, str]
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Score all hypotheses for a given metric.
+    Score all hypotheses for a given metric using sign-based scoring.
     
     Args:
         df: DataFrame containing metric and hypothesis columns
@@ -624,13 +605,12 @@ def score_all_hypotheses(
         hypo_cols: List of hypothesis column names
         metric_anomaly_info: Info about the metric anomaly
         expected_directions: Dictionary mapping hypothesis names to their expected directions
-        scoring_method: Which scoring method to use ('standard' or 'sign_based')
     
     Returns:
         Dictionary mapping hypothesis names to their score results
     """
-    # Choose scoring function based on method
-    score_func = sign_based_score_hypothesis if scoring_method == 'sign_based' else score_hypothesis
+    # Always use sign-based scoring
+    score_func = sign_based_score_hypothesis
     
     # Score all hypotheses
     hypo_results = {}
@@ -650,11 +630,9 @@ def score_all_hypotheses(
 def process_metrics(
     df: pd.DataFrame,
     metric_cols: List[str],
-    hypo_cols: List[str],
     metric_anomaly_map: Dict[str, Dict[str, Any]],
     expected_directions: Dict[str, str],
-    scoring_method: str = 'standard',
-    metric_hypothesis_map: Dict[str, List[str]] = None
+    metric_hypothesis_map: Dict[str, List[str]]
 ) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """
     Process multiple metrics and their hypotheses, storing results for each.
@@ -662,12 +640,9 @@ def process_metrics(
     Args:
         df: DataFrame containing all metrics and hypotheses
         metric_cols: List of metric column names to process
-        hypo_cols: List of hypothesis column names to evaluate (used only if metric_hypothesis_map is None)
         metric_anomaly_map: Dictionary mapping metric names to their anomaly info
         expected_directions: Dictionary mapping hypothesis names to their expected directions
-        scoring_method: Which scoring method to use ('standard' or 'sign_based')
-        metric_hypothesis_map: Optional mapping from metrics to their relevant hypotheses
-                               If provided, only the metrics in the map will be processed
+        metric_hypothesis_map: Mapping from metrics to their relevant hypotheses
     
     Returns:
         Dictionary mapping metric names to dictionaries of hypothesis results
@@ -684,16 +659,12 @@ def process_metrics(
         # Get anomaly info for this metric
         metric_anomaly_info = metric_anomaly_map[metric_col]
         
-        # Determine which hypotheses to evaluate for this metric
-        if metric_hypothesis_map is not None:
-            # Skip metrics not in the mapping
-            if metric_col not in metric_hypothesis_map or not metric_hypothesis_map[metric_col]:
-                continue
-            # Use metric-specific hypotheses from the map
-            current_hypo_cols = metric_hypothesis_map[metric_col]
-        else:
-            # Use all provided hypotheses if no mapping is provided
-            current_hypo_cols = hypo_cols
+        # Skip metrics not in the mapping
+        if metric_col not in metric_hypothesis_map or not metric_hypothesis_map[metric_col]:
+            continue
+        
+        # Use metric-specific hypotheses from the map
+        current_hypo_cols = metric_hypothesis_map[metric_col]
         
         # Score all hypotheses for this metric
         hypo_results = score_all_hypotheses(
@@ -701,8 +672,7 @@ def process_metrics(
             metric_col, 
             current_hypo_cols, 
             metric_anomaly_info, 
-            expected_directions,
-            scoring_method
+            expected_directions
         )
         
         # Store results for this metric
@@ -907,31 +877,19 @@ def plot_scatter(
     return ax
 
 
-def add_score_formula(fig: plt.Figure, is_sign_based: bool = False) -> None:
+def add_score_formula(fig: plt.Figure) -> None:
     """
-    Add a simple score formula at the bottom of the figure.
+    Add sign-based score formula at the bottom of the figure.
     
     Args:
         fig: The figure to add the formula to
-        is_sign_based: Whether to show the sign-based formula or the original formula
     """
-    # Define component weights and colors based on scoring method
-    if is_sign_based:
-        # Sign-based scoring components (60% sign agreement + 40% explained ratio)
-        components = [
-            ('Score', None, COLORS['score_color']),
-            ('Sign Agreement', 0.6, COLORS['sign_score_components']['sign_agreement']),
-            ('Explained Ratio', 0.4, COLORS['sign_score_components']['explained_ratio'])
-        ]
-    else:
-        # Original scoring components
-        components = [
-            ('Score', None, COLORS['score_color']),
-            ('Direction Alignment', 0.3, COLORS['score_components']['direction_alignment']),
-            ('Consistency', 0.3, COLORS['score_components']['consistency']),
-            ('Hypo Z-Score', 0.2, COLORS['score_components']['hypo_z_score_norm']),
-            ('Explained Ratio', 0.2, COLORS['score_components']['explained_ratio'])
-        ]
+    # Sign-based scoring components (60% sign agreement + 40% explained ratio)
+    components = [
+        ('Score', None, COLORS['score_color']),
+        ('Sign Agreement', 0.6, COLORS['sign_score_components']['sign_agreement']),
+        ('Explained Ratio', 0.4, COLORS['sign_score_components']['explained_ratio'])
+    ]
     
     # Calculate spacing - position in the reserved bottom area
     formula_y = 0.07  # Position at 7% from bottom (middle of the bottom 15%)
@@ -1114,84 +1072,72 @@ def build_structured_hypothesis_results(
     metric_col: str,
     metric_anomaly_info: Dict[str, Any],
     hypo_results: Dict[str, Dict[str, Any]],
-    config: Dict[str, Any] = None,
-    get_template_func: callable = None,
-    best_hypo_name: str = None
+    config: Optional[Dict[str, Any]] = None,
+    get_template_func: Optional[callable] = None,
+    best_hypo_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Build structured hypothesis results in the final format needed for presentations.
+    Build structured hypothesis results ready for slide creation.
     
-    Args:
-        metric_col: Name of the metric column
-        metric_anomaly_info: Dictionary containing anomaly information
-        hypo_results: Dictionary mapping hypothesis names to their score results
-        config: Configuration dictionary (optional, for display names and templates)
-        get_display_name_func: Function to get display names (optional)
-        get_template_func: Function to get templates (optional)
-        best_hypo_name: Name of the best hypothesis (if None, will be determined from scores)
-    
-    Returns:
-        Dictionary containing structured hypothesis results
+    Returns results in format suitable for SlideContent, with slides ready to create.
     """
-    # Determine best hypothesis if not provided
-    if best_hypo_name is None:
+    if not best_hypo_name:
         best_hypo_name = max(
             hypo_results.keys(),
             key=lambda h: hypo_results[h]['scores']['final_score']
         )
     
-    # Build structured hypotheses
+    best_hypo_result = hypo_results[best_hypo_name]
+    
+    # Get template and render it immediately
+    template = ""
+    summary_template = ""
+    if config and get_template_func:
+        template = get_template_func(config, metric_col, best_hypo_name, 'template') or ""
+        summary_template = get_template_func(config, metric_col, best_hypo_name, 'summary_template') or ""
+    
+    # Render templates with actual values
+    rendered_text = render_template_text(template, best_hypo_name, best_hypo_result, metric_anomaly_info, metric_col) if template else f"Analysis: {metric_col} shows performance gap. Best hypothesis: {best_hypo_name} (Score: {best_hypo_result['scores']['final_score']:.2f})"
+    
+    rendered_summary = render_template_text(summary_template, best_hypo_name, best_hypo_result, metric_anomaly_info, metric_col) if summary_template else ""
+    
     hypotheses = {}
     for hypo_name, hypo_result in hypo_results.items():
-        # Since we now use display names as column headers, these are already display names
-        metric_display_name = metric_col
-        hypo_display_name = hypo_name
-        
-        # Get templates
-        template = ""
-        summary_template = ""
-        if get_template_func and config:
-            template = get_template_func(config, metric_col, hypo_name, 'template')
-            summary_template = get_template_func(config, metric_col, hypo_name, 'summary_template')
-        
-        # Prepare parameters for templates
-        parameters = {
-            'region': metric_anomaly_info['anomalous_region'],
-            'metric_name': metric_display_name,
-            'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),
-            'metric_dir': metric_anomaly_info['direction'],
-            'hypo_name': hypo_display_name,
-            'hypo_dir': hypo_result['direction'],
-            'hypo_delta': hypo_result['magnitude'],
-            'ref_hypo_val': hypo_result['ref_hypo_val'],
-            'score': hypo_result['scores']['final_score']
-        }
-        
-        # Store hypothesis info in structured format
         hypotheses[hypo_name] = {
             "hypothesis": hypo_name,
-            "name": hypo_display_name,
-            "type": "directional",
             "selected": hypo_name == best_hypo_name,
-            "template": template,
-            "summary_template": summary_template,
-            "parameters": parameters,
             "payload": hypo_result
         }
     
-    return hypotheses
+    return {
+        "metric": metric_col,
+        "best_hypothesis": best_hypo_name,
+        "hypotheses": hypotheses,
+        "summary_text": rendered_summary,
+        # Ready-to-use slide content - no manual creation needed
+        "slides": {
+            "hypothesis": {
+                "title": f"{metric_col} - Hypothesis Analysis",
+                "text": rendered_text,
+                "layout_type": "text_figure"
+            },
+            "scatter": {
+                "title": f"{metric_col} - Correlation Analysis", 
+                "text": "",  # No text for scatter plots
+                "layout_type": "text_figure"
+            }
+        }
+    }
 
 
 def process_metrics_with_structured_results(
     df: pd.DataFrame,
     metric_cols: List[str],
-    hypo_cols: List[str],
     metric_anomaly_map: Dict[str, Dict[str, Any]],
     expected_directions: Dict[str, str],
-    scoring_method: str = 'standard',
-    metric_hypothesis_map: Dict[str, List[str]] = None,
-    config: Dict[str, Any] = None,
-    get_template_func: callable = None
+    metric_hypothesis_map: Dict[str, List[str]],
+    config: Optional[Dict[str, Any]] = None,
+    get_template_func: Optional[callable] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Process multiple metrics and return structured results ready for presentations.
@@ -1199,13 +1145,10 @@ def process_metrics_with_structured_results(
     Args:
         df: DataFrame containing all metrics and hypotheses
         metric_cols: List of metric column names to process
-        hypo_cols: List of hypothesis column names to evaluate (used only if metric_hypothesis_map is None)
         metric_anomaly_map: Dictionary mapping metric names to their anomaly info
         expected_directions: Dictionary mapping hypothesis names to their expected directions
-        scoring_method: Which scoring method to use ('standard' or 'sign_based')
-        metric_hypothesis_map: Optional mapping from metrics to their relevant hypotheses
+        metric_hypothesis_map: Mapping from metrics to their relevant hypotheses
         config: Configuration dictionary (optional, for display names and templates)
-        get_display_name_func: Function to get display names (optional)
         get_template_func: Function to get templates (optional)
     
     Returns:
@@ -1215,10 +1158,8 @@ def process_metrics_with_structured_results(
     raw_results = process_metrics(
         df=df,
         metric_cols=metric_cols,
-        hypo_cols=hypo_cols,
         metric_anomaly_map=metric_anomaly_map,
         expected_directions=expected_directions,
-        scoring_method=scoring_method,
         metric_hypothesis_map=metric_hypothesis_map
     )
     
@@ -1242,15 +1183,12 @@ def process_metrics_with_structured_results(
         )
         
         # Create the complete metric result structure
-        structured_results[metric_col] = {
-            **metric_anomaly_map[metric_col],  # Include all fields from metric_anomaly_info
-            "hypotheses": structured_hypotheses
-        }
+        structured_results[metric_col] = structured_hypotheses
     
     return structured_results
 
 
-def main(save_path='.', results_path=None):
+def main(save_path: str = '.', results_path: Optional[str] = None):
     """
     Test the hypothesis scoring and visualization with multiple hypotheses.
     
@@ -1342,14 +1280,16 @@ def main(save_path='.', results_path=None):
     # 3. Demonstrate processing of multiple metrics
     print("\n===== MULTIPLE METRICS PROCESSING =====")
     # Process for all metrics using sign-based scoring
-    scoring_method = 'sign_based'
     all_results = process_metrics(
         df=df,
         metric_cols=metric_cols,
-        hypo_cols=hypo_cols,
         metric_anomaly_map=metric_anomaly_map,
         expected_directions=expected_directions,
-        scoring_method=scoring_method
+        metric_hypothesis_map={
+            'conversion_rate_pct': hypo_cols,
+            'avg_order_value': hypo_cols,
+            'customer_satisfaction': hypo_cols
+        }
     )
     
     # Save to DataFrame for analysis
@@ -1403,10 +1343,10 @@ def main(save_path='.', results_path=None):
         metric_anomaly_map[metric_col],
         metric_col
     )
-    add_score_formula(fig, is_sign_based=(scoring_method == 'sign_based'))
+    add_score_formula(fig)
     
     # Save with descriptive filename
-    filename = f"{save_path}/bar_{metric_col}_{scoring_method}.png"
+    filename = f"{save_path}/bar_{metric_col}_sign_based.png"
     fig.savefig(filename, dpi=120, bbox_inches='tight')
     plt.close(fig)
     print(f"Created multi-metric visualization: {filename}")

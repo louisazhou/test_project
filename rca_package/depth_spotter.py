@@ -9,7 +9,7 @@ the specific contributors to performance differences.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional
 import logging
 from jinja2 import Template
 
@@ -152,8 +152,7 @@ def plot_subregion_bars(
     df_slice: pd.DataFrame,
     metric_col: str,
     title: str,
-    config: Dict[str, Any] = None,
-    row_value: float = None,
+    row_value: Optional[float] = None,
     figsize: Tuple[int, int] = (12, 6)
 ) -> plt.Figure:
     """
@@ -163,7 +162,6 @@ def plot_subregion_bars(
         df_slice: DataFrame containing the slice-level data with contribution analysis
         metric_col: Name of the metric column to plot
         title: Chart title
-        config: Configuration dictionary (optional, for display names)
         row_value: Rest-of-world value to show as reference line (optional)
         figsize: Figure size as (width, height) tuple
     
@@ -175,7 +173,13 @@ def plot_subregion_bars(
     
     # Get values and labels
     values = df_slice[metric_col].values
-    labels = df_slice['slice'].values
+    
+    # Handle case where 'slice' is either a column or the index
+    if 'slice' in df_slice.columns:
+        labels = df_slice['slice'].values
+    else:
+        # 'slice' is the index
+        labels = df_slice.index.values
     
     # Get contribution and score values for color-coding
     contributions = df_slice['contribution'].values if 'contribution' in df_slice.columns else np.zeros(len(values))
@@ -231,16 +235,6 @@ def plot_subregion_bars(
     
     # Add grid for better readability
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
-    
-    # Add color legend if contribution data is available
-    # if 'contribution' in df_slice.columns and 'score' in df_slice.columns:
-    #     from matplotlib.patches import Patch
-    #     legend_elements = [
-    #         Patch(facecolor=COLORS['metric_negative'], label='Top-3: Negative Contribution'),
-    #         Patch(facecolor=COLORS['metric_positive'], label='Top-3: Positive Contribution'),
-    #         Patch(facecolor=COLORS['default_bar'], label='Other Sub-regions')
-    #     ]
-    #     ax.legend(handles=legend_elements, loc='upper right', fontsize=FONTS['tick_label']['size'])
     
     # Adjust layout
     fig.tight_layout()
@@ -307,7 +301,6 @@ def analyze_region_depth(
                 )
                 
                 region_rate = contrib_df[numerator_col].sum() / contrib_df[denominator_col].sum()
-                scoring_method = 'depth_rate'
                 # For rate metrics, we plot the calculated rate using the proper metric name
                 plot_metric_col = metric_name
                 
@@ -322,7 +315,6 @@ def analyze_region_depth(
                 contrib_df, delta = additive_contrib(region_df, row_total, metric_col)
                 
                 region_total = contrib_df[metric_col].sum()
-                scoring_method = 'depth_additive'
                 # For additive metrics, we plot the original metric column
                 plot_metric_col = metric_col
                 
@@ -337,12 +329,15 @@ def analyze_region_depth(
             summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score']
             summary_df = sorted_contrib[summary_cols].head(3).copy()
             
+            # Set slice as index for cleaner table display
+            summary_df = summary_df.set_index('slice')
+            
             # Prepare template parameters
             template_params = {
                 'metric_name': display_name,
                 'anomalous_region': anomalous_region,
                 'delta': delta,
-                'summary_table': summary_df.to_markdown(index=False, floatfmt='.3f')
+                'summary_table': summary_df.to_markdown(index=True, floatfmt='.3f')
             }
             
             # Add metric-specific parameters
@@ -357,25 +352,36 @@ def analyze_region_depth(
                     'region_total': region_total
                 })
             
-            # Create structured result similar to hypothesis scorer format
+            # Render template immediately with actual values
+            if template:
+                template_obj = Template(template)
+                rendered_text = template_obj.render(**template_params)
+            else:
+                rendered_text = f"{display_name} analysis for {anomalous_region}"
+            
+            # Create structured result with slide-ready content
             depth_hypothesis_name = f"{metric_name}_in_subregion"
             results[depth_hypothesis_name] = {
                 "hypothesis": depth_hypothesis_name,
                 "name": display_name,
                 "type": "depth_spotter",
-                "selected": True,  # Always selected since it's the depth analysis
-                "template": template,
-                "parameters": template_params,
+                "selected": True,
+                "rendered_text": rendered_text,
+                "summary_df": summary_df,  # Only the relevant table data
                 "payload": {
                     'contrib_df': contrib_df,
                     'delta': delta,
-                    'region_df': contrib_df if metric_type == 'rate' else region_df,
                     'metric_col': plot_metric_col,
                     'row_value': row_rate if metric_type == 'rate' else row_total / len(row_df) if len(row_df) > 0 else None
+                },
+                # Ready-to-use slide content
+                "slide": {
+                    "title": f"{display_name} - Depth Analysis",
+                    "text": rendered_text,
+                    "table_df": summary_df,  # Clean table with slice as index
+                    "layout_type": "text_table_figure"
                 }
             }
-            
-
                 
         except KeyError as e:
             logger.error(f"Missing required configuration for metric '{metric_name}': {e}")
@@ -383,9 +389,6 @@ def analyze_region_depth(
             logger.error(f"Error analyzing metric '{metric_name}': {e}")
     
     return results
-
-
-
 
 
 def create_synthetic_data() -> pd.DataFrame:
@@ -434,13 +437,12 @@ def create_synthetic_data() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def main(output_dir: str = '.', save_figures: bool = True):
+def main(output_dir: str = '.'):
     """
     Test the depth analysis functionality with synthetic data.
     
     Args:
         output_dir: Directory to save output files
-        save_figures: Whether to save generated figures
     """
     print("Starting Depth Analysis Testing...")
     
@@ -499,12 +501,8 @@ def main(output_dir: str = '.', save_figures: bool = True):
         print(f"Type: {result['type']}")
         
         # Render template
-        if result['template']:
-            template = Template(result['template'])
-            rendered_text = template.render(**result['parameters'])
-            print(f"Template Text:\n{rendered_text}")
-    
-
+        if result['rendered_text']:
+            print(f"Template Text:\n{result['rendered_text']}")
     
     # Additional analysis: Show data summary
     print(f"\n{'='*60}")
@@ -528,9 +526,7 @@ def main(output_dir: str = '.', save_figures: bool = True):
     print(regional_summary[['visits', 'conversion_rate', 'revenue', 'avg_csat']].round(3))
     
     print(f"\nDepth analysis completed successfully!")
-    
-    if save_figures:
-        print(f"Figures saved to: {output_dir}")
+    print(f"Results would be saved to: {output_dir}")
     
     return results
 
@@ -547,12 +543,8 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run depth analysis testing')
     parser.add_argument('--output-dir', default='output', help='Directory to save output files')
-    parser.add_argument('--no-save', action='store_true', help='Do not save figures to disk')
     
     args = parser.parse_args()
     
     # Run with provided arguments
-    main(
-        output_dir=args.output_dir,
-        save_figures=not args.no_save
-    ) 
+    main(output_dir=args.output_dir) 

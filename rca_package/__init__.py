@@ -38,7 +38,6 @@ from .yaml_processor import (
     get_expected_directions,
     get_metric_hypothesis_map,
     get_template,
-    get_scoring_method,
     get_technical_name,
     get_display_name_from_technical,
     convert_dataframe_to_display_names,
@@ -48,13 +47,14 @@ from .yaml_processor import (
 
 # Import key functions from make_slides
 from .make_slides import (
-    create_metrics_summary_slide,
-    add_figure_to_slide,
-    add_text_to_slide,
-    create_slide_with_title,
-    create_figure_with_text_slide,
-    create_flexible_presentation,
-    add_section_slide
+    SlideLayouts,
+    SlideContent,
+    dual_output,
+    create_bar_chart,
+    create_scatter_plot,
+    get_credentials_local,
+    get_credentials_enterprise,
+    upload_to_google_drive
 )
 
 # Import key functions from depth_spotter
@@ -91,7 +91,6 @@ __all__ = [
     'get_expected_directions',
     'get_metric_hypothesis_map',
     'get_template',
-    'get_scoring_method',
     'get_technical_name',
     'get_display_name_from_technical',
     'convert_dataframe_to_display_names',
@@ -102,13 +101,14 @@ __all__ = [
     'run_analysis',
     
     # Presentation functions
-    'create_metrics_summary_slide',
-    'add_figure_to_slide',
-    'add_text_to_slide',
-    'create_slide_with_title',
-    'create_figure_with_text_slide',
-    'create_flexible_presentation',
-    'add_section_slide',
+    'SlideLayouts',
+    'SlideContent',
+    'dual_output',
+    'create_bar_chart',
+    'create_scatter_plot',
+    'get_credentials_local',
+    'get_credentials_enterprise',
+    'upload_to_google_drive',
     
     # Depth analysis functions
     'rate_contrib',

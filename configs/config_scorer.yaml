@@ -2,9 +2,6 @@
 # This file contains the configuration for metrics, hypotheses, and templates
 
 # =================== CONFIGURATION GUIDE ===================
-# scoring_method:                # Method to use for hypothesis scoring:
-#                                    # - 'standard': Uses correlation, direction, and z-score
-#                                    # - 'sign_based': Uses sign agreement, better for small sample sizes
 # metrics:
 #   <metric_display_name>:           # Human-readable name of the metric (used internally)
 #     technical_name: <tech_name>    # Technical column name in the DataFrame
@@ -30,8 +27,6 @@
 # - score: Final score of the hypothesis
 
 # ============================================================
-
-scoring_method: "sign_based"  # Global scoring method for all metrics
 
 metrics:
   "Conversion Rate":

@@ -26,7 +26,6 @@ def detect_snapshot_anomaly_for_column(df: pd.DataFrame, ref_index: str,
             - global_val: Reference value
             - direction: 'higher' or 'lower'
             - magnitude: Float representing the percentage difference
-            - higher_is_better: Boolean indicating if higher values are better
             Returns empty dict if no anomaly is detected.
     """
     values = df[column].dropna()
@@ -100,6 +99,5 @@ def detect_snapshot_anomaly_for_column(df: pd.DataFrame, ref_index: str,
         'metric_val': current_value,
         'global_val': ref_value,
         'direction': direction,
-        'magnitude': magnitude,
-        'higher_is_better': higher_is_better,
+        'magnitude': magnitude
     }
