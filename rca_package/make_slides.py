@@ -175,28 +175,18 @@ class SlideContent:
             self._generated_figure_path = None
     
     def render_console(self) -> str:
-        """Render content for console display"""
+        """Render content for console display - shows only what would be in the slide"""
         output = []
-        output.append(f"# {self.title}")
-        output.append("")
         
+        # Only show rendered text content (what's in the template)
         if self.text_template:
             output.append(self.render_text())
-            output.append("")
         
-        if self.df is not None:
-            output.append("## Data:")
-            output.append(self.df.to_markdown())
-            output.append("")
-        
-        # Show figure info
-        if self.figure_generator:
-            if self.show_figures:
-                pass
-            else:
-                figure_path = self.get_figure_path()
-                if figure_path:
-                    output.append(f"\nFigure saved to: {figure_path}")
+        # Show figure info only if not showing figures inline
+        if self.figure_generator and not self.show_figures:
+            figure_path = self.get_figure_path()
+            if figure_path:
+                output.append(f"Figure saved to: {figure_path}")
         
         return '\n'.join(output)
 

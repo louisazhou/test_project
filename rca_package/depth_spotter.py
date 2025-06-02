@@ -228,6 +228,16 @@ def plot_subregion_bars(
     ax.set_ylabel(ylabel, fontsize=FONTS['axis_label']['size'])
     ax.set_title(title, fontsize=FONTS['title']['size'], fontweight=FONTS['title']['weight'])
     
+    # Format y-axis to match value annotations
+    if is_percent:
+        # Format y-axis as percentages
+        from matplotlib.ticker import FuncFormatter
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{x*100:.0f}%"))
+    else:
+        # Format y-axis as regular numbers with commas
+        from matplotlib.ticker import FuncFormatter
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{x:,.0f}"))
+    
     # Add reference line if row_value is provided
     if row_value is not None:
         ax.axhline(row_value, color=COLORS['global_line'], linestyle='--', linewidth=2, alpha=0.7, label='Rest-of-World')
@@ -244,18 +254,18 @@ def plot_subregion_bars(
 
 def analyze_region_depth(
     sub_df: pd.DataFrame,
-    anomalous_region: str,
     config: Dict[str, Any],
+    metric_anomaly_map: Dict[str, Dict[str, Any]],
     slice_col: str = 'slice',
     region_col: str = 'region'
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Perform depth analysis for an anomalous region across multiple metrics.
+    Perform depth analysis for anomalous regions across multiple metrics.
     
     Args:
         sub_df: DataFrame containing sub-region/slice level data
-        anomalous_region: Name of the region to analyze
         config: Configuration dictionary
+        metric_anomaly_map: Dictionary mapping metric names to their anomaly information
         slice_col: Name of the column containing slice identifiers
         region_col: Name of the column containing region identifiers
     
@@ -266,29 +276,40 @@ def analyze_region_depth(
     
     results = {}
     
-    # Filter data for the anomalous region and rest-of-world
-    region_df = sub_df[sub_df[region_col] == anomalous_region].copy()
-    row_df = sub_df[sub_df[region_col] != anomalous_region].copy()
-    
-    if region_df.empty:
-        logger.warning(f"No data found for region: {anomalous_region}")
-        return results
-    
-    if row_df.empty:
-        logger.warning("No rest-of-world data found for comparison")
-        return results
-    
     # Analyze each metric
-    for metric_name, config in metrics_config.items():
+    for metric_name, metric_config in metrics_config.items():
+        # Check if this metric has an anomaly detected
+        if metric_name not in metric_anomaly_map:
+            logger.warning(f"No anomaly information found for metric: {metric_name}")
+            continue
+            
+        # Get the anomalous region for this specific metric
+        anomalous_region = metric_anomaly_map[metric_name].get('anomalous_region')
+        if not anomalous_region:
+            logger.warning(f"No anomalous region specified for metric: {metric_name}")
+            continue
+        
         try:
-            metric_type = config['type']
-            display_name = config.get('name', metric_name)
-            template = config.get('template', '')
+            metric_type = metric_config['type']
+            display_name = metric_config.get('name', metric_name)
+            template = metric_config.get('template', '')
+            
+            # Filter data for this metric's anomalous region and rest-of-world
+            region_df = sub_df[sub_df[region_col] == anomalous_region].copy()
+            row_df = sub_df[sub_df[region_col] != anomalous_region].copy()
+            
+            if region_df.empty:
+                logger.warning(f"No data found for region: {anomalous_region} (metric: {metric_name})")
+                continue
+            
+            if row_df.empty:
+                logger.warning(f"No rest-of-world data found for comparison (metric: {metric_name})")
+                continue
             
             if metric_type == 'rate':
                 # Rate metric analysis
-                numerator_col = config['numerator_col']
-                denominator_col = config['denominator_col']
+                numerator_col = metric_config['numerator_col']
+                denominator_col = metric_config['denominator_col']
                 
                 # Calculate rest-of-world totals
                 row_numerator = row_df[numerator_col].sum()
@@ -306,7 +327,7 @@ def analyze_region_depth(
                 
             elif metric_type == 'additive':
                 # Additive metric analysis
-                metric_col = config['metric_col']
+                metric_col = metric_config['metric_col']
                 
                 # Calculate rest-of-world total
                 row_total = row_df[metric_col].sum()
@@ -332,12 +353,31 @@ def analyze_region_depth(
             # Set slice as index for cleaner table display
             summary_df = summary_df.set_index('slice')
             
+            # Create a formatted version for display (keep original for payload)
+            display_table = summary_df.copy()
+            
+            # Format the display table columns consistently
+            # Format contribution and coverage as percentages
+            display_table['contribution'] = display_table['contribution'].apply(lambda x: f"{x:.1%}")
+            display_table['coverage'] = display_table['coverage'].apply(lambda x: f"{x:.1%}")
+            
+            # Format score to 2 decimal places
+            display_table['score'] = display_table['score'].apply(lambda x: f"{x:.2f}")
+            
+            # Format the metric column based on type
+            if metric_type == 'rate':
+                # Rate metrics should be shown as percentages
+                display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{x:.1%}")
+            else:
+                # Additive metrics as integers with commas
+                display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
+            
             # Prepare template parameters
             template_params = {
                 'metric_name': display_name,
                 'anomalous_region': anomalous_region,
                 'delta': delta,
-                'summary_table': summary_df.to_markdown(index=True, floatfmt='.3f')
+                'summary_table': display_table.to_markdown(index=True)  # Use formatted table for display
             }
             
             # Add metric-specific parameters
@@ -370,6 +410,7 @@ def analyze_region_depth(
                 "summary_df": summary_df,  # Only the relevant table data
                 "payload": {
                     'contrib_df': contrib_df,
+                    'summary_df': summary_df,  # Raw numeric data for plotting
                     'delta': delta,
                     'metric_col': plot_metric_col,
                     'row_value': row_rate if metric_type == 'rate' else row_total / len(row_df) if len(row_df) > 0 else None
@@ -378,7 +419,7 @@ def analyze_region_depth(
                 "slide": {
                     "title": f"{display_name} - Depth Analysis",
                     "text": rendered_text,
-                    "table_df": summary_df,  # Clean table with slice as index
+                    "table_df": display_table,  # Formatted table for slide display
                     "layout_type": "text_table_figure"
                 }
             }
@@ -484,10 +525,17 @@ def main(output_dir: str = '.'):
     
     print(f"\nPerforming depth analysis for: {anomalous_region}")
     
+    # Create test metric_anomaly_map for the test
+    test_metric_anomaly_map = {
+        'conversion_rate_pct': {'anomalous_region': anomalous_region},
+        'revenue': {'anomalous_region': anomalous_region}, 
+        'customer_satisfaction': {'anomalous_region': anomalous_region}
+    }
+    
     results = analyze_region_depth(
         sub_df=sub_df,
-        anomalous_region=anomalous_region,
-        config=test_config
+        config=test_config,
+        metric_anomaly_map=test_metric_anomaly_map
     )
     
     # Print structured results

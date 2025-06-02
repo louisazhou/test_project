@@ -202,12 +202,11 @@ for config_info in configs:
         if config_info['name'] == 'depth':
             # Get synthetic sub-regional data for depth analysis
             sub_df = create_synthetic_data()
-            anomalous_region = "North America"
             
             depth_results = analyze_region_depth(
                 sub_df=sub_df,
-                anomalous_region=anomalous_region,
-                config=config_info['config']
+                config=config_info['config'],
+                metric_anomaly_map=metric_anomaly_map
             )
             
             # Store depth results by matching to metrics
@@ -289,9 +288,11 @@ def create_depth_chart(df: pd.DataFrame, **params):
     metric_col = params['metric_col']
     title = params['title']
     row_value = params.get('row_value')
+    summary_df = params.get('summary_df')  # Get the raw numeric data for plotting
     
+    # Use the raw summary_df for plotting (has numeric contribution values)
     fig = plot_subregion_bars(
-        df_slice=df,
+        df_slice=summary_df,
         metric_col=metric_col,
         title=title,
         row_value=row_value,
@@ -423,8 +424,9 @@ for metric_name in all_metric_results:
                     figure_generator=create_depth_chart,
                     template_params={
                         'metric_col': config_result['payload']['metric_col'],
-                        'title': f"{config_result['name']} by North America sub-regions",
-                        'row_value': config_result['payload'].get('row_value')
+                        'title': f"{config_result['name']} by sub-regions",
+                        'row_value': config_result['payload'].get('row_value'),
+                        'summary_df': config_result['payload'].get('summary_df')
                     }
                 )
             
