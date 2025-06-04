@@ -78,3 +78,9 @@ metrics:
         expected_direction: "opposite"
         template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global benchmark.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Higher bounce rates often indicate poor user experience or content mismatch, explaining the {{ metric_dir }} satisfaction scores." 
         summary_template: "TBA"
+
+  # Test your architecture: metric defined here but only processed by depth analysis
+  "Revenue":
+    technical_name: "revenue"
+    higher_is_better: true
+    # No hypotheses - should only be processed by depth analysis

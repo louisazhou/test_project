@@ -62,109 +62,6 @@ FONTS = {
     }
 }
 
-
-def score_hypothesis(
-    df: pd.DataFrame,
-    metric_anomaly_info: Dict[str, Any],
-    expected_direction: str = 'same'
-) -> Dict[str, Any]:
-    """
-    Calculate how well a hypothesis explains a metric anomaly.
-    
-    Args:
-        df: DataFrame with two columns - metric and hypothesis values indexed by region
-        metric_anomaly_info: Dictionary containing anomaly information
-        expected_direction: Expected relationship between metric and hypothesis ('same' or 'opposite')
-    
-    Returns:
-        Dictionary containing hypothesis evaluation and scoring results
-    """
-    # Extract metric and hypothesis columns
-    metric_col, hypo_col = df.columns
-    
-    # Extract key info
-    anomalous_region = metric_anomaly_info['anomalous_region']
-    metric_val = metric_anomaly_info['metric_val']
-    ref_metric_val = metric_anomaly_info['global_val']
-    
-    # Calculate deltas
-    metric_delta = (metric_val - ref_metric_val) / ref_metric_val if ref_metric_val > 0 else 0
-    
-    # Get hypothesis values
-    hypo_val = df.loc[anomalous_region, hypo_col]
-    ref_hypo_val = df.loc["Global", hypo_col]
-    hypo_delta = (hypo_val - ref_hypo_val) / ref_hypo_val if ref_hypo_val > 0 else 0
-    
-    # Calculate score components
-    
-    # 1. Raw Consistency (Correlation)
-    raw_consistency = df[metric_col].corr(df[hypo_col])
-    raw_consistency = 0.0 if np.isnan(raw_consistency) else raw_consistency
-    
-    # 2. Direction Alignment (30%)
-    direction_alignment = 0.0
-    consistency_sign = np.sign(raw_consistency)
-    
-    if (expected_direction == 'opposite' and consistency_sign < 0) or \
-       (expected_direction == 'same' and consistency_sign > 0):
-        direction_alignment = 1.0
-    
-    # 3. Consistency (30%)
-    consistency = abs(raw_consistency)
-    
-    # 4. Hypothesis Z-score (20%)
-    hypo_std = df[hypo_col].std()
-    hypo_z_score = (hypo_val - ref_hypo_val) / hypo_std if hypo_std > 0 else 0
-    abs_hypo_z = abs(hypo_z_score)
-    
-    if abs_hypo_z > 3:
-        hypo_z_score_norm = 1.0
-    elif abs_hypo_z > 2:
-        hypo_z_score_norm = 0.7
-    elif abs_hypo_z > 1:
-        hypo_z_score_norm = 0.6
-    else:
-        hypo_z_score_norm = 0.3
-    
-    # 5. Explained Ratio (20%)
-    explained_ratio = min(abs(hypo_delta) / abs(metric_delta), 1.0) if abs(metric_delta) > 1e-6 else 0
-    
-    # Calculate final score
-    final_score = (
-        0.3 * direction_alignment +
-        0.3 * consistency +
-        0.2 * hypo_z_score_norm +
-        0.2 * explained_ratio
-    )
-    
-    # Format magnitude based on column name
-    is_percent_column = '_pct' in hypo_col or '%' in hypo_col
-    if is_percent_column:
-        # For percentage columns, use absolute difference (in percentage points)
-        magnitude_value = abs(hypo_val - ref_hypo_val) * 100
-        magnitude_unit = 'pp'
-    else:
-        # For non-percentage columns, use relative percentage difference
-        magnitude_value = abs(hypo_delta) * 100
-        magnitude_unit = '%'
-    
-    # Results
-    return {
-        'hypo_val': hypo_val,
-        'direction': 'higher' if hypo_delta > 0 else 'lower',
-        'ref_hypo_val': ref_hypo_val,
-        'magnitude': f"{magnitude_value:.1f}{magnitude_unit}",
-        'scores': {
-            'direction_alignment': direction_alignment,
-            'consistency': consistency,
-            'hypo_z_score_norm': hypo_z_score_norm,
-            'explained_ratio': explained_ratio,
-            'final_score': final_score,
-            'explains': final_score > 0.5
-        }
-    }
-
-
 def sign_based_score_hypothesis(
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
@@ -245,8 +142,7 @@ def sign_based_score_hypothesis(
             'explained_ratio': explained_ratio,
             'p_value': p_binom.pvalue,
             'final_score': final_score,
-            'explains': final_score > 0.5,
-            'is_sign_based': True  # Flag to indicate this is a sign-based score
+            'explains': final_score > 0.5
         }
     }
 
@@ -286,7 +182,7 @@ def plot_bars(
     display_name = col_to_plot
     
     # Format y-axis as percentage if needed
-    is_percent = ('pct' in col_to_plot or '%' in col_to_plot or 
+    is_percent = ('pct' in col_to_plot.lower() or '%' in col_to_plot or 'rate' in col_to_plot.lower() or
                  (hypo_result and 'pp' in hypo_result['magnitude']))
     
     # Extract regions and values (excluding Global)
@@ -401,54 +297,53 @@ def create_scatter_grid(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    expected_directions: Dict[str, str],
-    figsize: Tuple[int, int] = (15, 10)
+    expected_directions: Dict[str, str]
 ) -> plt.Figure:
     """
-    Create a grid of scatter plots for all metric-hypothesis pairs.
-    
-    Args:
-        df: DataFrame containing metric and all hypothesis values
-        metric_col: Name of the metric column
-        hypo_cols: List of hypothesis column names
-        metric_anomaly_info: Info about the metric anomaly
-        expected_directions: Dictionary mapping hypothesis names to their expected directions
-        figsize: Figure size as (width, height) tuple
-    
-    Returns:
-        Matplotlib figure with scatter plots arranged in a grid
+    Create a grid of scatter plots with natural aspect ratios.
+    Uses the original readable figsize approach.
     """
-    # Calculate grid dimensions
     n_plots = len(hypo_cols)
-    n_cols = min(3, n_plots)  # Maximum 3 columns
-    n_rows = (n_plots + n_cols - 1) // n_cols  # Ceiling division
-    
-    # Create figure
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-    
-    # Flatten axes array for easier indexing if it's a multi-dimensional array
-    if n_plots > 1:
-        axes = axes.flatten()
+    if n_plots == 0:
+        fig = plt.figure() 
+        plt.close(fig)
+        return fig
+
+    n_cols = min(3, n_plots)
+    n_rows = (n_plots + n_cols - 1) // n_cols
+
+    # Original figsize calculations that were readable but adjusted for slide fitting
+    if n_rows == 1:
+        # Single row - make narrower to fit slides better
+        figsize = (10, 5)
+    elif n_rows == 2:
+        # Two rows - make narrower
+        figsize = (12, 6)
     else:
-        axes = [axes]  # Wrap in list if only one axis
-    
-    # Create scatter plots
+        # Three or more rows - keep height reasonable
+        figsize = (12, n_rows * 2.5)
+
+    # Create figure and subplots
+    fig, axes = plt.subplots(
+        n_rows, n_cols, 
+        figsize=figsize, 
+        squeeze=False
+    )
+    axes = axes.flatten()
+
     for i, hypo_col in enumerate(hypo_cols):
-        if i < len(axes):  # Safety check
-            # Create a temporary dataframe with just the metric and this hypothesis
-            temp_df = df[[metric_col, hypo_col]]
-            
-            # Get expected direction
-            expected_direction = expected_directions.get(hypo_col, 'same')
-            
-            # Create scatter plot
-            plot_scatter(axes[i], temp_df, metric_anomaly_info, expected_direction)
-    
-    # Hide any unused subplots
+        ax = axes[i]
+        temp_df = df[[metric_col, hypo_col]]
+        expected_direction = expected_directions.get(hypo_col, 'same')
+        plot_scatter(ax, temp_df, metric_anomaly_info, expected_direction)
+
+    # Hide unused subplots
     for i in range(n_plots, len(axes)):
         axes[i].set_visible(False)
     
-    plt.tight_layout()
+    # Use tight_layout
+    plt.tight_layout(pad=1.0)
+    
     return fig
 
 
@@ -457,25 +352,27 @@ def create_multi_hypothesis_plot(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    hypo_results: Dict[str, Dict[str, Any]],
+    hypo_results: Optional[Dict[str, Dict[str, Any]]] = None,
     ordered_hypos: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
-    figsize: Tuple[int, int] = (15, 10)
+    figsize: Tuple[int, int] = (18, 13),
+    include_score_formula: bool = True
 ) -> plt.Figure:
     """
-    Create a figure with multiple hypothesis plots in a flexible grid layout.
+    Create a multi-panel figure showing hypothesis analysis with bar charts.
+    Automatically includes score formula unless disabled.
     
     Args:
-        df: DataFrame containing metric and hypothesis columns
+        df: DataFrame containing the data
         metric_col: Name of the metric column
         hypo_cols: List of hypothesis column names
-        metric_anomaly_info: Info about the metric anomaly
-        hypo_results: Dictionary mapping hypothesis names to their score results
-        ordered_hypos: Pre-sorted list of (hypo_name, hypo_result) tuples in descending score order
-                      If None, will be calculated from hypo_results
-        figsize: Figure size as (width, height) tuple
+        metric_anomaly_info: Anomaly information for the metric
+        hypo_results: Results from hypothesis scoring (optional)
+        ordered_hypos: Ordered list of hypotheses by score (optional)
+        figsize: Figure size as (width, height)
+        include_score_formula: Whether to add score formula to the figure (default: True)
         
     Returns:
-        Matplotlib figure with all plots arranged in a grid
+        matplotlib Figure object
     """
     # Create an empty figure
     fig = plt.figure(figsize=figsize)
@@ -485,22 +382,9 @@ def create_multi_hypothesis_plot(
     top_margin = 0.80  # Reserve top 20% for explanatory text
     bottom_margin = 0.15  # Reserve bottom 15% for formula
     
-    # Determine the best hypothesis and sort others (if not provided)
-    if ordered_hypos is None:
-        # Calculate best hypothesis
-        best_hypo = max(
-            [(name, results) for name, results in hypo_results.items()],
-            key=lambda x: x[1]['scores']['final_score']
-        )
-        best_hypo_name, best_hypo_result = best_hypo
-        
-        # Sort other hypotheses by score (descending)
-        other_hypos = [(h, r) for h, r in hypo_results.items() if h != best_hypo_name]
-        other_hypos.sort(key=lambda x: x[1]['scores']['final_score'], reverse=True)
-    else:
-        # Use provided ordered list
-        best_hypo_name, best_hypo_result = ordered_hypos[0]
-        other_hypos = ordered_hypos[1:]
+    # Determine the best hypothesis and sort others
+    best_hypo_name, best_hypo_result = ordered_hypos[0]
+    other_hypos = ordered_hypos[1:]
     
     # Calculate grid dimensions based on number of hypotheses
     num_other_hypos = len(other_hypos)
@@ -585,6 +469,10 @@ def create_multi_hypothesis_plot(
             # Since we now use display names as column headers, hypo_name is already the display name
             hypo_display_name = hypo_name
             ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=FONTS['title']['size'])
+    
+    # Add score formula if included
+    if include_score_formula:
+        add_score_formula(fig)
     
     return fig
 
@@ -719,9 +607,6 @@ def save_results_to_dataframe(all_results: Dict[str, Dict[str, Dict[str, Any]]])
             # Extract scores
             scores = result['scores']
             
-            # Determine if sign-based scoring was used
-            is_sign_based = scores.get('is_sign_based', False)
-            
             # Create record with common fields
             record = {
                 'metric': metric_name,
@@ -732,24 +617,15 @@ def save_results_to_dataframe(all_results: Dict[str, Dict[str, Dict[str, Any]]])
                 'direction': result['direction'],
                 'ref_hypo_val': result['ref_hypo_val'],
                 'hypo_val': result['hypo_val'],
-                'scoring_method': 'sign_based' if is_sign_based else 'standard'
+                'scoring_method': 'sign_based' 
             }
-            
-            # Add specific score components based on scoring method
-            if is_sign_based:
-                record.update({
+              
+            record.update({
                     'sign_agreement': scores['sign_agreement'],
                     'explained_ratio': scores['explained_ratio'],
                     'p_value': scores['p_value']
                 })
-            else:
-                record.update({
-                    'direction_alignment': scores['direction_alignment'],
-                    'consistency': scores['consistency'],
-                    'hypo_z_score_norm': scores['hypo_z_score_norm'],
-                    'explained_ratio': scores['explained_ratio']
-                })
-            
+              
             # Add record to list
             records.append(record)
     
@@ -821,22 +697,24 @@ def plot_scatter(
     y = df[hypo_col].values
     scatter = ax.scatter(x, y, c=colors, s=sizes, alpha=0.7, edgecolors='black', linewidths=1)
     
-    # Annotate each point with region name
+    # Annotate each point with region name, but only when data point < 7
     for i, region in enumerate(regions):
-        # Position the text with slight offset to avoid overlap with the point
-        offset_x = 0.0
-        offset_y = 0.002 * (max(y) - min(y))
-        
-        # Add region name as annotation
-        ax.annotate(
-            region,
-            (x[i], y[i]),
-            xytext=(offset_x, offset_y),
-            textcoords='offset points',
-            fontsize=FONTS['tick_label']['size'],
-            ha='center', 
-            va='bottom'
-        )
+        # Only annotate if either x or y value is less than 7
+        if x[i] < 7 or y[i] < 7:
+            # Position the text with slight offset to avoid overlap with the point
+            offset_x = 0.0
+            offset_y = 0.002 * (max(y) - min(y))
+            
+            # Add region name as annotation
+            ax.annotate(
+                region,
+                (x[i], y[i]),
+                xytext=(offset_x, offset_y),
+                textcoords='offset points',
+                fontsize=FONTS['tick_label']['size'],
+                ha='center', 
+                va='bottom'
+            )
     
     # Draw trendline
     z = np.polyfit(x, y, 1)
@@ -868,11 +746,18 @@ def plot_scatter(
     ax.set_xlabel(metric_display_name, fontsize=FONTS['axis_label']['size'])
     ax.set_ylabel(hypo_display_name, fontsize=FONTS['axis_label']['size'])
     
+    # Format axes as percentages if needed
+    metric_is_percent = ('pct' in metric_col.lower() or '%' in metric_col or 'rate' in metric_col.lower())
+    hypo_is_percent = ('pct' in hypo_col.lower() or '%' in hypo_col or 'rate' in hypo_col.lower())
+    
+    if metric_is_percent:
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x*100:.0f}%'))
+    
+    if hypo_is_percent:
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x*100:.0f}%'))
+    
     # Add grid
     ax.grid(True, linestyle='--', alpha=0.3)
-    
-    # Set title
-    # ax.set_title(f"Correlation between {metric_col} and {hypo_col}", fontsize=12)
     
     return ax
 
@@ -1068,124 +953,154 @@ def add_template_text(
     )
 
 
-def build_structured_hypothesis_results(
-    metric_col: str,
-    metric_anomaly_info: Dict[str, Any],
-    hypo_results: Dict[str, Dict[str, Any]],
-    config: Optional[Dict[str, Any]] = None,
-    get_template_func: Optional[callable] = None,
-    best_hypo_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Build structured hypothesis results ready for slide creation.
-    
-    Returns results in format suitable for SlideContent, with slides ready to create.
-    """
-    if not best_hypo_name:
-        best_hypo_name = max(
-            hypo_results.keys(),
-            key=lambda h: hypo_results[h]['scores']['final_score']
-        )
-    
-    best_hypo_result = hypo_results[best_hypo_name]
-    
-    # Get template and render it immediately
-    template = ""
-    summary_template = ""
-    if config and get_template_func:
-        template = get_template_func(config, metric_col, best_hypo_name, 'template') or ""
-        summary_template = get_template_func(config, metric_col, best_hypo_name, 'summary_template') or ""
-    
-    # Render templates with actual values
-    rendered_text = render_template_text(template, best_hypo_name, best_hypo_result, metric_anomaly_info, metric_col) if template else f"Analysis: {metric_col} shows performance gap. Best hypothesis: {best_hypo_name} (Score: {best_hypo_result['scores']['final_score']:.2f})"
-    
-    rendered_summary = render_template_text(summary_template, best_hypo_name, best_hypo_result, metric_anomaly_info, metric_col) if summary_template else ""
-    
-    hypotheses = {}
-    for hypo_name, hypo_result in hypo_results.items():
-        hypotheses[hypo_name] = {
-            "hypothesis": hypo_name,
-            "selected": hypo_name == best_hypo_name,
-            "payload": hypo_result
-        }
-    
-    return {
-        "metric": metric_col,
-        "best_hypothesis": best_hypo_name,
-        "hypotheses": hypotheses,
-        "summary_text": rendered_summary,
-        # Ready-to-use slide content - no manual creation needed
-        "slides": {
-            "hypothesis": {
-                "title": f"{metric_col} - Hypothesis Analysis",
-                "text": rendered_text,
-                "layout_type": "text_figure"
-            },
-            "scatter": {
-                "title": f"{metric_col} - Correlation Analysis", 
-                "text": "",  # No text for scatter plots
-                "layout_type": "text_figure"
-            }
-        }
-    }
-
-
-def process_metrics_with_structured_results(
-    df: pd.DataFrame,
-    metric_cols: List[str],
-    metric_anomaly_map: Dict[str, Dict[str, Any]],
-    expected_directions: Dict[str, str],
-    metric_hypothesis_map: Dict[str, List[str]],
-    config: Optional[Dict[str, Any]] = None,
-    get_template_func: Optional[callable] = None
+def score_hypotheses_for_metrics(
+    regional_df: pd.DataFrame,
+    anomaly_map: Dict[str, Dict[str, Any]],
+    config: Dict[str, Any],
+    region_col: str = 'region'
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Process multiple metrics and return structured results ready for presentations.
+    Score hypotheses for multiple metrics and return results in unified format directly.
     
     Args:
-        df: DataFrame containing all metrics and hypotheses
-        metric_cols: List of metric column names to process
-        metric_anomaly_map: Dictionary mapping metric names to their anomaly info
-        expected_directions: Dictionary mapping hypothesis names to their expected directions
-        metric_hypothesis_map: Mapping from metrics to their relevant hypotheses
-        config: Configuration dictionary (optional, for display names and templates)
-        get_template_func: Function to get templates (optional)
+        regional_df: DataFrame with regional data
+        anomaly_map: Dictionary mapping metric names to anomaly information
+        config: Full configuration dictionary
+        region_col: Name of the region column
     
     Returns:
-        Dictionary mapping metric names to structured results including hypotheses
+        Dictionary in unified format: {metric_name: {'slides': {'scorer': slide_data}}}
     """
-    # First get the raw scoring results
-    raw_results = process_metrics(
-        df=df,
-        metric_cols=metric_cols,
-        metric_anomaly_map=metric_anomaly_map,
-        expected_directions=expected_directions,
-        metric_hypothesis_map=metric_hypothesis_map
-    )
+    metrics_config = config.get('metrics', {})
+    unified_results = {}
     
-    # Build structured results for each metric
-    structured_results = {}
-    for metric_col, hypo_results in raw_results.items():
-        # Get the best hypothesis
-        best_hypo_name = max(
-            hypo_results.keys(),
-            key=lambda h: hypo_results[h]['scores']['final_score']
-        )
-        
-        # Build structured hypotheses
-        structured_hypotheses = build_structured_hypothesis_results(
-            metric_col=metric_col,
-            metric_anomaly_info=metric_anomaly_map[metric_col],
-            hypo_results=hypo_results,
-            config=config,
-            get_template_func=get_template_func,
-            best_hypo_name=best_hypo_name
-        )
-        
-        # Create the complete metric result structure
-        structured_results[metric_col] = structured_hypotheses
+    for metric_name, metric_config in metrics_config.items():
+        # Skip metrics without hypotheses
+        if 'hypotheses' not in metric_config:
+            continue
+            
+        # Skip metrics not in anomaly map
+        if metric_name not in anomaly_map:
+            continue
+            
+        try:
+            # Get anomaly information
+            anomaly_info = anomaly_map[metric_name]
+            anomalous_region = anomaly_info.get('anomalous_region')
+            
+            if not anomalous_region:
+                continue
+            
+            # Get hypotheses for this metric
+            hypothesis_names = list(metric_config['hypotheses'].keys())
+            
+            # Get expected directions from config
+            expected_directions = {}
+            for hypo_name, hypo_config in metric_config['hypotheses'].items():
+                expected_directions[hypo_name] = hypo_config.get('expected_direction', 'same')
+            
+            # Score all hypotheses using existing function
+            hypothesis_results = score_all_hypotheses(
+                df=regional_df,
+                metric_col=metric_name,
+                hypo_cols=hypothesis_names,
+                metric_anomaly_info=anomaly_info,
+                expected_directions=expected_directions
+            )
+            
+            if not hypothesis_results:
+                continue
+            
+            # Get ranked hypotheses using existing function
+            ranked_hypotheses = get_ranked_hypotheses(hypothesis_results)
+            best_hypo_name, best_hypo_result = ranked_hypotheses[0]
+            
+            template = metric_config['hypotheses'][best_hypo_name].get('template', '')
+            
+            # Prepare template parameters for SlideContent rendering (only template variables!)
+            template_params = {
+                'region': anomaly_info['anomalous_region'],
+                'metric_name': metric_name,
+                'metric_deviation': anomaly_info.get('magnitude', '0%'),
+                'metric_dir': anomaly_info['direction'],
+                'hypo_name': best_hypo_name,
+                'hypo_dir': best_hypo_result['direction'],
+                'hypo_delta': best_hypo_result['magnitude'],
+                'ref_hypo_val': best_hypo_result['ref_hypo_val'],
+                'score': best_hypo_result['scores']['final_score'],
+                'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
+            }
+            
+            # Store functions directly in figure_generators (much simpler!)
+            figure_generators = [
+                {
+                    "function": create_multi_hypothesis_plot,
+                    "title_suffix": "",
+                    "params": {
+                        'df': regional_df,
+                        'metric_col': metric_name,
+                        'hypo_cols': hypothesis_names,
+                        'metric_anomaly_info': anomaly_info,
+                        'hypo_results': hypothesis_results,
+                        'ordered_hypos': ranked_hypotheses
+                    }
+                },
+                {
+                    "function": create_scatter_grid, 
+                    "title_suffix": " (Part 2)",
+                    "params": {
+                        'df': regional_df,
+                        'metric_col': metric_name,
+                        'hypo_cols': hypothesis_names,
+                        'metric_anomaly_info': anomaly_info,
+                        'expected_directions': expected_directions
+                    }
+                }
+            ]
+            
+            # Generate summary text
+            summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
+            if summary_template:
+                # Use the same parameters as the main template
+                summary_text = render_template_text(
+                    template=summary_template,
+                    best_hypo_name=best_hypo_name,
+                    best_hypo_result=best_hypo_result,
+                    metric_anomaly_info=anomaly_info,
+                    metric_col=metric_name
+                )
+            else:
+                summary_text = ""
+            
+            # Create slide data in unified format
+            analysis_type = 'scorer'
+            unified_results[metric_name] = {
+                'slides': {
+                    analysis_type: {
+                        'summary': {
+                            'summary_text': summary_text
+                        },
+                        'payload': {
+                            'best_hypothesis': best_hypo_result,
+                            'all_results': hypothesis_results
+                        },
+                        'slide_info': {
+                            'title': f"{metric_name} - Root Cause",
+                            'template_text': template,
+                            'template_params': template_params,
+                            'figure_generators': figure_generators,
+                            'dfs': {},
+                            'layout_type': "text_figure"
+                        }
+                    }
+                }
+            }
+            
+        except Exception as e:
+            print(f"Error processing metric '{metric_name}': {e}")
+            continue
     
-    return structured_results
+    return unified_results
 
 
 def main(save_path: str = '.', results_path: Optional[str] = None):
@@ -1267,8 +1182,7 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
         metric_col=metric_col,
         hypo_cols=hypo_cols,
         metric_anomaly_info=metric_anomaly_map[metric_col],
-        expected_directions=expected_directions,
-        figsize=(15, 10)
+        expected_directions=expected_directions
     )
     
     # Save with descriptive filename
@@ -1324,7 +1238,8 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
         hypo_cols=hypo_cols,
         metric_anomaly_info=metric_anomaly_map[metric_col],
         hypo_results=hypo_results,
-        ordered_hypos=ranked_hypos  # Use pre-sorted list
+        ordered_hypos=ranked_hypos,  # Use pre-sorted list
+        include_score_formula=True
     )
     
     # Use the template with Jinja2 double-brace syntax

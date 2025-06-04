@@ -53,9 +53,10 @@ def rate_contrib(
     df_slice: pd.DataFrame, 
     row_numerator: float, 
     row_denominator: float,
-    visits_col: str = 'visits',
-    conversions_col: str = 'conversions',
-    metric_name: str = 'conversion_rate_pct'
+    denominator_col: str,
+    numerator_col: str,
+    metric_name: str,
+    higher_is_better: bool = True
 ) -> Tuple[pd.DataFrame, float, float]:
     """
     Calculate contribution analysis for rate metrics (e.g., conversion rate).
@@ -64,9 +65,10 @@ def rate_contrib(
         df_slice: DataFrame containing slice-level data for the anomalous region
         row_numerator: Total numerator from rest-of-world (e.g., total conversions)
         row_denominator: Total denominator from rest-of-world (e.g., total visits)
-        visits_col: Name of the visits/denominator column
-        conversions_col: Name of the conversions/numerator column
+        denominator_col: Name of the denominator column (e.g., visits, sessions)
+        numerator_col: Name of the numerator column (e.g., conversions, orders)
         metric_name: Name of the metric (for the calculated rate column)
+        higher_is_better: Whether higher values of this metric are better
     
     Returns:
         Tuple of (enhanced_df, delta, row_rate) where:
@@ -80,16 +82,38 @@ def rate_contrib(
     row_rate = row_numerator / row_denominator if row_denominator > 0 else 0
     
     # Calculate expected conversions if each slice performed at ROW rate
-    df['expected'] = df[visits_col] * row_rate
+    df['expected'] = df[denominator_col] * row_rate
     
     # Calculate total delta
-    delta = df[conversions_col].sum() - df['expected'].sum()
+    delta = df[numerator_col].sum() - df['expected'].sum()
     
     # Calculate coverage (share of total visits within the region)
-    df['coverage'] = df[visits_col] / df[visits_col].sum()
+    df['coverage'] = df[denominator_col] / df[denominator_col].sum()
     
-    # Calculate contribution to the gap
-    df['contribution'] = (df[conversions_col] - df['expected']) / delta if delta != 0 else 0
+    # Calculate intuitive contribution: positive = helpful, negative = harmful
+    raw_contribution = (df[numerator_col] - df['expected']) / delta if delta != 0 else 0
+    
+    # Adjust sign based on context for intuitive interpretation
+    if higher_is_better:
+        # For metrics where higher is better (conversion rate, satisfaction)
+        if delta < 0:  # Region underperforming
+            # Positive raw contribution = harmful (making gap worse)
+            # Negative raw contribution = helpful (reducing gap)
+            df['contribution'] = -raw_contribution  # Flip sign for intuitive interpretation
+        else:  # Region overperforming  
+            # Positive raw contribution = helpful (making region better)
+            # Negative raw contribution = harmful (reducing advantage)
+            df['contribution'] = raw_contribution  # Keep original sign
+    else:
+        # For metrics where lower is better (error rate, bounce rate)
+        if delta > 0:  # Region underperforming (higher than desired)
+            # Positive raw contribution = harmful (making gap worse)
+            # Negative raw contribution = helpful (reducing gap)
+            df['contribution'] = -raw_contribution  # Flip sign for intuitive interpretation
+        else:  # Region overperforming (lower than others)
+            # Positive raw contribution = helpful (making region better)
+            # Negative raw contribution = harmful (reducing advantage)
+            df['contribution'] = raw_contribution  # Keep original sign
     
     # Calculate heuristic score: sqrt(|contribution| + max(|contribution| - coverage, 0) / coverage)
     # Floor coverage at 1% to avoid division by zero
@@ -100,7 +124,7 @@ def rate_contrib(
     )
     
     # Add actual rate using the proper metric name
-    df[metric_name] = df[conversions_col] / df[visits_col]
+    df[metric_name] = df[numerator_col] / df[denominator_col]
     
     return df, delta, row_rate
 
@@ -108,7 +132,8 @@ def rate_contrib(
 def additive_contrib(
     df_slice: pd.DataFrame, 
     row_total: float,
-    metric_col: str
+    metric_col: str,
+    higher_is_better: bool = True
 ) -> Tuple[pd.DataFrame, float]:
     """
     Calculate contribution analysis for additive metrics (e.g., revenue, orders).
@@ -117,6 +142,7 @@ def additive_contrib(
         df_slice: DataFrame containing slice-level data for the anomalous region
         row_total: Total metric value from rest-of-world
         metric_col: Name of the metric column to analyze
+        higher_is_better: Whether higher values of this metric are better
     
     Returns:
         Tuple of (enhanced_df, delta) where:
@@ -128,14 +154,36 @@ def additive_contrib(
     # Calculate total delta
     delta = df[metric_col].sum() - row_total
     
-    # Calculate coverage (share of total metric within the region)
+    # Calculate coverage (share of total metric within the region) 
     df['coverage'] = df[metric_col] / df[metric_col].sum()
     
     # Calculate expected value based on proportional allocation
     df['expected'] = df['coverage'] * row_total
     
-    # Calculate contribution to the gap
-    df['contribution'] = (df[metric_col] - df['expected']) / delta if delta != 0 else 0
+    # Calculate intuitive contribution: positive = helpful, negative = harmful
+    raw_contribution = (df[metric_col] - df['expected']) / delta if delta != 0 else 0
+    
+    # Adjust sign based on context for intuitive interpretation
+    if higher_is_better:
+        # For metrics where higher is better (revenue, orders)
+        if delta < 0:  # Region underperforming
+            # Positive raw contribution = harmful (making gap worse)
+            # Negative raw contribution = helpful (reducing gap) 
+            df['contribution'] = -raw_contribution  # Flip sign for intuitive interpretation
+        else:  # Region overperforming
+            # Positive raw contribution = helpful (making region better)
+            # Negative raw contribution = harmful (reducing advantage)
+            df['contribution'] = raw_contribution  # Keep original sign
+    else:
+        # For metrics where lower is better (cost, errors)
+        if delta > 0:  # Region underperforming (higher than desired)
+            # Positive raw contribution = harmful (making gap worse)
+            # Negative raw contribution = helpful (reducing gap)
+            df['contribution'] = -raw_contribution  # Flip sign for intuitive interpretation
+        else:  # Region overperforming (lower than others)
+            # Positive raw contribution = helpful (making region better)
+            # Negative raw contribution = harmful (reducing advantage)
+            df['contribution'] = raw_contribution  # Keep original sign
     
     # Calculate heuristic score: sqrt(|contribution| + max(|contribution| - coverage, 0) / coverage)
     # Floor coverage at 1% to avoid division by zero
@@ -198,14 +246,17 @@ def plot_subregion_bars(
     # Identify top-3 by score
     top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
     
-    # Color-code bars: only highlight top-3, color by contribution sign
+    # Color-code bars: only highlight top-3, with INTUITIVE LOGIC (positive = helpful = green)
     colors = []
     for i, contrib in enumerate(contributions):
         if i in top_3_indices:  # Only highlight top-3 by score
-            if contrib < 0:  # Negative contribution (making problem worse)
-                colors.append(COLORS['metric_negative'])  # Red
-            else:  # Positive contribution (helping performance)
-                colors.append(COLORS['metric_positive'])  # Green
+            # SIMPLIFIED LOGIC: Contribution calculation is now intuitive
+            # Positive contribution = helpful = GREEN
+            # Negative contribution = harmful = RED
+            if contrib > 0:
+                colors.append(COLORS['metric_positive'])  # Green (helpful)
+            else:
+                colors.append(COLORS['metric_negative'])  # Red (harmful)
         else:  # Not in top-3
             colors.append(COLORS['default_bar'])  # Gray
     
@@ -260,21 +311,14 @@ def analyze_region_depth(
     region_col: str = 'region'
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Perform depth analysis for anomalous regions across multiple metrics.
-    
-    Args:
-        sub_df: DataFrame containing sub-region/slice level data
-        config: Configuration dictionary
-        metric_anomaly_map: Dictionary mapping metric names to their anomaly information
-        slice_col: Name of the column containing slice identifiers
-        region_col: Name of the column containing region identifiers
+    Perform depth analysis and return results in unified format directly.
+    No integration step needed - this returns the final format.
     
     Returns:
-        Dictionary containing analysis results for each metric
+        Dictionary in unified format: {metric_name: {'slides': {'depth': slide_data}}}
     """
     metrics_config = config.get('metrics', {})
-    
-    results = {}
+    unified_results = {}
     
     # Analyze each metric
     for metric_name, metric_config in metrics_config.items():
@@ -291,7 +335,6 @@ def analyze_region_depth(
         
         try:
             metric_type = metric_config['type']
-            display_name = metric_config.get('name', metric_name)
             template = metric_config.get('template', '')
             
             # Filter data for this metric's anomalous region and rest-of-world
@@ -306,121 +349,119 @@ def analyze_region_depth(
                 logger.warning(f"No rest-of-world data found for comparison (metric: {metric_name})")
                 continue
             
+            # Perform contribution analysis based on metric type
             if metric_type == 'rate':
-                # Rate metric analysis
                 numerator_col = metric_config['numerator_col']
                 denominator_col = metric_config['denominator_col']
-                
-                # Calculate rest-of-world totals
                 row_numerator = row_df[numerator_col].sum()
                 row_denominator = row_df[denominator_col].sum()
                 
-                # Perform contribution analysis
                 contrib_df, delta, row_rate = rate_contrib(
                     region_df, row_numerator, row_denominator,
-                    denominator_col, numerator_col, metric_name
+                    denominator_col, numerator_col, metric_name,
+                    metric_anomaly_map[metric_name].get('higher_is_better', True)
                 )
                 
                 region_rate = contrib_df[numerator_col].sum() / contrib_df[denominator_col].sum()
-                # For rate metrics, we plot the calculated rate using the proper metric name
                 plot_metric_col = metric_name
+                row_value = row_rate
+                
+                # Template parameters for rate metrics
+                template_params = {
+                    'metric_name': metric_name,
+                    'anomalous_region': anomalous_region,
+                    'delta': delta,
+                    'row_rate': row_rate,
+                    'region_rate': region_rate
+                }
                 
             elif metric_type == 'additive':
-                # Additive metric analysis
                 metric_col = metric_config['metric_col']
-                
-                # Calculate rest-of-world total
                 row_total = row_df[metric_col].sum()
                 
-                # Perform contribution analysis
-                contrib_df, delta = additive_contrib(region_df, row_total, metric_col)
+                contrib_df, delta = additive_contrib(region_df, row_total, metric_col, metric_anomaly_map[metric_name].get('higher_is_better', True))
                 
                 region_total = contrib_df[metric_col].sum()
-                # For additive metrics, we plot the original metric column
                 plot_metric_col = metric_col
+                row_value = row_total / len(row_df) if len(row_df) > 0 else None
+                
+                # Template parameters for additive metrics
+                template_params = {
+                    'metric_name': metric_name,
+                    'anomalous_region': anomalous_region,
+                    'delta': delta,
+                    'row_total': row_total,
+                    'region_total': region_total
+                }
                 
             else:
                 logger.warning(f"Unknown metric type '{metric_type}' for metric '{metric_name}'")
                 continue
             
-            # Prepare data for markdown table (top 3 contributors)
-            sorted_contrib = contrib_df.sort_values('score', ascending=False)
-            
-            # Create summary table with slice, metric value, contribution, coverage, and score
+            # Create full analysis data sorted by score (for chart - show ALL slices)
+            contrib_df = contrib_df.sort_values('score', ascending=False)
             summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score']
-            summary_df = sorted_contrib[summary_cols].head(3).copy()
+            full_analysis_df = contrib_df[summary_cols].copy().set_index('slice')
             
-            # Set slice as index for cleaner table display
-            summary_df = summary_df.set_index('slice')
-            
-            # Create a formatted version for display (keep original for payload)
-            display_table = summary_df.copy()
-            
-            # Format the display table columns consistently
-            # Format contribution and coverage as percentages
+            # Create formatted display table (top 3 only for table display)
+            display_table = full_analysis_df.head(3).copy()
             display_table['contribution'] = display_table['contribution'].apply(lambda x: f"{x:.1%}")
             display_table['coverage'] = display_table['coverage'].apply(lambda x: f"{x:.1%}")
-            
-            # Format score to 2 decimal places
             display_table['score'] = display_table['score'].apply(lambda x: f"{x:.2f}")
             
-            # Format the metric column based on type
             if metric_type == 'rate':
-                # Rate metrics should be shown as percentages
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{x:.1%}")
             else:
-                # Additive metrics as integers with commas
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Prepare template parameters
-            template_params = {
-                'metric_name': display_name,
-                'anomalous_region': anomalous_region,
-                'delta': delta,
-                'summary_table': display_table.to_markdown(index=True)  # Use formatted table for display
-            }
-            
-            # Add metric-specific parameters
-            if metric_type == 'rate':
-                template_params.update({
-                    'row_rate': row_rate,
-                    'region_rate': region_rate
-                })
+            # Generate concise summary text (prepared during processing!)
+            top_contributors = contrib_df.nlargest(2, 'contribution')
+            if len(top_contributors) >= 2:
+                top1_name = top_contributors.iloc[0]['slice']
+                top1_contrib = top_contributors.iloc[0]['contribution'] * 100
+                top2_name = top_contributors.iloc[1]['slice']
+                top2_contrib = top_contributors.iloc[1]['contribution'] * 100
+                summary_text = f"{top1_name} ({top1_contrib:.0f}%), {top2_name} ({top2_contrib:.0f}%)"
+            elif len(top_contributors) == 1:
+                top1_name = top_contributors.iloc[0]['slice']
+                top1_contrib = top_contributors.iloc[0]['contribution'] * 100
+                summary_text = f"{top1_name} ({top1_contrib:.0f}%)"
             else:
-                template_params.update({
-                    'row_total': row_total,
-                    'region_total': region_total
-                })
-            
-            # Render template immediately with actual values
-            if template:
-                template_obj = Template(template)
-                rendered_text = template_obj.render(**template_params)
-            else:
-                rendered_text = f"{display_name} analysis for {anomalous_region}"
-            
-            # Create structured result with slide-ready content
-            depth_hypothesis_name = f"{metric_name}_in_subregion"
-            results[depth_hypothesis_name] = {
-                "hypothesis": depth_hypothesis_name,
-                "name": display_name,
-                "type": "depth_spotter",
-                "selected": True,
-                "rendered_text": rendered_text,
-                "summary_df": summary_df,  # Only the relevant table data
-                "payload": {
-                    'contrib_df': contrib_df,
-                    'summary_df': summary_df,  # Raw numeric data for plotting
-                    'delta': delta,
-                    'metric_col': plot_metric_col,
-                    'row_value': row_rate if metric_type == 'rate' else row_total / len(row_df) if len(row_df) > 0 else None
-                },
-                # Ready-to-use slide content
-                "slide": {
-                    "title": f"{display_name} - Depth Analysis",
-                    "text": rendered_text,
-                    "table_df": display_table,  # Formatted table for slide display
-                    "layout_type": "text_table_figure"
+                summary_text = f"Depth analysis completed for {metric_name}"
+
+            # Return in unified format directly - no integration needed!
+            analysis_type = 'depth'  # Derived from config_depth.yaml
+            unified_results[metric_name] = {
+                'slides': {
+                    analysis_type: {
+                        'summary': {
+                            'summary_text': summary_text
+                        },
+                        'payload': {
+                            'summary_df': full_analysis_df,  # Full analysis data for internal inspection
+                            'delta': delta,
+                            'row_value': row_value
+                        },
+                        'slide_info': {
+                            'title': f"{metric_name} - Depth Analysis",
+                            'template_text': template,
+                            'template_params': template_params,
+                            'figure_generators': [
+                                {
+                                    "function": plot_subregion_bars,
+                                    "title_suffix": "",
+                                    "params": {
+                                        'df_slice': full_analysis_df,  # Pass ALL slices to chart function
+                                        'metric_col': plot_metric_col,
+                                        'title': f"{metric_name} by sub-regions",
+                                        'row_value': row_value
+                                    }
+                                }
+                            ],
+                            'dfs': {"summary_table": display_table},  # Top 3 only for table display
+                            'layout_type': "text_tables_figure"
+                        }
+                    }
                 }
             }
                 
@@ -429,7 +470,7 @@ def analyze_region_depth(
         except Exception as e:
             logger.error(f"Error analyzing metric '{metric_name}': {e}")
     
-    return results
+    return unified_results
 
 
 def create_synthetic_data() -> pd.DataFrame:
@@ -455,10 +496,15 @@ def create_synthetic_data() -> pd.DataFrame:
             "sum_csat": round(surveys * csat, 1)
         })
 
-    # North America (anomalously low metrics)
-    add_slice("North America", "a", 10_000, 0.09, 2000, 66, 900, 3.9)
-    add_slice("North America", "b", 11_000, 0.07, 2200, 64, 950, 3.7)
-    add_slice("North America", "c", 12_000, 0.08, 2100, 65, 1000, 3.8)
+    # North America (EXTREME variance - designed to force mixed contributions)
+    # Strategy: Create huge disparity in AOV while keeping revenue proportional allocation challenged
+    add_slice("North America", "a", 20_000, 0.05, 1000, 25, 900, 3.0)   # Massive volume, tiny AOV → underperforms expected
+    add_slice("North America", "b", 18_000, 0.06, 1080, 30, 850, 3.2)   # High volume, low AOV → underperforms  
+    add_slice("North America", "c", 15_000, 0.07, 1050, 35, 800, 3.1)   # High volume, low AOV → underperforms
+    add_slice("North America", "d", 12_000, 0.08, 960, 40, 700, 3.3)    # Medium volume, low AOV → underperforms
+    add_slice("North America", "e", 2_000, 0.20, 400, 200, 150, 4.8)    # Tiny volume, HUGE AOV → outperforms expected!
+    add_slice("North America", "f", 1_500, 0.22, 330, 180, 120, 4.7)    # Tiny volume, HUGE AOV → outperforms expected!
+    add_slice("North America", "g", 1_000, 0.25, 250, 160, 80, 4.6)     # Tiny volume, HUGE AOV → outperforms expected!
 
     # Europe
     add_slice("Europe", "a", 9_000, 0.12, 1800, 79, 850, 4.4)
@@ -543,14 +589,20 @@ def main(output_dir: str = '.'):
     print("STRUCTURED RESULTS")
     print(f"{'='*60}")
     
-    for hypo_name, result in results.items():
-        print(f"\nHypothesis: {hypo_name}")
-        print(f"Name: {result['name']}")
-        print(f"Type: {result['type']}")
+    for metric_name, metric_result in results.items():
+        print(f"\nMetric: {metric_name}")
         
-        # Render template
-        if result['rendered_text']:
-            print(f"Template Text:\n{result['rendered_text']}")
+        # Access the depth slide data
+        depth_data = metric_result['slides']['depth']['data']
+        slide_info = metric_result['slides']['depth']['slide_info']
+        
+        print(f"Name: {depth_data['name']}")
+        print(f"Type: {metric_result['slides']['depth']['type']}")
+        print(f"Summary: {depth_data['summary_text']}")
+        
+        # Show rendered template text
+        if slide_info['template_text']:
+            print(f"Template Text:\n{slide_info['template_text'][:200]}...")  # Truncate for readability
     
     # Additional analysis: Show data summary
     print(f"\n{'='*60}")

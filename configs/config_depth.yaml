@@ -21,7 +21,8 @@
 # - row_total: Rest-of-world total (for additive metrics)
 # - region_total: Anomalous region total (for additive metrics)
 # - delta: Gap between actual and expected performance
-# - summary_table: Markdown table with top 3 contributors (slice, metric_value, contribution, coverage)
+# - summary_table: Marker for where to insert the summary table
+# Additional table markers can be used like {{ detail_table }}, {{ breakdown_table }}, etc.
 
 # ============================================================
 

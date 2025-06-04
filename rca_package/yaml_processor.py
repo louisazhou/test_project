@@ -265,4 +265,24 @@ def get_technical_names_for_hypotheses(config: Dict[str, Any], hypo_display_name
     Returns:
         List of technical names
     """
-    return [get_technical_name(config, name, 'hypothesis') for name in hypo_display_names] 
+    return [get_technical_name(config, name, 'hypothesis') for name in hypo_display_names]
+
+def load_all_configs(config_paths: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Load all configuration files.
+    
+    Args:
+        config_paths: Dictionary mapping config names to file paths
+        
+    Returns:
+        Dictionary of loaded configurations
+    """
+    configs = {}
+    for config_name, config_path in config_paths.items():
+        try:
+            configs[config_name] = load_config(config_path)
+            print(f"✅ Loaded config: {config_name}")
+        except Exception as e:
+            print(f"❌ Failed to load config {config_name} from {config_path}: {e}")
+    
+    return configs 

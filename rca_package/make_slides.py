@@ -8,7 +8,7 @@ import tempfile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -16,157 +16,139 @@ from typing import Optional, Dict, Any, Callable, Tuple, List
 from jinja2 import Template
 import re
 import matplotlib.pyplot as plt
+import logging
+from PIL import Image
+import math
 
+# Set up module logger
+logger = logging.getLogger(__name__)
+
+# Slide dimensions and margins (in inches)
+SLIDE_WIDTH = 13.33  # 16:9 aspect ratio
+SLIDE_HEIGHT = 7.5
+
+# Margins and spacing
+MARGIN_LEFT = 0.15   # Left margin 
+MARGIN_RIGHT = 0.15  # Right margin 
+MARGIN_TOP = 0.15    # Top margin 
+MARGIN_BOTTOM = 0.15 # Bottom margin 
+
+# Title area
+TITLE_HEIGHT = 0.4   # Height for title 
+TITLE_TOP = MARGIN_TOP
+TITLE_LEFT = MARGIN_LEFT
+
+# Content area calculations
+CONTENT_LEFT = MARGIN_LEFT
+CONTENT_TOP = TITLE_TOP + TITLE_HEIGHT + 0.1  # Small gap after title
+CONTENT_WIDTH = SLIDE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
+CONTENT_HEIGHT = SLIDE_HEIGHT - CONTENT_TOP - MARGIN_BOTTOM
+
+# Spacing between elements
+ELEMENT_GAP = 0.1    # Gap between elements 
+
+# Text sizing constants
+LINE_HEIGHT = 0.15   # Height per line of text (used for general layouts)
+CHARS_PER_LINE = 120 # Characters per line at standard width
+
+# Text estimation constants (for precise text height calculation)
+TEXT_ESTIMATE_LINE_HEIGHT = 0.14      # Tighter line height for text estimation
+TEXT_ESTIMATE_PARAGRAPH_SPACING = 0.04  # Minimal space between paragraphs  
+TEXT_ESTIMATE_PADDING = 0.08          # Very conservative padding for text box
+
+# Table sizing constants
+TABLE_ROW_HEIGHT = 0.35  # Height per table row
+
+# Default dimensions for figures and other elements
+DEFAULT_FIGURE_HEIGHT = 4.0  # Standard figure height
+MAX_CONTENT_HEIGHT = 6.0     # Maximum height for content before overflow
+COLUMN_WIDTH_MULTIPLIER = 0.08  # Character length to inches conversion
+MIN_COLUMN_WIDTH = 0.8       # Minimum column width in inches
+MIN_INDEX_WIDTH = 1.3        # Minimum index column width in inches
+MAX_TABLE_HEIGHT = 4.0       # Maximum table height in inches
 
 class SlideContent:
-    """Container for slide content with support for figure generation functions."""
+    """Container for slide content with support for figure generation functions and multiple DataFrames."""
     
-    def __init__(self, title: str, text_template: Optional[str] = None, 
-                 df: Optional[pd.DataFrame] = None, 
-                 figure_generator: Optional[Callable] = None,
+    def __init__(self, title: str, text_template: Optional[str] = None,
+                 dfs: Optional[Dict[str, pd.DataFrame]] = None,
                  template_params: Optional[Dict] = None,
-                 additional_dfs: Optional[Dict[str, pd.DataFrame]] = None,
+                 figure_generators: Optional[List[Dict]] = None,
                  show_figures: bool = True):
         self.title = title
         self.text_template = text_template
-        self.df = df
-        self.figure_generator = figure_generator
+        self.dfs = dfs or {}  # Multiple DataFrames with marker names as keys
         self.template_params = template_params or {}
-        self.additional_dfs = additional_dfs or {}
+        self.figure_generators = figure_generators or []  # List of figure generator configs with functions
         self.show_figures = show_figures
         self._generated_figure_path = None
+    
+    def render_text(self) -> str:
+        """Render the text using Jinja template, replacing table markers with placeholder text."""
+        if not self.text_template:
+            return ""
         
-    def _extract_markdown_tables_and_clean_text(self) -> Tuple[str, List[pd.DataFrame]]:
+        # Create template params with table markers as placeholder text
+        render_params = self.template_params.copy()
+        
+        # Add table markers as placeholder text for rendering
+        for table_key in self.dfs.keys():
+            render_params[table_key] = f"[TABLE: {table_key}]"
+        
+        template = Template(self.text_template)
+        return template.render(**render_params)
+    
+    def get_text_and_table_positions(self) -> Tuple[List[str], List[Tuple[str, pd.DataFrame]]]:
         """
-        Extract markdown tables from template and return clean text + DataFrames.
+        Parse rendered text to extract text chunks and table positions.
         
         Returns:
-            Tuple of (clean_text, list_of_dataframes)
+            Tuple of (text_chunks, table_positions) where:
+            - text_chunks: List of text segments
+            - table_positions: List of (table_key, dataframe) tuples in order of appearance
         """
-        if not self.text_template:
-            return "", []
+        rendered_text = self.render_text()
         
-        # Render the template first
-        template = Template(self.text_template)
-        rendered_text = template.render(**self.template_params)
+        if not self.dfs:
+            return [rendered_text], []
         
-        # Split into parts and identify tables
-        parts = rendered_text.split('\n\n')
-        clean_parts = []
-        extracted_tables = []
+        # Find all table markers in the rendered text
+        text_chunks = []
+        table_positions = []
         
-        i = 0
-        while i < len(parts):
-            part = parts[i].strip()
+        current_pos = 0
+        
+        # Find all table markers
+        for match in re.finditer(r'\[TABLE: ([^\]]+)\]', rendered_text):
+            # Add text before this table
+            if match.start() > current_pos:
+                text_before = rendered_text[current_pos:match.start()].strip()
+                if text_before:
+                    text_chunks.append(text_before)
             
-            # Check if this part contains a markdown table
-            if '|' in part and part.count('|') >= 3:  # Likely a table
-                # Try to parse as markdown table
-                try:
-                    lines = part.split('\n')
-                    # Find header and separator
-                    header_line = None
-                    sep_line = None
-                    data_lines = []
-                    
-                    for line in lines:
-                        if '|' in line:
-                            if header_line is None:
-                                header_line = line
-                            elif sep_line is None and ('---' in line or ':-' in line):
-                                sep_line = line
-                            else:
-                                data_lines.append(line)
-                    
-                    if header_line and data_lines:
-                        # Parse the table
-                        headers = [h.strip() for h in header_line.split('|')[1:-1]]
-                        
-                        table_data = []
-                        for line in data_lines:
-                            row = [cell.strip() for cell in line.split('|')[1:-1]]
-                            if len(row) == len(headers):
-                                table_data.append(row)
-                        
-                        if table_data:
-                            # Create DataFrame
-                            df_table = pd.DataFrame(table_data, columns=headers)
-                            # Try to convert numeric columns
-                            for col in df_table.columns:
-                                try:
-                                    df_table[col] = pd.to_numeric(df_table[col])
-                                except:
-                                    pass  # Keep as string if not numeric
-                            
-                            extracted_tables.append(df_table)
-                            # Don't add this part to clean_parts (remove the table)
-                            i += 1
-                            continue
-                except:
-                    pass  # If parsing fails, treat as regular text
+            # Add table info
+            table_key = match.group(1)
+            if table_key in self.dfs:
+                table_positions.append((table_key, self.dfs[table_key]))
             
-            # Not a table or parsing failed, add to clean text
-            clean_parts.append(part)
-            i += 1
+            current_pos = match.end()
         
-        clean_text = '\n\n'.join(clean_parts)
+        # Add any remaining text after the last table
+        if current_pos < len(rendered_text):
+            remaining_text = rendered_text[current_pos:].strip()
+            if remaining_text:
+                text_chunks.append(remaining_text)
         
-        # Clean up excessive empty lines and whitespace
-        clean_text = clean_text.strip()
+        # If no tables were found, return the full text
+        if not table_positions:
+            return [rendered_text], []
         
-        # Remove excessive consecutive newlines (more than 2)
-        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
-        
-        return clean_text, extracted_tables
-        
-    def render_text(self) -> str:
-        """Render the text using Jinja template, removing markdown tables."""
-        clean_text, _ = self._extract_markdown_tables_and_clean_text()
-        return clean_text
-    
-    def get_extracted_tables(self) -> List[pd.DataFrame]:
-        """Get DataFrames extracted from markdown tables in the template."""
-        _, tables = self._extract_markdown_tables_and_clean_text()
-        return tables
+        return text_chunks, table_positions
     
     def get_all_dataframes(self) -> List[pd.DataFrame]:
-        """Get all DataFrames: main df, extracted tables, and additional dfs."""
-        all_dfs = []
-        
-        # Add main DataFrame
-        if self.df is not None:
-            all_dfs.append(self.df)
-        
-        # Add extracted tables from template
-        all_dfs.extend(self.get_extracted_tables())
-        
-        # Add additional DataFrames
-        all_dfs.extend(self.additional_dfs.values())
-        
-        return all_dfs
-    
-    def get_figure_path(self) -> str:
-        """Generate figure if needed and return temp path for PowerPoint, optionally display inline"""
-        if self._generated_figure_path is None and self.figure_generator is not None:
-            # Generate the figure
-            fig = self.figure_generator(df=self.df, **self.template_params)
-            
-            # Create temp file for PowerPoint embedding
-            temp_dir = tempfile.gettempdir()
-            temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}.png"
-            self._generated_figure_path = os.path.join(temp_dir, temp_filename)
-            
-            # Save to temp file for PowerPoint
-            fig.savefig(self._generated_figure_path, dpi=300, bbox_inches='tight')
-            
-            # Display inline if requested
-            if self.show_figures:
-                plt.show()
-            
-            # Clean up the figure object
-            plt.close(fig)
-            
-        return self._generated_figure_path
+        """Get all DataFrames in order of appearance in the template."""
+        _, table_positions = self.get_text_and_table_positions()
+        return [df for _, df in table_positions]
     
     def cleanup(self):
         """Clean up generated figure files."""
@@ -175,20 +157,37 @@ class SlideContent:
             self._generated_figure_path = None
     
     def render_console(self) -> str:
-        """Render content for console display - shows only what would be in the slide"""
+        """Render content for console display - shows text with embedded tables"""
         output = []
         
-        # Only show rendered text content (what's in the template)
-        if self.text_template:
-            output.append(self.render_text())
+        # Get text chunks and table positions
+        text_chunks, table_positions = self.get_text_and_table_positions()
         
-        # Show figure info only if not showing figures inline
-        if self.figure_generator and not self.show_figures:
-            figure_path = self.get_figure_path()
-            if figure_path:
-                output.append(f"Figure saved to: {figure_path}")
+        # Interleave text and tables
+        chunk_idx = 0
+        table_idx = 0
         
-        return '\n'.join(output)
+        if not table_positions:
+            # No tables, just show text
+            if text_chunks:
+                output.append(text_chunks[0])
+        else:
+            # Interleave text and tables based on template structure
+            # Simple approach: alternate between text chunks and tables
+            while chunk_idx < len(text_chunks) or table_idx < len(table_positions):
+                # Add text chunk if available
+                if chunk_idx < len(text_chunks):
+                    output.append(text_chunks[chunk_idx])
+                    chunk_idx += 1
+                
+                # Add table if available
+                if table_idx < len(table_positions):
+                    table_key, df = table_positions[table_idx]
+                    output.append(f"\n{table_key.upper()}:")
+                    output.append(df.to_markdown())
+                    table_idx += 1
+        
+        return '\n\n'.join(output)
 
 
 class SlideLayouts:
@@ -196,26 +195,123 @@ class SlideLayouts:
     
     def __init__(self):
         self.prs = Presentation()
-        self.prs.slide_width = Inches(13.33)  # 16:9
-        self.prs.slide_height = Inches(7.5)
+        self.prs.slide_width = Inches(SLIDE_WIDTH)
+        self.prs.slide_height = Inches(SLIDE_HEIGHT)
     
     def _add_title(self, slide, title: str):
         """Add standardized title."""
-        title_box = slide.shapes.add_textbox(Inches(0.3), Inches(0.2), Inches(9), Inches(0.4))
+        title_box = slide.shapes.add_textbox(
+            Inches(TITLE_LEFT), 
+            Inches(TITLE_TOP), 
+            Inches(CONTENT_WIDTH),
+            Inches(TITLE_HEIGHT)
+        )
         title_box.text = title
         title_box.text_frame.paragraphs[0].font.size = Pt(18)
         title_box.text_frame.paragraphs[0].font.bold = True
         return title_box
     
     def _add_text(self, slide, text: str, left: float, top: float, 
-                  width: float, height: float, font_size: int = 11):
-        """Add text box."""
-        text_box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
-        text_box.text = text
-        text_box.text_frame.word_wrap = True
-        for paragraph in text_box.text_frame.paragraphs:
-            paragraph.font.size = Pt(font_size)
+                  width: float, height: float, font_size: int = 12):
+        """Add text box with proper text wrapping and content-fitted sizing."""
+        # Calculate the actual height needed for the text
+        estimated_height = self._estimate_text_height(text)
+        
+        # Use the estimated height instead of the full available height
+        actual_height = min(estimated_height, height)
+        
+        text_box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(actual_height))
+        text_frame = text_box.text_frame
+        
+        # Enable word wrapping
+        text_frame.word_wrap = True
+        
+        # Use text to fit shape for better content sizing
+        text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        
+        # Add text with proper paragraph formatting
+        p = text_frame.paragraphs[0]
+        p.text = text
+        p.font.size = Pt(font_size)
+        
+        # Set proper line spacing
+        p.line_spacing = 1.0  # Single line spacing
+        
         return text_box
+    
+    def _calculate_table_dimensions(self, df: pd.DataFrame, max_width: float = 7.0) -> tuple:
+        """Calculate optimal table dimensions based on content length."""
+        if df is None:
+            return 0, 0
+        
+        include_index = not isinstance(df.index, pd.RangeIndex)
+        
+        # Calculate maximum content lengths
+        if include_index:
+            max_index_length = max(len(str(idx)) for idx in df.index)
+            index_width = max(max_index_length * COLUMN_WIDTH_MULTIPLIER, MIN_INDEX_WIDTH)  # Use constant
+        else:
+            index_width = 0
+            
+        # Calculate data columns width
+        max_col_lengths = []
+        for col in df.columns:
+            # Consider both header and content
+            header_length = len(str(col))
+            content_lengths = [len(str(val)) for val in df[col] if pd.notna(val)]
+            max_length = max([header_length] + content_lengths) if content_lengths else header_length
+            max_col_lengths.append(max_length)
+        
+        # Calculate total data width
+        data_width = sum(max(length * COLUMN_WIDTH_MULTIPLIER, MIN_COLUMN_WIDTH) for length in max_col_lengths)
+        
+        # Add padding between columns (ELEMENT_GAP per column gap)
+        padding = ELEMENT_GAP * (len(df.columns) - 1) if len(df.columns) > 1 else 0
+        
+        # Calculate total width with padding - use passed max_width parameter
+        total_width = min(index_width + data_width + padding + 0.3, max_width)
+        
+        # Calculate height - simpler calculation since we're not wrapping content
+        total_height = min((len(df) + 1) * TABLE_ROW_HEIGHT, MAX_TABLE_HEIGHT)  # +1 for header
+        
+        return total_width, total_height
+    
+    def _format_cell_value(self, value, is_percent=False):
+        """Format cell value consistently."""
+        if pd.isna(value):
+            return "N/A"
+        elif isinstance(value, (int, float)):
+            if is_percent:
+                return f"{value*100:.0f}%"
+            elif abs(value) < 0.01 and value != 0:
+                return f"{value:.4f}"
+            elif abs(value) < 1:
+                return f"{value:.3f}"
+            elif abs(value) < 100:
+                return f"{value:.2f}"
+            else:
+                return f"{value:.0f}"
+        return str(value)
+    
+    def _apply_cell_styling(self, cell, is_header=False, bg_color=None, text_color=None):
+        """Apply consistent styling to a table cell."""
+        # Set background color
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = bg_color or RGBColor(242, 244, 248)
+        
+        # Configure text frame
+        text_frame = cell.text_frame
+        text_frame.word_wrap = True
+        text_frame.auto_size = MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT
+        
+        # Style paragraphs
+        for paragraph in text_frame.paragraphs:
+            paragraph.alignment = PP_ALIGN.CENTER
+            for run in paragraph.runs:
+                if is_header:
+                    run.font.bold = True
+                run.font.size = Pt(11)
+                run.font.color.rgb = text_color or RGBColor(0, 0, 0)
     
     def _add_table(self, slide, df: pd.DataFrame, left: float, top: float, 
                    width: float, height: float, highlight_cells: Optional[Dict] = None):
@@ -225,60 +321,17 @@ class SlideLayouts:
         include_index = not isinstance(df.index, pd.RangeIndex)
         rows, cols = df.shape[0] + 1, df.shape[1] + (1 if include_index else 0)
         
-        # Calculate minimum required width for readability
-        min_col_width = 0.8  # Minimum 0.8 inches per column for readability
-        required_width = cols * min_col_width
+        # Calculate optimal dimensions
+        optimal_width, optimal_height = self._calculate_table_dimensions(df)
+        actual_width = min(optimal_width, width)
+        actual_height = min(optimal_height, height)
         
-        # Use larger width if needed for readability, up to almost full slide width
-        actual_width = max(width, min(required_width, 12.0))  # Max 12 inches (almost full slide)
-        
-        # If table is too wide, adjust font size
-        font_size = 12
-        if required_width > 12.0:
-            font_size = max(8, int(12 * 12.0 / required_width))  # Scale down font if needed
-        
+        # Create table
         table_shape = slide.shapes.add_table(rows, cols, Inches(left), Inches(top), 
-                                            Inches(actual_width), Inches(height))
+                                           Inches(actual_width), Inches(actual_height))
         table = table_shape.table
         
-        # Calculate intelligent column widths based on content
-        col_widths = []
-        
-        if include_index:
-            # Calculate index column width
-            max_index_length = max(len(str(idx)) for idx in df.index)
-            index_width = max(min_col_width, min(max_index_length * 0.12, actual_width * 0.3))
-            col_widths.append(index_width)
-            
-            # Calculate data column widths
-            remaining_width = actual_width - index_width
-            data_cols = df.shape[1]
-            
-            # Calculate width for each data column based on content
-            for col in df.columns:
-                max_content_length = max(
-                    len(str(col)),  # Column header
-                    max(len(str(val)) for val in df[col]) if len(df) > 0 else 5  # Data values
-                )
-                col_width = max(min_col_width, min(max_content_length * 0.12, remaining_width / data_cols * 1.5))
-                col_widths.append(col_width)
-                
-            # Normalize if total exceeds available width
-            total_width = sum(col_widths)
-            if total_width > actual_width:
-                scaling_factor = actual_width / total_width
-                col_widths = [w * scaling_factor for w in col_widths]
-                
-        else:
-            # No index - distribute evenly with minimum width
-            col_width = max(min_col_width, actual_width / cols)
-            col_widths = [col_width] * cols
-        
-        # Apply column widths
-        for i, width_val in enumerate(col_widths):
-            table.columns[i].width = Inches(width_val)
-        
-        # Headers
+        # Add headers
         for col_idx in range(cols):
             cell = table.cell(0, col_idx)
             if include_index and col_idx == 0:
@@ -286,255 +339,787 @@ class SlideLayouts:
             else:
                 actual_col_idx = col_idx - 1 if include_index else col_idx
                 cell.text = str(df.columns[actual_col_idx])
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = RGBColor(0, 0, 0)
-            for paragraph in cell.text_frame.paragraphs:
-                paragraph.alignment = PP_ALIGN.CENTER
-                for run in paragraph.runs:
-                    run.font.bold = True
-                    run.font.size = Pt(font_size)
-                    run.font.color.rgb = RGBColor(255, 255, 255)
+            
+            self._apply_cell_styling(
+                cell, 
+                is_header=True,
+                bg_color=RGBColor(0, 0, 0),
+                text_color=RGBColor(255, 255, 255)
+            )
         
-        # Data
+        # Add data
         for row_idx, (index_val, row) in enumerate(df.iterrows()):
-            for col_idx in range(cols):
-                cell = table.cell(row_idx + 1, col_idx)
-                if include_index and col_idx == 0:
-                    val = str(index_val)
-                else:
-                    actual_col_idx = col_idx - 1 if include_index else col_idx
-                    cell_value = df.iloc[row_idx, actual_col_idx]
-                    if isinstance(cell_value, (int, float)) and not np.isnan(cell_value):
-                        col_name = df.columns[actual_col_idx]
-                        row_name = str(index_val)
-                        
-                        is_percent = ('_pct' in col_name or '%' in col_name or 'pct' in col_name.lower() or
-                                     '_pct' in row_name or '%' in row_name or 'pct' in row_name.lower() or
-                                     'rate' in row_name.lower() or 'ratio' in row_name.lower())
-                        
-                        if is_percent:
-                            val = f"{cell_value*100:.0f}%"
-                        elif abs(cell_value) < 0.01 and cell_value != 0:
-                            val = f"{cell_value:.4f}"
-                        elif abs(cell_value) < 1:
-                            val = f"{cell_value:.3f}"
-                        elif abs(cell_value) < 100:
-                            val = f"{cell_value:.2f}"
-                        else:
-                            val = f"{cell_value:.0f}"
-                    else:
-                        val = str(cell_value) if not pd.isna(cell_value) else "N/A"
-                cell.text = val
-                cell.fill.solid()
-                shade = RGBColor(242, 244, 248) if row_idx % 2 == 0 else RGBColor(255, 255, 255)
-                cell.fill.fore_color.rgb = shade
+            # Add index if needed
+            if include_index:
+                cell = table.cell(row_idx + 1, 0)
+                cell.text = str(index_val)
+                self._apply_cell_styling(
+                    cell,
+                    bg_color=RGBColor(242, 244, 248) if row_idx % 2 == 0 else RGBColor(255, 255, 255)
+                )
+            
+            # Add data cells
+            for col_idx, col_name in enumerate(df.columns):
+                cell = table.cell(row_idx + 1, col_idx + (1 if include_index else 0))
                 
-                if include_index and col_idx == 0:
-                    color_rgb = RGBColor(0, 0, 0)
-                else:
-                    key = (index_val, df.columns[actual_col_idx])
-                    color = highlight_cells.get(key)
+                # Get and format value
+                value = df.iloc[row_idx, col_idx]
+                is_percent = any(x in str(col_name).lower() for x in ['_pct', '%', 'pct', 'rate', 'ratio'])
+                cell.text = self._format_cell_value(value, is_percent)
+                
+                # Apply styling
+                bg_color = RGBColor(242, 244, 248) if row_idx % 2 == 0 else RGBColor(255, 255, 255)
+                
+                # Check for highlighting
+                key = (index_val, col_name)
+                if key in highlight_cells:
+                    color = highlight_cells[key]
                     if color == "red":
-                        color_rgb = RGBColor(255, 0, 0)
+                        text_color = RGBColor(255, 0, 0)
                     elif color == "green":
-                        color_rgb = RGBColor(0, 153, 0)
+                        text_color = RGBColor(0, 153, 0)
                     elif isinstance(color, tuple) and len(color) == 3:
-                        color_rgb = RGBColor(*color)
+                        text_color = RGBColor(*color)
                     else:
-                        color_rgb = RGBColor(0, 0, 0)
+                        text_color = RGBColor(0, 0, 0)
+                else:
+                    text_color = RGBColor(0, 0, 0)
                 
-                for paragraph in cell.text_frame.paragraphs:
-                    paragraph.alignment = PP_ALIGN.CENTER
-                    for run in paragraph.runs:
-                        run.font.size = Pt(font_size)
-                        run.font.color.rgb = color_rgb
+                self._apply_cell_styling(cell, bg_color=bg_color, text_color=text_color)
+        
+        # Distribute column widths proportionally
+        calculated_index_width = 0
+        if include_index:
+            max_index_length = max(len(str(idx)) for idx in df.index)
+            calculated_index_width = max(max_index_length * COLUMN_WIDTH_MULTIPLIER, MIN_INDEX_WIDTH)
+        
+        for i in range(cols):
+            if include_index and i == 0:
+                # Give index column its calculated width
+                table.columns[i].width = Inches(calculated_index_width)
+            else:
+                # Calculate data column width using consistent index width
+                remaining_cols = cols - (1 if include_index else 0)
+                remaining_width = actual_width - (calculated_index_width if include_index else 0)
+                data_col_width = max(remaining_width / remaining_cols, MIN_COLUMN_WIDTH)
+                table.columns[i].width = Inches(data_col_width)
         
         return table
     
-    def _add_figure(self, slide, figure_path: str, left: float, top: float, height: float):
-        """Add figure to slide."""
-        if os.path.exists(figure_path):
-            slide.shapes.add_picture(figure_path, Inches(left), Inches(top), height=Inches(height))
+    def _add_figure(self, slide, figure_path: str, left: float, top: float, width: Optional[float] = None, height: Optional[float] = None):
+        """
+        Add figure to slide while preserving aspect ratio.
+        Fits figure optimally within the specified width/height constraints.
+        """
+        if figure_path and os.path.exists(figure_path):
+            # Get original image dimensions
+            with Image.open(figure_path) as img:
+                img_width, img_height = img.size
+                aspect_ratio = img_width / img_height
+            
+            # Calculate dimensions that preserve aspect ratio
+            if width is not None and height is not None:
+                # Use the more constraining dimension
+                width_from_height = height * aspect_ratio
+                height_from_width = width / aspect_ratio
+                
+                if width_from_height <= width:
+                    # Height is the constraining dimension
+                    final_width = width_from_height
+                    final_height = height
+                else:
+                    # Width is the constraining dimension
+                    final_width = width
+                    final_height = height_from_width
+            elif width is not None:
+                # Only width specified
+                final_width = width
+                final_height = width / aspect_ratio
+            elif height is not None:
+                # Only height specified
+                final_height = height
+                final_width = height * aspect_ratio
+            else:
+                # No dimensions specified, use default size while preserving aspect ratio
+                if aspect_ratio > 1:
+                    # Landscape image
+                    final_width = min(12.0, 8.0 * aspect_ratio)  # Max width 12 inches
+                    final_height = final_width / aspect_ratio
+                else:
+                    # Portrait image
+                    final_height = min(6.0, 8.0 / aspect_ratio)  # Max height 6 inches
+                    final_width = final_height * aspect_ratio
+            
+            # Add the figure with calculated dimensions
+            slide.shapes.add_picture(
+                figure_path, 
+                Inches(left), 
+                Inches(top),
+                width=Inches(final_width),
+                height=Inches(final_height)
+            )
         else:
-            self._add_text(slide, f"Figure not found: {figure_path}", left, top, 4.0, 1.0)
+            # Add placeholder text when no figure is available
+            self._add_text(slide, f"Figure not available", left, top, 4.0, 1.0)
     
     def _estimate_text_height(self, text: str) -> float:
-        """Estimate height needed for text."""
+        """
+        Estimate height needed for text with improved accuracy.
+        Returns height in inches.
+        """
         if not text:
-            return 0.5
+            return 0.3
         
         # Clean the text first
         text = text.strip()
         if not text:
-            return 0.5
+            return 0.3
+        
+        # Use tighter line height for text estimation
+        
+        # Split by paragraphs first (double newlines)
+        paragraphs = text.split('\n\n')
+        total_height = 0
+        
+        for para_idx, paragraph in enumerate(paragraphs):
+            if not paragraph.strip():
+                continue
+                
+            # Add paragraph spacing (except for first paragraph)
+            if para_idx > 0:
+                total_height += TEXT_ESTIMATE_PARAGRAPH_SPACING
             
-        lines = text.count('\n') + 1
-        # Add wrapping estimation
-        for line in text.split('\n'):
-            if len(line) > 90:  # Rough chars per line
-                lines += (len(line) - 1) // 90
+            # Split paragraph into lines
+            lines = paragraph.split('\n')
+            paragraph_lines = 0
+            
+            for line in lines:
+                if not line.strip():
+                    paragraph_lines += 0.1  # Minimal space for empty lines
+                    continue
+                
+                # Check for special formatting that needs extra space
+                line_multiplier = 1.0
+                if re.match(r'^\d+\.|\-|\*|\•', line.strip()):
+                    line_multiplier = 1.02  # Tiny extra space for bullets/numbers
+                elif line.strip().startswith('#') or line.strip().isupper():
+                    line_multiplier = 1.05  # Small extra space for headers
+                
+                # Calculate wrapping more conservatively
+                indent_level = len(re.match(r'^\s*', line).group())
+                effective_width = CHARS_PER_LINE - (indent_level * 2)
+                
+                # Account for word boundaries - simplified approach
+                line_length = len(line.strip())
+                wrapped_lines = max(1, math.ceil(line_length / effective_width))
+                
+                paragraph_lines += wrapped_lines * line_multiplier
+            
+            total_height += paragraph_lines * TEXT_ESTIMATE_LINE_HEIGHT
         
-        # More conservative height estimation
-        estimated_height = lines * 0.18 + 0.4
-        return max(min(estimated_height, 3.0), 0.8)  # Cap at 3 inches, minimum 0.8
-    
-    def _estimate_table_size(self, df: pd.DataFrame) -> tuple:
-        """Estimate table dimensions."""
-        if df is None:
-            return 0, 0
+        # Add padding
+        total_height += TEXT_ESTIMATE_PADDING
         
-        include_index = not isinstance(df.index, pd.RangeIndex)
-        cols = df.shape[1] + (1 if include_index else 0)
+        # Very minimal safety margin for PowerPoint quirks
+        total_height *= 1.02
         
-        # Calculate minimum required width for readability
-        min_col_width = 0.8
-        required_width = cols * min_col_width
-        
-        # Allow tables to be wider if needed, up to almost full slide width
-        width = max(min(1.5 + (cols * 1.2), 12.0), min(required_width, 12.0))
-        height = min((len(df) + 1) * 0.35, 4.0)
-        
-        return width, height
+        return max(total_height, 0.3)  # Small minimum height
     
     def add_content_slide(self, content: SlideContent, layout_type: str = 'auto', 
                          highlight_cells: Optional[Dict] = None):
-        """Add slide based on content and layout type."""
-        title = content.title
-        text = content.render_text()  # This now automatically removes markdown tables
-        figure_path = content.get_figure_path()
+        """
+        Add slide with automatic layout, content overflow detection, and multiple page support.
         
-        # Get all DataFrames (main + extracted from markdown + additional)
-        all_dfs = content.get_all_dataframes()
-        primary_df = all_dfs[0] if all_dfs else None
+        Args:
+            content: SlideContent object with all slide information
+            layout_type: Layout preference ('auto', 'text_figure', 'text_tables', etc.)
+            highlight_cells: Optional dictionary for table cell highlighting
+        """
+        # Get text chunks and table positions
+        text_chunks, table_positions = content.get_text_and_table_positions()
         
-        if layout_type == 'auto':
-            # Auto-detect layout
-            has_text = bool(text)
-            has_table = primary_df is not None
-            has_figure = bool(figure_path)
+        # Handle figure generators - treat as overflow case if multiple figures
+        figure_generators = content.figure_generators
+        
+        if len(figure_generators) > 1:
+            # Multiple figures = overflow case, use enhanced overflow handling
+            self._create_multiple_slides_for_overflow(
+                content=content,
+                text_chunks=text_chunks,
+                table_positions=table_positions,
+                figure_path=None,  # Figures handled within overflow method
+                layout_type=layout_type,
+                highlight_cells=highlight_cells,
+                max_height=MAX_CONTENT_HEIGHT
+            )
+        elif len(figure_generators) == 1:
+            # Single figure - check if it overflows with text/tables
+            total_height = self._estimate_total_content_height(text_chunks, table_positions, "dummy_figure")
+            max_height = MAX_CONTENT_HEIGHT
             
-            if has_text and has_table and has_figure:
-                layout_type = 'text_table_figure'
-            elif has_text and has_table:
-                layout_type = 'text_table'
-            elif has_text and has_figure:
-                layout_type = 'text_figure'
-            elif has_text:
-                layout_type = 'text'
+            if total_height > max_height:
+                # Even single figure + content overflows
+                self._create_multiple_slides_for_overflow(
+                    content=content,
+                    text_chunks=text_chunks,
+                    table_positions=table_positions,
+                    figure_path=None,  # Figure handled within overflow method
+                    layout_type=layout_type,
+                    highlight_cells=highlight_cells,
+                    max_height=max_height
+                )
             else:
-                layout_type = 'text'
-        
-        return self._create_slide(title, text, primary_df, figure_path, layout_type, highlight_cells, all_dfs)
-    
-    def _create_slide(self, title: str, text: str, df: Optional[pd.DataFrame], 
-                     figure_path: Optional[str], layout_type: str, highlight_cells: Optional[Dict], all_dfs: List[pd.DataFrame]):
-        """Create slide with specified layout."""
-        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._add_title(slide, title)
-        
-        # Define available content area (after title)
-        content_left = 0.3
-        content_top = 0.7  # Start below title
-        content_width = 12.7  # Almost full width
-        content_height = 6.3  # Available height after title
-        
-        if layout_type == 'text':
-            # Use full content area for text
-            self._add_text(slide, text, content_left, content_top, content_width, content_height)
+                # Single figure + content fits on one slide
+                self._create_single_figure_slide(content, text_chunks, table_positions, 
+                                               figure_generators[0], layout_type, highlight_cells)
+        else:
+            # No figures - check for text/table overflow
+            total_height = self._estimate_total_content_height(text_chunks, table_positions, None)
+            max_height = MAX_CONTENT_HEIGHT
             
-        elif layout_type == 'summary':
-            # Fixed layout for summary (uses specialized function)
-            pass  # Will be handled by create_metrics_summary_slide
+            # For text+tables content, check if two-column layout might fit better
+            if (table_positions and self._should_use_two_column_layout(text_chunks, table_positions) 
+                and total_height > max_height):
+                
+                # Estimate height for two-column layout (roughly half the height since content is split)
+                estimated_two_column_height = total_height * 0.6  # Conservative estimate for two-column savings
+                
+                if estimated_two_column_height <= max_height:
+                    # Two-column layout should fit - use it instead of overflow
+                    self._create_slide_with_structured_content(
+                        title=content.title,
+                        text_chunks=text_chunks,
+                        table_positions=table_positions,
+                        figure_path=None,
+                        layout_type=layout_type,
+                        highlight_cells=highlight_cells
+                    )
+                    return
             
-        elif layout_type == 'text_table':
-            # Content-driven positioning
-            text_height = self._estimate_text_height(text)
-            
-            # Handle multiple tables if available
-            if len(all_dfs) > 1:
-                # Multiple tables - stack them vertically
-                table_spacing = 0.2
-                available_table_height = content_height - min(text_height, 2.0) - 0.3
-                table_height_each = min(available_table_height / len(all_dfs) - table_spacing, 2.0)
-                
-                # Add text at top
-                self._add_text(slide, text, content_left, content_top, content_width, min(text_height, 2.0))
-                
-                # Add tables stacked vertically
-                current_top = content_top + min(text_height, 2.0) + 0.3
-                for i, table_df in enumerate(all_dfs):
-                    table_width, _ = self._estimate_table_size(table_df)
-                    self._add_table(slide, table_df, content_left, current_top, 
-                                   min(table_width, content_width), table_height_each, highlight_cells)
-                    current_top += table_height_each + table_spacing
-            else:
-                # Single table - use original logic
-                table_width, table_height = self._estimate_table_size(df)
-                
-                if text_height <= 2.0 and table_height <= 3.5:
-                    # Stack vertically - text on top, table below
-                    self._add_text(slide, text, content_left, content_top, content_width, min(text_height, 2.0))
-                    table_top = content_top + min(text_height, 2.0) + 0.3
-                    self._add_table(slide, df, content_left, table_top, 
-                                   min(table_width, content_width), min(table_height, content_height - table_top + content_top), 
-                                   highlight_cells)
+            # Handle different content types appropriately
+            if total_height > max_height:
+                if table_positions:
+                    # Content with tables - use multi-slide approach for better table presentation
+                    self._create_multiple_slides_for_overflow(
+                        content=content,
+                        text_chunks=text_chunks,
+                        table_positions=table_positions,
+                        figure_path=None,
+                        layout_type=layout_type,
+                        highlight_cells=highlight_cells,
+                        max_height=max_height
+                    )
                 else:
-                    # Side by side
-                    text_width = content_width * 0.45  # 45% for text
-                    table_width_adj = content_width * 0.5  # 50% for table
-                    self._add_text(slide, text, content_left, content_top, text_width, content_height)
-                    self._add_table(slide, df, content_left + text_width + 0.2, content_top, 
-                                   table_width_adj, content_height, highlight_cells)
+                    # Pure text content - use intelligent truncation for better readability
+                    self._create_slide_with_truncated_content(
+                        content=content,
+                        text_chunks=text_chunks,
+                        table_positions=table_positions,
+                        layout_type=layout_type,
+                        highlight_cells=highlight_cells,
+                        max_height=max_height
+                    )
+            else:
+                # Single slide - no overflow
+                self._create_slide_with_structured_content(
+                    title=content.title,
+                    text_chunks=text_chunks,
+                    table_positions=table_positions,
+                    figure_path=None,
+                    layout_type=layout_type,
+                    highlight_cells=highlight_cells
+                )
+    
+    def _create_single_figure_slide(self, content: SlideContent, text_chunks: List[str], 
+                                   table_positions: List[Tuple[str, pd.DataFrame]], 
+                                   fig_generator: Dict, layout_type: str, 
+                                   highlight_cells: Optional[Dict]):
+        """Create a single slide with one figure."""
+        fig_params = fig_generator.get('params', {})
+        fig_name = fig_generator.get('name', 'unknown')
+        
+        # Generate and add the figure
+        generator_func = fig_generator.get('function')
+        if generator_func:
+            try:
+                fig = generator_func(**fig_params)
                 
+                # Create temp file
+                temp_dir = tempfile.gettempdir()
+                temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}.png"
+                figure_path = os.path.join(temp_dir, temp_filename)
+                
+                fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                
+                if content.show_figures:
+                    plt.show()
+                
+                plt.close(fig)
+                
+                # Create slide
+                slide_title = content.title
+                if fig_generator.get('title_suffix'):
+                    slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+                
+                self._create_slide_with_structured_content(
+                    title=slide_title,
+                    text_chunks=text_chunks,
+                    table_positions=table_positions,
+                    figure_path=figure_path,
+                    layout_type=layout_type,
+                    highlight_cells=highlight_cells
+                )
+                
+                # Clean up
+                if os.path.exists(figure_path):
+                    os.unlink(figure_path)
+                    
+            except Exception as e:
+                logger.warning(f"Failed to generate figure: {e}")
+                self._create_slide_with_structured_content(
+                    title=content.title,
+                    text_chunks=text_chunks,
+                    table_positions=table_positions,
+                    figure_path=None,
+                    layout_type=layout_type,
+                    highlight_cells=highlight_cells
+                )
+        else:
+            logger.warning(f"No generator function found in figure_generator config")
+            self._create_slide_with_structured_content(
+                title=content.title,
+                text_chunks=text_chunks,
+                table_positions=table_positions,
+                figure_path=None,
+                layout_type=layout_type,
+                highlight_cells=highlight_cells
+            )
+    
+    def _estimate_total_content_height(self, text_chunks: List[str], 
+                                     table_positions: List[Tuple[str, pd.DataFrame]], 
+                                     figure_path: Optional[str]) -> float:
+        """Estimate total height needed for all content."""
+        total_height = 0.0
+        
+        # Add text height with balanced spacing
+        for i, text_chunk in enumerate(text_chunks):
+            text_height = self._estimate_text_height(text_chunk)
+            total_height += text_height
+            
+            # Add spacing between text chunks (except for last one)
+            if i < len(text_chunks) - 1:
+                total_height += 0.2  # Reasonable spacing between text sections
+        
+        # Add table heights with balanced spacing
+        for i, (_, df) in enumerate(table_positions):
+            _, table_height = self._calculate_table_dimensions(df)
+            total_height += table_height
+            
+            # Add spacing between tables and after text
+            if i == 0 and text_chunks:
+                total_height += 0.25  # Reasonable space between text and first table
+            elif i > 0:
+                total_height += 0.2  # Space between tables
+        
+        # Add figure height
+        if figure_path:
+            total_height += DEFAULT_FIGURE_HEIGHT
+            # Add spacing if there's other content
+            if text_chunks or table_positions:
+                total_height += 0.2
+        
+        return total_height
+    
+    def _create_multiple_slides_for_overflow(self, content: SlideContent, text_chunks: List[str],
+                                           table_positions: List[Tuple[str, pd.DataFrame]],
+                                           figure_path: Optional[str], layout_type: str,
+                                           highlight_cells: Optional[Dict], max_height: float):
+        """Create multiple slides when content overflows - handles text, tables, and figures."""
+        slide_num = 1
+        current_text = []
+        current_height = 0.0
+        
+        # Get figure generators for handling
+        figure_generators = content.figure_generators
+        
+        # Handle figures first - each figure gets its own slide
+        for i, fig_generator in enumerate(figure_generators):
+            # Determine slide title
+            if fig_generator.get('title_suffix'):
+                slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+            else:
+                slide_title = f"{content.title} (Part {slide_num})"
+            
+            # First figure slide gets text and tables, subsequent ones are figure-only
+            slide_text_chunks = text_chunks if i == 0 else []
+            slide_table_positions = table_positions if i == 0 else []
+            
+            # Generate and add the figure
+            fig_params = fig_generator.get('params', {})
+            generator_func = fig_generator.get('function')
+            
+            if generator_func:
+                try:
+                    fig = generator_func(**fig_params)
+                    
+                    # Create temp file
+                    temp_dir = tempfile.gettempdir()
+                    temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}.png"
+                    generated_figure_path = os.path.join(temp_dir, temp_filename)
+                    
+                    fig.savefig(generated_figure_path, dpi=300, bbox_inches='tight')
+                    
+                    if content.show_figures:
+                        plt.show()
+                    
+                    plt.close(fig)
+                    
+                    # Create slide with figure
+                    self._create_slide_with_structured_content(
+                        title=slide_title,
+                        text_chunks=slide_text_chunks,
+                        table_positions=slide_table_positions,
+                        figure_path=generated_figure_path,
+                        layout_type=layout_type if slide_table_positions else ('text_figure' if slide_text_chunks else 'figure'),
+                        highlight_cells=highlight_cells
+                    )
+                    
+                    # Clean up
+                    if os.path.exists(generated_figure_path):
+                        os.unlink(generated_figure_path)
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to generate figure: {e}")
+                    self._create_slide_with_structured_content(
+                        title=slide_title,
+                        text_chunks=slide_text_chunks,
+                        table_positions=slide_table_positions,
+                        figure_path=None,
+                        layout_type='text_tables' if slide_text_chunks or slide_table_positions else 'text',
+                        highlight_cells=highlight_cells
+                    )
+            else:
+                logger.warning(f"No generator function found in figure_generator config")
+                self._create_slide_with_structured_content(
+                    title=slide_title,
+                    text_chunks=slide_text_chunks,
+                    table_positions=slide_table_positions,
+                    figure_path=None,
+                    layout_type='text_tables' if slide_text_chunks or slide_table_positions else 'text',
+                    highlight_cells=highlight_cells
+                )
+            
+            slide_num += 1
+        
+        # If we had figures and text/tables were included in first slide, we're done
+        if figure_generators and text_chunks:
+            return
+            
+        # Process remaining text more intelligently - don't split aggressively
+        full_text = '\n\n'.join(text_chunks)
+        
+        # First, check if the entire text actually fits (avoid unnecessary splitting)
+        total_text_height = self._estimate_text_height(full_text)
+        
+        # Use 105% of max height instead of 95% to be more generous about fitting
+        realistic_max_height = max_height * 1.05
+        
+        if total_text_height <= realistic_max_height:
+            # All text fits on one slide - don't split!
+            self._create_slide_with_structured_content(
+                title=f"{content.title} (Part {slide_num})" if slide_num > 1 else content.title,
+                text_chunks=[full_text],
+                table_positions=table_positions,
+                figure_path=None,
+                layout_type='text_tables' if table_positions else 'text',
+                highlight_cells=highlight_cells
+            )
+            return
+        
+        # Only split when absolutely necessary - use larger meaningful sections
+        # Split on double newlines (paragraphs) instead of numbered items
+        paragraphs = full_text.split('\n\n')
+        
+        current_slide_text = []
+        current_height = 0.0
+        
+        for paragraph in paragraphs:
+            if not paragraph.strip():
+                continue
+                
+            paragraph_height = self._estimate_text_height(paragraph)
+            
+            # Check if adding this paragraph would exceed reasonable slide capacity
+            # Use 90% of max height for better readability and more conservative splitting
+            if current_height + paragraph_height > max_height * 0.9 and current_slide_text:
+                # Create slide with current content
+                self._create_slide_with_structured_content(
+                    title=f"{content.title} (Part {slide_num})",
+                    text_chunks=['\n\n'.join(current_slide_text)],
+                    table_positions=[] if slide_num > 1 else table_positions,  # Tables only on first slide
+                    figure_path=None,
+                    layout_type='text_tables' if (slide_num == 1 and table_positions) else 'text',
+                    highlight_cells=highlight_cells
+                )
+                slide_num += 1
+                current_slide_text = []
+                current_height = 0.0
+            
+            current_slide_text.append(paragraph)
+            current_height += paragraph_height + 0.05  # Smaller gap between paragraphs
+        
+        # Create final slide with remaining content
+        if current_slide_text:
+            self._create_slide_with_structured_content(
+                title=f"{content.title} (Part {slide_num})",
+                text_chunks=['\n\n'.join(current_slide_text)],
+                table_positions=[] if slide_num > 1 else table_positions,  # Tables only if this is the first/only slide
+                figure_path=None,
+                layout_type='text_tables' if (slide_num == 1 and table_positions) else 'text',
+                highlight_cells=highlight_cells
+            )
+        
+        # Handle tables separately if they didn't fit on text slides
+        if slide_num > 1 and table_positions:
+            # Tables get their own slide(s)
+            current_tables = []
+            current_height = 0.0
+            
+            for table_key, df in table_positions:
+                table_width, table_height = self._calculate_table_dimensions(df)
+                
+                if current_height + table_height > max_height * 0.8 and current_tables:
+                    self._create_slide_with_structured_content(
+                        title=f"{content.title} - Data Tables (Part {slide_num})",
+                        text_chunks=[],
+                        table_positions=current_tables,
+                        figure_path=None,
+                        layout_type='text_tables',
+                        highlight_cells=highlight_cells
+                    )
+                    slide_num += 1
+                    current_tables = []
+                    current_height = 0.0
+                
+                current_tables.append((table_key, df))
+                current_height += table_height + 0.2
+            
+            # Final table slide
+            if current_tables:
+                self._create_slide_with_structured_content(
+                    title=f"{content.title} - Data Tables (Part {slide_num})",
+                    text_chunks=[],
+                    table_positions=current_tables,
+                    figure_path=None,
+                    layout_type='text_tables',
+                    highlight_cells=highlight_cells
+                )
+    
+    def _create_slide_with_structured_content(self, title: str, text_chunks: List[str], 
+                                            table_positions: List[Tuple[str, pd.DataFrame]], 
+                                            figure_path: Optional[str], layout_type: str, 
+                                            highlight_cells: Optional[Dict]):
+        """Create slide with structured content positioning using helper functions."""
+        # Create basic slide structure
+        slide = self._create_basic_slide_structure(title)
+        
+        # Check if we should use intelligent two-column layout for text-tables
+        if layout_type == 'text_tables' and self._should_use_two_column_layout(text_chunks, table_positions):
+            self._create_two_column_text_tables_layout(slide, text_chunks, table_positions, highlight_cells)
+            return slide
+        
+        # Standard single-column layouts
+        # Combine text chunks
+        full_text = self._combine_text_chunks(text_chunks)
+        text_height = self._estimate_text_height(full_text) if full_text else 0
+        
+        # Calculate table dimensions if tables exist
+        table_width = table_height = 0
+        if table_positions:
+            table_width, table_height = self._calculate_table_dimensions(table_positions[0][1])
+        
+        # Calculate layout positions
+        layouts = self._calculate_content_layout(
+            content_type=layout_type,
+            text_height=text_height,
+            table_width=table_width,
+            table_height=table_height
+        )
+        
+        # Add content blocks based on layout type
+        if layout_type == 'text' and full_text:
+            self._add_content_block(
+                slide=slide,
+                content_type='text',
+                content_data={'text': full_text},
+                layout_info=layouts['text']
+            )
+            
         elif layout_type == 'text_figure':
-            text_height = self._estimate_text_height(text)
-            if text_height <= 2.0:
-                # Text top, figure bottom
-                self._add_text(slide, text, content_left, content_top, content_width, min(text_height, 2.0))
-                fig_top = content_top + min(text_height, 2.0) + 0.3
-                fig_height = content_height - (fig_top - content_top)
-                self._add_figure(slide, figure_path, content_left + 1.0, fig_top, max(fig_height, 3.0))
-            else:
-                # Side by side
-                text_width = content_width * 0.35  # 35% for text
-                fig_width = content_width * 0.6   # 60% for figure
-                self._add_text(slide, text, content_left, content_top, text_width, content_height)
-                self._add_figure(slide, figure_path, content_left + text_width + 0.3, content_top, content_height)
+            if full_text:
+                self._add_content_block(
+                    slide=slide,
+                    content_type='text',
+                    content_data={'text': full_text},
+                    layout_info=layouts['text']
+                )
+            if figure_path:
+                self._add_content_block(
+                    slide=slide,
+                    content_type='figure',
+                    content_data={'figure_path': figure_path},
+                    layout_info=layouts['figure']
+                )
                 
-        elif layout_type == 'text_table_figure':
-            # Three-way layout - more compact and ensure figure stays on slide
-            text_height = min(self._estimate_text_height(text), 1.5)  # Cap text at 1.5 inches
+        elif layout_type == 'figure' and figure_path:
+            figure_layout = {
+                'left': CONTENT_LEFT,
+                'top': CONTENT_TOP,
+                'width': CONTENT_WIDTH,
+                'height': CONTENT_HEIGHT
+            }
+            self._add_content_block(
+                slide=slide,
+                content_type='figure',
+                content_data={'figure_path': figure_path},
+                layout_info=figure_layout
+            )
             
-            # Use primary table for layout calculation
-            table_width, table_height = self._estimate_table_size(df) if df is not None else (0, 0)
-            table_width = min(table_width, content_width * 0.35)  # Limit table to 35% of width
-            table_height = min(table_height, 2.5)  # Cap table height at 2.5 inches
+        elif layout_type == 'text_tables':
+            if full_text:
+                self._add_content_block(
+                    slide=slide,
+                    content_type='text',
+                    content_data={'text': full_text},
+                    layout_info=layouts['text']
+                )
             
-            # Text across the top - more compact
-            self._add_text(slide, text, content_left, content_top, content_width, text_height)
+            # Add tables sequentially
+            current_top = layouts['tables']['top']
+            for table_key, df in table_positions:
+                table_width, table_height = self._calculate_table_dimensions(df)
+                table_layout = {
+                    'left': layouts['tables']['left'],
+                    'top': current_top,
+                    'width': table_width,
+                    'height': table_height
+                }
+                self._add_content_block(
+                    slide=slide,
+                    content_type='table',
+                    content_data={'df': df, 'highlight_cells': highlight_cells},
+                    layout_info=table_layout
+                )
+                current_top += table_height + ELEMENT_GAP
+                
+        elif layout_type == 'text_tables_figure':
+            if full_text:
+                self._add_content_block(
+                    slide=slide,
+                    content_type='text',
+                    content_data={'text': full_text},
+                    layout_info=layouts['text']
+                )
             
-            # Table and figure side by side below text
-            table_top = content_top + text_height + 0.2  # Small gap after text
-            remaining_height = content_height - (table_top - content_top)  # Available height for table+figure
+            if table_positions:
+                table_key, df = table_positions[0]
+                self._add_content_block(
+                    slide=slide,
+                    content_type='table',
+                    content_data={'df': df, 'highlight_cells': highlight_cells},
+                    layout_info=layouts['tables']
+                )
             
-            if df is not None:
-                # Add table on the left
-                self._add_table(slide, df, content_left, table_top, table_width, 
-                               min(table_height, remaining_height), highlight_cells)
-                fig_left = content_left + table_width + 0.3
-                fig_width = content_width - table_width - 0.3
-            else:
-                fig_left = content_left
-                fig_width = content_width
-            
-            # Ensure figure fits on slide - conservative sizing
-            fig_height = min(remaining_height, 3.5)  # Cap at 3.5 inches
-            if fig_left + 6.0 > content_left + content_width:  # Check if figure would extend beyond slide
-                fig_left = content_left + content_width - 6.0  # Pull back from right edge
-            
-            self._add_figure(slide, figure_path, fig_left, table_top, fig_height)
+            if figure_path:
+                self._add_content_block(
+                    slide=slide,
+                    content_type='figure',
+                    content_data={'figure_path': figure_path},
+                    layout_info=layouts['figure']
+                )
         
         return slide
+    
+    def _create_slide_with_truncated_content(self, content: SlideContent, text_chunks: List[str],
+                                           table_positions: List[Tuple[str, pd.DataFrame]],
+                                           layout_type: str, highlight_cells: Optional[Dict],
+                                           max_height: float):
+        """Create a single slide with intelligently truncated text content."""
+        # Combine all text chunks
+        full_text = '\n\n'.join(text_chunks)
+        
+        # Calculate available height for text (accounting for title and margins)
+        available_text_height = max_height - 0.5  # Reserve space for title and margins
+        
+        # Truncate text to fit
+        truncated_text = self._truncate_text_to_fit(full_text, available_text_height)
+        
+        # Create slide with truncated content
+        self._create_slide_with_structured_content(
+            title=content.title,
+            text_chunks=[truncated_text],
+            table_positions=table_positions,
+            figure_path=None,
+            layout_type=layout_type,
+            highlight_cells=highlight_cells
+        )
+    
+    def _truncate_text_to_fit(self, text: str, max_height: float) -> str:
+        """
+        Intelligently truncate text to fit within the specified height.
+        Truncates at paragraph boundaries and adds ellipsis if truncated.
+        """
+        if not text:
+            return text
+        
+        # Split text into paragraphs
+        paragraphs = text.split('\n\n')
+        result_paragraphs = []
+        current_height = 0.0
+        
+        for paragraph in paragraphs:
+            # Estimate height of this paragraph
+            paragraph_height = self._estimate_text_height(paragraph.strip())
+            
+            # Check if adding this paragraph would exceed max height
+            if current_height + paragraph_height > max_height:
+                # If we haven't added any paragraphs yet, try to fit part of this one
+                if not result_paragraphs:
+                    # Split by sentences and try to fit what we can
+                    sentences = paragraph.split('. ')
+                    for i, sentence in enumerate(sentences):
+                        partial_text = '. '.join(sentences[:i+1])
+                        if not partial_text.endswith('.'):
+                            partial_text += '.'
+                        
+                        partial_height = self._estimate_text_height(partial_text)
+                        if partial_height > max_height:
+                            # Even this sentence doesn't fit, take what we can
+                            if i > 0:
+                                result_paragraphs.append('. '.join(sentences[:i]) + '.')
+                            break
+                        elif i == len(sentences) - 1:
+                            # All sentences fit
+                            result_paragraphs.append(partial_text)
+                        # Continue to next sentence
+                
+                # Add truncation indicator and break
+                if result_paragraphs:
+                    result_text = '\n\n'.join(result_paragraphs)
+                    # Add ellipsis if we truncated
+                    if len(result_text.strip()) < len(text.strip()):
+                        result_text += "\n\n[Content truncated - see full analysis for complete details]"
+                    return result_text
+                else:
+                    # Couldn't fit anything, return a summary message
+                    return "[Content too large for slide - please see full document]"
+            
+            # This paragraph fits, add it
+            result_paragraphs.append(paragraph)
+            current_height += paragraph_height + 0.1  # Add small gap between paragraphs
+        
+        # All paragraphs fit
+        return '\n\n'.join(result_paragraphs)
     
     def save(self, filename: Optional[str] = None, output_dir: str = '.'):
         """Save presentation."""
@@ -549,6 +1134,364 @@ class SlideLayouts:
         filepath = os.path.join(output_dir, filename)
         self.prs.save(filepath)
         return filepath
+    
+    def _create_highlight_cells_map(self, df: pd.DataFrame, metric_anomaly_map: Dict[str, Dict[str, Any]]) -> Dict[Tuple[str, str], str]:
+        """Create a highlight_cells dictionary for the table based on anomaly information."""
+        highlight_cells = {}
+        
+        for metric_name, metric_info in metric_anomaly_map.items():
+            if metric_name in df.index:
+                anomalous_region = metric_info.get('anomalous_region')
+                direction = metric_info.get('direction')
+                higher_is_better = metric_info.get('higher_is_better', True)
+                
+                if anomalous_region and direction and anomalous_region in df.columns:
+                    is_good = (direction == 'higher' and higher_is_better) or \
+                             (direction == 'lower' and not higher_is_better)
+                    
+                    color = 'green' if is_good else 'red'
+                    highlight_cells[(metric_name, anomalous_region)] = color
+        
+        return highlight_cells
+    
+    def create_metrics_summary_slide(self, df: pd.DataFrame, metrics_text: Dict[str, str], 
+                                   metric_anomaly_map: Dict[str, Dict[str, Any]], 
+                                   title: str = "Metrics Summary") -> None:
+        """Create a summary slide with a styled table of metrics data and pre-formatted text explanations."""
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        
+        # Add standardized title using helper
+        self._add_title(slide, title)
+        
+        # Filter DataFrame to only include metrics we have text for
+        metrics = list(metrics_text.keys())
+        metrics_df = df[metrics]
+        
+        # Transpose the DataFrame so regions are columns and metrics are rows
+        metrics_df_transposed = metrics_df.T
+        
+        # Create highlight cells map for transposed data
+        highlight_cells = self._create_highlight_cells_map(metrics_df_transposed, metric_anomaly_map)
+        
+        # Calculate optimal table dimensions and add safety margin for PowerPoint rendering
+        calculated_table_width, table_height = self._calculate_table_dimensions(metrics_df_transposed, max_width=6.0)
+        
+        # Add safety margin to table width to account for PowerPoint's internal spacing
+        table_width = calculated_table_width + 0.2  # Extra margin for safety
+        
+        # Position table on the left side using standard constants
+        table_left = CONTENT_LEFT
+        table_top = CONTENT_TOP
+        
+        # Add styled table using helper method
+        self._add_table(
+            slide=slide,
+            df=metrics_df_transposed,
+            left=table_left,
+            top=table_top,
+            width=table_width,
+            height=table_height,
+            highlight_cells=highlight_cells
+        )
+        
+        # Calculate text area on the right side with minimal spacing
+        text_left = table_left + table_width + ELEMENT_GAP + 0.03  # Reduced spacing
+        text_width = CONTENT_WIDTH - table_width - ELEMENT_GAP - 0.03  # Reduce width accordingly
+        
+        # Ensure text doesn't go beyond slide boundaries
+        if text_left + text_width > CONTENT_LEFT + CONTENT_WIDTH:
+            text_width = CONTENT_LEFT + CONTENT_WIDTH - text_left
+        
+        # Ensure minimum text width
+        if text_width < 2.0:
+            text_width = 2.0
+        
+        text_height = CONTENT_HEIGHT
+        
+        # Add explanatory text using manual formatting for proper bold text
+        text_box = slide.shapes.add_textbox(
+            Inches(text_left), 
+            Inches(table_top), 
+            Inches(text_width), 
+            Inches(text_height)
+        )
+        text_frame = text_box.text_frame
+        text_frame.word_wrap = True
+        
+        # Add explanations for each metric with proper bold formatting
+        first_metric = True
+        for metric, explanation_text in metrics_text.items():
+            if first_metric:
+                # Use the existing first paragraph
+                p = text_frame.paragraphs[0]
+                first_metric = False
+            else:
+                # Add new paragraphs for subsequent metrics
+                p = text_frame.add_paragraph()
+                
+            p.text = f"{metric}:"
+            p.font.bold = True  # Proper bold formatting for PowerPoint
+            p.font.size = Pt(12)
+            p.space_after = Pt(6)
+            
+            p = text_frame.add_paragraph()
+            p.text = explanation_text
+            p.font.size = Pt(12)
+            p.space_after = Pt(12)
+    
+    def _calculate_content_layout(self, content_type: str, text_height: float = 0, 
+                                table_width: float = 0, table_height: float = 0,
+                                figure_width: float = 0, figure_height: float = 0) -> Dict[str, Dict[str, float]]:
+        """Calculate optimal layout positioning for different content types."""
+        layouts = {}
+        
+        if content_type == 'text':
+            layouts['text'] = {
+                'left': CONTENT_LEFT,
+                'top': CONTENT_TOP,
+                'width': CONTENT_WIDTH,
+                'height': CONTENT_HEIGHT
+            }
+            
+        elif content_type == 'text_figure':
+            # Determine layout based on text size
+            if text_height < CONTENT_HEIGHT * 0.25:
+                # Text on top, figure below
+                layouts['text'] = {
+                    'left': CONTENT_LEFT,
+                    'top': CONTENT_TOP,
+                    'width': CONTENT_WIDTH,
+                    'height': text_height
+                }
+                layouts['figure'] = {
+                    'left': CONTENT_LEFT,
+                    'top': CONTENT_TOP + text_height + ELEMENT_GAP,
+                    'width': CONTENT_WIDTH,
+                    'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
+                }
+            else:
+                # Side by side layout
+                text_width = min(CONTENT_WIDTH * 0.4, 6.0)
+                layouts['text'] = {
+                    'left': CONTENT_LEFT,
+                    'top': CONTENT_TOP,
+                    'width': text_width,
+                    'height': CONTENT_HEIGHT
+                }
+                layouts['figure'] = {
+                    'left': CONTENT_LEFT + text_width + ELEMENT_GAP,
+                    'top': CONTENT_TOP,
+                    'width': CONTENT_WIDTH - text_width - ELEMENT_GAP,
+                    'height': CONTENT_HEIGHT
+                }
+                
+        elif content_type == 'text_tables':
+            layouts['text'] = {
+                'left': CONTENT_LEFT,
+                'top': CONTENT_TOP,
+                'width': CONTENT_WIDTH,
+                'height': text_height
+            }
+            layouts['tables'] = {
+                'left': CONTENT_LEFT,
+                'top': CONTENT_TOP + text_height + ELEMENT_GAP,
+                'width': CONTENT_WIDTH,
+                'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
+            }
+            
+        elif content_type == 'text_tables_figure':
+            layouts['text'] = {
+                'left': CONTENT_LEFT,
+                'top': CONTENT_TOP,
+                'width': CONTENT_WIDTH,
+                'height': text_height
+            }
+            remaining_top = CONTENT_TOP + text_height + ELEMENT_GAP
+            remaining_height = CONTENT_HEIGHT - text_height - ELEMENT_GAP
+            
+            layouts['tables'] = {
+                'left': CONTENT_LEFT,
+                'top': remaining_top,
+                'width': min(table_width, CONTENT_WIDTH * 0.4),
+                'height': min(table_height, remaining_height)
+            }
+            layouts['figure'] = {
+                'left': CONTENT_LEFT + table_width + ELEMENT_GAP,
+                'top': remaining_top,
+                'width': CONTENT_WIDTH - table_width - ELEMENT_GAP,
+                'height': remaining_height
+            }
+            
+        return layouts
+    
+    def _create_basic_slide_structure(self, title: str) -> object:
+        """Create a basic slide with title."""
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        self._add_title(slide, title)
+        return slide
+    
+    def _add_content_block(self, slide: object, content_type: str, content_data: Dict, 
+                          layout_info: Dict[str, float]) -> None:
+        """Add a content block (text, table, or figure) to a slide at specified position."""
+        if content_type == 'text':
+            text_content = content_data.get('text', '')
+            if text_content:
+                self._add_text(
+                    slide=slide,
+                    text=text_content,
+                    left=layout_info['left'],
+                    top=layout_info['top'],
+                    width=layout_info['width'],
+                    height=layout_info['height']
+                )
+                
+        elif content_type == 'table':
+            df = content_data.get('df')
+            highlight_cells = content_data.get('highlight_cells', {})
+            if df is not None:
+                self._add_table(
+                    slide=slide,
+                    df=df,
+                    left=layout_info['left'],
+                    top=layout_info['top'],
+                    width=layout_info['width'],
+                    height=layout_info['height'],
+                    highlight_cells=highlight_cells
+                )
+                
+        elif content_type == 'figure':
+            figure_path = content_data.get('figure_path')
+            if figure_path:
+                self._add_figure(
+                    slide=slide,
+                    figure_path=figure_path,
+                    left=layout_info['left'],
+                    top=layout_info['top'],
+                    width=layout_info.get('width'),
+                    height=layout_info.get('height')
+                )
+    
+    def _combine_text_chunks(self, text_chunks: List[str]) -> str:
+        """Combine text chunks with proper formatting."""
+        return '\n\n'.join(chunk.strip() for chunk in text_chunks if chunk.strip())
+
+    def _should_use_two_column_layout(self, text_chunks: List[str], table_positions: List[Tuple[str, pd.DataFrame]]) -> bool:
+        """Determine if a two-column layout should be used for text-tables."""
+        # Use two-column layout when we have:
+        # 1. Multiple tables (2 or more)
+        # 2. At least some text chunks
+        # 3. Tables are reasonably sized (not too wide)
+        
+        if len(table_positions) < 2 or len(text_chunks) == 0:
+            return False
+        
+        # Calculate column width
+        column_width = (CONTENT_WIDTH - ELEMENT_GAP) / 2
+        
+        # Check if tables are reasonably sized for two-column layout
+        # Use column width as max_width when testing suitability
+        max_table_width = 0
+        for _, df in table_positions:
+            table_width, _ = self._calculate_table_dimensions(df, max_width=column_width * 0.9)
+            max_table_width = max(max_table_width, table_width)
+        
+        # Only use two-column if tables can fit in the column
+        return max_table_width <= column_width * 0.9  # Leave some margin
+    
+    def _create_two_column_text_tables_layout(self, slide: object, text_chunks: List[str], 
+                                             table_positions: List[Tuple[str, pd.DataFrame]], 
+                                             highlight_cells: Optional[Dict]):
+        """Create a two-column layout with text descriptions paired with their corresponding tables."""
+        # Calculate column dimensions
+        column_width = (CONTENT_WIDTH - ELEMENT_GAP) / 2
+        left_column_left = CONTENT_LEFT
+        right_column_left = CONTENT_LEFT + column_width + ELEMENT_GAP
+        
+        # Pair text chunks with tables intelligently
+        pairs = self._pair_text_with_tables(text_chunks, table_positions)
+        
+        # Position pairs in two columns
+        left_column_top = CONTENT_TOP
+        right_column_top = CONTENT_TOP
+        
+        for i, (text_chunk, table_info) in enumerate(pairs):
+            # Determine which column to use (alternate)
+            use_left_column = (i % 2 == 0)
+            
+            if use_left_column:
+                column_left = left_column_left
+                current_top = left_column_top
+            else:
+                column_left = right_column_left
+                current_top = right_column_top
+            
+            # Add text description
+            if text_chunk:
+                text_height = self._estimate_text_height(text_chunk)
+                self._add_text(
+                    slide=slide,
+                    text=text_chunk,
+                    left=column_left,
+                    top=current_top,
+                    width=column_width,
+                    height=text_height
+                )
+                current_top += text_height + ELEMENT_GAP * 0.5  # Small gap between text and table
+            
+            # Add table
+            if table_info:
+                table_key, df = table_info
+                table_width, table_height = self._calculate_table_dimensions(df)
+                
+                self._add_table(
+                    slide=slide,
+                    df=df,
+                    left=column_left,
+                    top=current_top,
+                    width=min(table_width, column_width),
+                    height=table_height,
+                    highlight_cells=highlight_cells
+                )
+                current_top += table_height + ELEMENT_GAP
+            
+            # Update column top for next iteration
+            if use_left_column:
+                left_column_top = current_top
+            else:
+                right_column_top = current_top
+    
+    def _pair_text_with_tables(self, text_chunks: List[str], 
+                              table_positions: List[Tuple[str, pd.DataFrame]]) -> List[Tuple[Optional[str], Optional[Tuple[str, pd.DataFrame]]]]:
+        """Intelligently pair text chunks with their corresponding tables."""
+        pairs = []
+        
+        # Strategy: 
+        # - If we have equal or more text chunks than tables, pair them 1:1
+        # - If we have more tables than text chunks, some tables won't have descriptions
+        # - If we have fewer tables than text chunks, some text will be grouped
+        
+        num_text = len(text_chunks)
+        num_tables = len(table_positions)
+        
+        if num_text >= num_tables:
+            # Each table gets a text description (possibly combining multiple text chunks)
+            for i in range(num_tables):
+                text_chunk = text_chunks[i] if i < num_text else None
+                table_info = table_positions[i]
+                pairs.append((text_chunk, table_info))
+            
+            # Add any remaining text chunks as standalone text items
+            for i in range(num_tables, num_text):
+                pairs.append((text_chunks[i], None))
+        else:
+            # More tables than text - some tables won't have descriptions
+            for i in range(max(num_text, num_tables)):
+                text_chunk = text_chunks[i] if i < num_text else None
+                table_info = table_positions[i] if i < num_tables else None
+                if text_chunk or table_info:  # Only add if we have content
+                    pairs.append((text_chunk, table_info))
+        
+        return pairs
 
 
 # The decorator 
@@ -585,6 +1528,9 @@ def dual_output(console: bool = True, slide: bool = True,
                 slide_layout = slide_builder.add_content_slide(slide_content, layout_type)
                 results['slide'] = slide_layout
             
+            # Clean up any temporary figure files
+            slide_content.cleanup()
+            
             return slide_content, results
         
         return wrapper
@@ -592,283 +1538,30 @@ def dual_output(console: bool = True, slide: bool = True,
 
 
 # Example figure generators
-def create_bar_chart(save_path: str, df: pd.DataFrame, **params):
+def create_bar_chart(df: pd.DataFrame, **params):
     """Example figure generator - bar chart."""
-    try:
-        fig, ax = plt.subplots(figsize=(8, 5))
-        df.plot(kind='bar', ax=ax)
-        ax.set_title(params.get('chart_title', 'Data Overview'))
-        ax.set_ylabel(params.get('ylabel', 'Values'))
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close()
-    except ImportError:
-        # Fallback if matplotlib not available
-        with open(save_path, 'w') as f:
-            f.write("Matplotlib not available")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    df.plot(kind='bar', ax=ax)
+    ax.set_title(params.get('chart_title', 'Data Overview'))
+    ax.set_ylabel(params.get('ylabel', 'Values'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
 
 
-def create_scatter_plot(save_path: str, df: pd.DataFrame, **params):
+def create_scatter_plot(df: pd.DataFrame, **params):
     """Example figure generator - scatter plot."""
-    try:
-        fig, ax = plt.subplots(figsize=(8, 5))
-        
-        if len(df.columns) >= 2:
-            x_col, y_col = df.columns[:2]
-            ax.scatter(df[x_col], df[y_col])
-            ax.set_xlabel(x_col)
-            ax.set_ylabel(y_col)
-            ax.set_title(params.get('chart_title', f'{y_col} vs {x_col}'))
-        
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close()
-    except ImportError:
-        with open(save_path, 'w') as f:
-            f.write("Matplotlib not available")
-
-
-# Authentication functions for Google Drive (simplified)
-def get_credentials_local(credentials_path: Optional[str] = None, token_path: Optional[str] = None):
-    """Get credentials using local files (development/personal use)."""
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        
-        SCOPES = ['https://www.googleapis.com/auth/presentations',
-                  'https://www.googleapis.com/auth/drive.file',
-                  'https://www.googleapis.com/auth/drive']
-        
-        creds = None
-        if token_path and os.path.exists(token_path):
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not credentials_path or not os.path.exists(credentials_path):
-                    raise FileNotFoundError("credentials.json file is required for OAuth flow")
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-                if token_path:
-                    with open(token_path, 'w') as token:
-                        token.write(creds.to_json())
-        
-        return creds
-        
-    except ImportError:
-        raise ImportError("Install: pip install google-auth google-auth-oauthlib")
-
-
-def get_credentials_enterprise(credentials_dict: dict, proxy_info=None, ca_certs: Optional[str] = None):
-    """Get credentials for enterprise environments with proxy support."""
-    try:
-        from oauth2client.service_account import ServiceAccountCredentials
-        import httplib2
-        
-        SCOPES = ['https://www.googleapis.com/auth/presentations',
-                  'https://www.googleapis.com/auth/drive.file',
-                  'https://www.googleapis.com/auth/drive']
-        
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scopes=SCOPES)
-        http = httplib2.Http(proxy_info=proxy_info, ca_certs=ca_certs)
-        authorized_http = creds.authorize(http)
-        
-        return creds, authorized_http
-        
-    except ImportError:
-        raise ImportError("Install: pip install oauth2client httplib2")
-
-
-def upload_to_google_drive(file_path: str, user_email: Optional[str] = None, **auth_kwargs):
-    """Upload a file to Google Drive with smart authentication detection."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
+    fig, ax = plt.subplots(figsize=(8, 5))
     
-    try:
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaFileUpload
-        
-        # Determine auth method and get service
-        if 'credentials_dict' in auth_kwargs:
-            # Enterprise auth
-            creds, authorized_http = get_credentials_enterprise(
-                auth_kwargs['credentials_dict'],
-                auth_kwargs.get('proxy_info'),
-                auth_kwargs.get('ca_certs')
-            )
-            drive_service = build('drive', 'v3', http=authorized_http, cache_discovery=False)
-        else:
-            # Local auth
-            creds = get_credentials_local(
-                auth_kwargs.get('credentials_path'),
-                auth_kwargs.get('token_path')
-            )
-            drive_service = build('drive', 'v3', credentials=creds)
-        
-        # Create user folder if user_email provided
-        folder_id = None
-        if user_email:
-            username = user_email.split('@')[0] if '@' in user_email else user_email
-            folder_name = f"RCA_Analysis_{username}"
-            
-            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'"
-            results = drive_service.files().list(q=query).execute()
-            
-            if results['files']:
-                folder_id = results['files'][0]['id']
-            else:
-                folder_metadata = {
-                    'name': folder_name,
-                    'mimeType': 'application/vnd.google-apps.folder'
-                }
-                folder = drive_service.files().create(body=folder_metadata).execute()
-                folder_id = folder['id']
-                
-                if 'credentials_dict' in auth_kwargs:
-                    permission = {
-                        'type': 'user',
-                        'role': 'writer',
-                        'emailAddress': user_email
-                    }
-                    drive_service.permissions().create(
-                        fileId=folder_id,
-                        body=permission,
-                        sendNotificationEmail=False
-                    ).execute()
-        
-        # Upload file
-        file_metadata = {
-            'name': os.path.basename(file_path),
-            'mimeType': 'application/vnd.google-apps.presentation'
-        }
-        if folder_id:
-            file_metadata['parents'] = [folder_id]
-        
-        media = MediaFileUpload(
-            file_path,
-            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation',
-            resumable=True
-        )
-        
-        file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id,webViewLink'
-        ).execute()
-        
-        result = {
-            'gdrive_id': file['id'],
-            'gdrive_url': file['webViewLink']
-        }
-        
-        if folder_id:
-            result['folder_url'] = f"https://drive.google.com/drive/folders/{folder_id}"
-        
-        return result
-        
-    except ImportError:
-        raise ImportError("Install: pip install google-api-python-client")
-
-
-# Additional summary page functions
-def _create_highlight_cells_map(
-    df: pd.DataFrame,
-    metric_anomaly_map: Dict[str, Dict[str, Any]]
-) -> Dict[Tuple[str, str], str]:
-    """Create a highlight_cells dictionary for the table based on anomaly information."""
-    highlight_cells = {}
+    if len(df.columns) >= 2:
+        x_col, y_col = df.columns[:2]
+        ax.scatter(df[x_col], df[y_col])
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_title(params.get('chart_title', f'{y_col} vs {x_col}'))
     
-    for metric_name, metric_info in metric_anomaly_map.items():
-        if metric_name in df.index:
-            anomalous_region = metric_info.get('anomalous_region')
-            direction = metric_info.get('direction')
-            higher_is_better = metric_info.get('higher_is_better', True)
-            
-            if anomalous_region and direction and anomalous_region in df.columns:
-                is_good = (direction == 'higher' and higher_is_better) or \
-                         (direction == 'lower' and not higher_is_better)
-                
-                color = 'green' if is_good else 'red'
-                highlight_cells[(metric_name, anomalous_region)] = color
-    
-    return highlight_cells
-
-
-def create_metrics_summary_slide(
-    slide_layouts: SlideLayouts,
-    df: pd.DataFrame,
-    metrics_text: Dict[str, str],
-    metric_anomaly_map: Dict[str, Dict[str, Any]],
-    title: str = "Metrics Summary"
-) -> None:
-    """Create a summary slide with a styled table of metrics data and pre-formatted text explanations."""
-    slide_layout = slide_layouts.prs.slide_layouts[6]
-    slide = slide_layouts.prs.slides.add_slide(slide_layout)
-    
-    # Add standardized title
-    slide_layouts._add_title(slide, title)
-    
-    # Filter DataFrame to only include metrics we have text for
-    metrics = list(metrics_text.keys())
-    metrics_df = df[metrics]
-    
-    # Transpose the DataFrame so regions are columns and metrics are rows
-    metrics_df_transposed = metrics_df.T
-    
-    # Create highlight cells map for transposed data
-    highlight_cells = _create_highlight_cells_map(metrics_df_transposed, metric_anomaly_map)
-    
-    content_top = 0.8
-    
-    # Calculate table dimensions
-    num_rows = len(metrics_df_transposed) + 1
-    row_height = 0.4
-    table_height = num_rows * row_height
-    
-    max_index_length = max(len(str(idx)) for idx in metrics_df_transposed.index)
-    max_column_length = max(len(str(col)) for col in metrics_df_transposed.columns)
-    
-    index_width_estimate = max(max_index_length * 0.08, 1.3)
-    data_width_estimate = max_column_length * 0.08 * len(metrics_df_transposed.columns)
-    total_table_width = min(index_width_estimate + data_width_estimate + 0.5, 6.0)
-    
-    # Add styled table on the left side using integrated method
-    table = slide_layouts._add_table(
-        slide=slide,
-        df=metrics_df_transposed,
-        left=0.5,
-        top=content_top,
-        width=total_table_width,
-        height=table_height,
-        highlight_cells=highlight_cells
-    )
-    
-    # Create text area on the right side
-    text_left = Inches(0.5 + total_table_width + 0.3)
-    text_width = Inches(13.0 - (0.5 + total_table_width + 0.3) - 0.2)
-    text_top = Inches(content_top)
-    text_height = Inches(6.0)
-    
-    text_box = slide.shapes.add_textbox(text_left, text_top, text_width, text_height)
-    text_frame = text_box.text_frame
-    text_frame.word_wrap = True
-    
-    # Add explanations for each metric
-    for metric, explanation_text in metrics_text.items():
-        p = text_frame.add_paragraph()
-        p.text = f"{metric}:"
-        p.font.bold = True
-        p.font.size = Pt(12)
-        p.space_after = Pt(6)
-        
-        p = text_frame.add_paragraph()
-        p.text = explanation_text
-        p.font.size = Pt(12)
-        p.space_after = Pt(12)
+    plt.tight_layout()
+    return fig
 
 
 if __name__ == "__main__":
@@ -882,13 +1575,13 @@ if __name__ == "__main__":
     # Create slide builder
     slides = SlideLayouts()
     
-    # Example 1: Text + Table with decorator
-    @dual_output(console=True, slide=True, slide_builder=slides, layout_type='summary')
+    # Example 1: Text + Table with decorator (no figures)
+    @dual_output(console=True, slide=True, slide_builder=slides, layout_type='text_tables')
     def create_summary_analysis():
         return SlideContent(
             title="Summary Analysis",
-            text_template="Key insight: {{ region }} shows {{ trend }} performance with {{ metric }} being {{ pct }}% {{ direction }}.",
-            df=df,
+            text_template="Key insight: {{ region }} shows {{ trend }} performance with {{ metric }} being {{ pct }}% {{ direction }}.\n\n{{ main_table }}\n\nThis requires immediate attention.",
+            dfs={'main_table': df},
             template_params={
                 'region': 'North America',
                 'trend': 'concerning',
@@ -898,34 +1591,80 @@ if __name__ == "__main__":
             }
         )
     
-    # Example 2: Figure generation with decorator
+    # Example 2: Modern figure generation with figure_generators approach
     @dual_output(console=True, slide=True, slide_builder=slides, layout_type='text_figure')
     def create_chart_analysis():
         return SlideContent(
             title="Performance by Region",
             text_template="The chart shows {{ insight }}. {{ region }} is an outlier.",
-            df=df,  # Pass the dataframe
-            figure_generator=create_bar_chart,  # Function, not path!
+            dfs={},  # No tables for this example
             template_params={
                 'insight': 'significant regional variation',
-                'region': 'North America',
-                'chart_title': 'Regional Performance Comparison'
-            }
+                'region': 'North America'
+            },
+            figure_generators=[
+                {
+                    'title_suffix': 'Bar Chart',
+                    'params': {
+                        'df': df,
+                        'chart_title': 'Regional Performance Comparison',
+                        'ylabel': 'Values'
+                    },
+                    'function': create_bar_chart
+                }
+            ]
+        )
+    
+    # Example 3: Multiple figures - each gets its own slide automatically
+    @dual_output(console=True, slide=True, slide_builder=slides, layout_type='text_figure')
+    def create_multi_chart_analysis():
+        return SlideContent(
+            title="Multi-Chart Analysis",
+            text_template="Multiple perspectives on the data: {{ insight }}.",
+            dfs={},
+            template_params={
+                'insight': 'both bar and scatter views reveal patterns'
+            },
+            figure_generators=[
+                {
+                    'title_suffix': 'Bar View',
+                    'params': {
+                        'df': df,
+                        'chart_title': 'Regional Performance',
+                        'ylabel': 'Values'
+                    },
+                    'function': create_bar_chart
+                },
+                {
+                    'title_suffix': 'Scatter View',
+                    'params': {
+                        'df': df,
+                        'chart_title': 'Regional Performance'
+                    },
+                    'function': create_scatter_plot
+                }
+            ]
         )
     
     # Run examples
-    print("🎯 DECORATOR APPROACH WITH FIGURE GENERATION")
+    print("MODERN DECORATOR APPROACH WITH FIGURE GENERATION")
     print("=" * 60)
     
-    print("\n📊 SUMMARY ANALYSIS:")
+    print("\n📊 SUMMARY ANALYSIS (No Figures):")
     content1, results1 = create_summary_analysis()
-    print(results1['console'])
     
-    print("\n📈 CHART ANALYSIS:")
+    print("\n📈 SINGLE CHART ANALYSIS (New figure_generators approach):")
     content2, results2 = create_chart_analysis()
-    print(results2['console'])
+    
+    print("\n🎯 MULTI-CHART ANALYSIS (Multiple slides auto-generated):")
+    content3, results3 = create_multi_chart_analysis()
     
     # Save slides
-    filepath = slides.save("decorator_demo", "./output")
+    filepath = slides.save("modern_decorator_demo", "../output")
     print(f"\n✅ Slides saved: {filepath}")
-    print("✅ Figure files automatically cleaned up!") 
+    print("✅ Figure files automatically cleaned up!")
+    print("\nKEY POINTS:")
+    print("• Use 'figure_generators' parameter (not in template_params)")
+    print("• Each figure_generator creates one slide automatically")
+    print("• Store functions directly with 'function' key in figure_generators")
+    print("• No redundant function storage needed!") 

@@ -7,17 +7,11 @@ and slide generation for root cause analysis.
 
 # Import key functions from hypothesis_scorer
 from .hypothesis_scorer import (
+    score_hypotheses_for_metrics,
     score_all_hypotheses,
-    process_metrics,
     get_ranked_hypotheses,
     create_multi_hypothesis_plot,
-    create_scatter_grid,
-    plot_scatter,
-    build_structured_hypothesis_results,
-    process_metrics_with_structured_results,
-    add_score_formula,
-    add_template_text,
-    render_template_text
+    create_scatter_grid
 )
 
 # Import key functions from yaml_processor
@@ -34,7 +28,8 @@ from .yaml_processor import (
     get_display_name_from_technical,
     convert_dataframe_to_display_names,
     get_technical_names_for_metrics,
-    get_technical_names_for_hypotheses
+    get_technical_names_for_hypotheses,
+    load_all_configs
 )
 
 # Import key functions from make_slides
@@ -43,40 +38,54 @@ from .make_slides import (
     SlideContent,
     dual_output,
     create_bar_chart,
-    create_scatter_plot,
-    get_credentials_local,
-    get_credentials_enterprise,
-    upload_to_google_drive,
-    create_metrics_summary_slide
+    create_scatter_plot
 )
+
+# Import Google Drive utilities (optional)
+try:
+    from .google_drive_utils import (
+        get_credentials_local,
+        get_credentials_enterprise,
+        upload_to_google_drive
+    )
+    _has_google_drive = True
+except ImportError:
+    # Google Drive utilities not available
+    _has_google_drive = False
+    get_credentials_local = None
+    get_credentials_enterprise = None
+    upload_to_google_drive = None
 
 # Import key functions from depth_spotter
 from .depth_spotter import (
-    rate_contrib,
-    additive_contrib,
-    plot_subregion_bars,
     analyze_region_depth,
-    create_synthetic_data
+    plot_subregion_bars
 )
+
+# Import anomaly detector
+from .anomaly_detector import detect_snapshot_anomaly_for_column
+
+# Import slides from make_slides
+from .make_slides import SlideLayouts
+slides = SlideLayouts()
 
 # Define what should be available in "from rca_package import *"
 __all__ = [
     # Core analysis functions
+    'score_hypotheses_for_metrics',
     'score_all_hypotheses',
-    'process_metrics',
     'get_ranked_hypotheses',
-    'build_structured_hypothesis_results',
-    'process_metrics_with_structured_results',
-    
-    # Visualization functions
     'create_multi_hypothesis_plot',
     'create_scatter_grid',
-    'plot_scatter',
-    'add_score_formula',
-    'add_template_text',
-    'render_template_text',
     
-    # YAML configuration functions
+    # Depth analysis functions
+    'analyze_region_depth',
+    'plot_subregion_bars',
+    
+    # Anomaly detection
+    'detect_snapshot_anomaly_for_column',
+    
+    # YAML processing
     'load_config',
     'get_metric_info',
     'get_hypothesis_info',
@@ -90,8 +99,9 @@ __all__ = [
     'convert_dataframe_to_display_names',
     'get_technical_names_for_metrics',
     'get_technical_names_for_hypotheses',
+    'load_all_configs',
     
-    # Presentation functions
+    # Slide building
     'SlideLayouts',
     'SlideContent',
     'dual_output',
@@ -100,12 +110,5 @@ __all__ = [
     'get_credentials_local',
     'get_credentials_enterprise',
     'upload_to_google_drive',
-    'create_metrics_summary_slide',
-    
-    # Depth analysis functions
-    'rate_contrib',
-    'additive_contrib',
-    'plot_subregion_bars',
-    'analyze_region_depth',
-    'create_synthetic_data'
+    'slides'
 ] 
