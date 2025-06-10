@@ -81,6 +81,82 @@ def create_trend_chart(df: pd.DataFrame, title: str) -> plt.Figure:
     
     return fig
 
+def create_giant_complex_chart(df: pd.DataFrame, title: str) -> plt.Figure:
+    """Create a giant, complex chart that should take up most/all of a slide."""
+    # Create a very large figure - much bigger than normal
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))  # Giant size: 20x16 inches
+    
+    # Convert percentage strings to float values for all dataframes
+    data = df.copy()
+    for col in ['Conversion Rate', 'Page Load Time', 'Bounce Rate']:
+        if col in data.columns:
+            data[col] = data[col].str.rstrip('%').astype('float') / 100
+    
+    # Subplot 1: Bar chart
+    x = np.arange(len(data['Region']))
+    width = 0.25
+    if 'Conversion Rate' in data.columns:
+        ax1.bar(x - width, data['Conversion Rate'], width, label='Conversion Rate', color='#2ecc71')
+    if 'Page Load Time' in data.columns:
+        ax1.bar(x, data['Page Load Time'], width, label='Page Load Time', color='#e74c3c')
+    if 'Bounce Rate' in data.columns:
+        ax1.bar(x + width, data['Bounce Rate'], width, label='Bounce Rate', color='#3498db')
+    
+    ax1.set_ylabel('Change from Baseline')
+    ax1.set_title('Regional Performance Metrics')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(data['Region'], rotation=45)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+    
+    # Subplot 2: Scatter plot with trend lines
+    if len(data.columns) >= 3:
+        ax2.scatter(data['Conversion Rate'], data['Page Load Time'], s=200, alpha=0.7, c='red')
+        ax2.set_xlabel('Conversion Rate Change')
+        ax2.set_ylabel('Page Load Time Change')
+        ax2.set_title('Performance Correlation Analysis')
+        ax2.grid(True, alpha=0.3)
+        # Add trend line
+        z = np.polyfit(data['Conversion Rate'].astype(float), data['Page Load Time'].astype(float), 1)
+        p = np.poly1d(z)
+        ax2.plot(data['Conversion Rate'], p(data['Conversion Rate']), "r--", alpha=0.8)
+    
+    # Subplot 3: Heatmap-style visualization
+    metrics_matrix = data[['Conversion Rate', 'Page Load Time', 'Bounce Rate']].values
+    im = ax3.imshow(metrics_matrix, cmap='RdYlGn_r', aspect='auto')
+    ax3.set_xticks(range(len(['Conversion Rate', 'Page Load Time', 'Bounce Rate'])))
+    ax3.set_xticklabels(['Conversion Rate', 'Page Load Time', 'Bounce Rate'], rotation=45)
+    ax3.set_yticks(range(len(data['Region'])))
+    ax3.set_yticklabels(data['Region'])
+    ax3.set_title('Performance Heatmap')
+    plt.colorbar(im, ax=ax3)
+    
+    # Subplot 4: Pie chart of revenue impact
+    if 'Revenue Impact' in data.columns:
+        revenue_values = []
+        labels = []
+        for i, region in enumerate(data['Region']):
+            rev_str = data.iloc[i]['Revenue Impact']
+            # Extract numeric value from strings like '$-2.5M', '$+4.2M'
+            rev_val = float(rev_str.replace('$', '').replace('M', '').replace('+', ''))
+            if rev_val != 0:  # Only include non-zero values in pie chart
+                revenue_values.append(abs(rev_val))  # Use absolute values for pie chart
+                labels.append(f"{region} ({rev_str})")
+        
+        if revenue_values:
+            colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#ff99cc', '#c2c2f0']
+            ax4.pie(revenue_values, labels=labels, autopct='%1.1f%%', colors=colors[:len(revenue_values)])
+            ax4.set_title('Revenue Impact Distribution')
+    
+    # Add overall title
+    fig.suptitle(title, fontsize=24, fontweight='bold', y=0.98)
+    
+    # Adjust layout with extra padding
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    return fig
+
 def main():
     """Comprehensive test of slide layout with long text, multiple tables, and figures."""
     
@@ -256,6 +332,8 @@ This comprehensive analysis combines both current metrics and trend data to prov
     print("3. Very long text with multiple tables")
     print("4. Text with tables and multiple figures")
     print("5. Multiple tables with minimal text")
+    print("6. Pure text overflow test")
+    print("7. Giant figure with text and tables (tests empty slide bug)")
     
     # Test 1: Very long text with table 
     @dual_output(console=False, slide=True, slide_builder=slides, layout_type='text_tables', show_figures=False)
@@ -360,6 +438,42 @@ These comprehensive tables provide granular insights into regional performance p
             dfs={}  # No tables - pure text
         )
     
+    # Test 7: Giant figure with text and tables - this should expose the empty slide issue
+    @dual_output(console=False, slide=True, slide_builder=slides, layout_type='text_tables_figure', show_figures=False)
+    def create_giant_figure_test():
+        return SlideContent(
+            title="Giant Figure with Text and Tables Test",
+            text_template="""This slide contains a giant figure that should take up most of the slide space, along with some explanatory text and data tables.
+
+Key findings from the comprehensive dashboard analysis:
+- Multi-dimensional performance view reveals complex regional patterns
+- Correlation analysis shows strong negative relationship between conversion rates and page load times
+- Heatmap visualization clearly identifies problem areas requiring immediate intervention
+- Revenue impact distribution demonstrates the financial magnitude of regional performance variations
+
+Summary metrics for context:
+{{ summary_metrics }}
+
+Detailed breakdown for analysis:
+{{ detailed_metrics }}
+
+This scenario tests whether the slide generation can handle extremely large figures while still including text and table content.""",
+            dfs={
+                'summary_metrics': metrics_df,
+                'detailed_metrics': detailed_metrics_df
+            },
+            figure_generators=[
+                {
+                    'title_suffix': 'Giant Complex Dashboard',
+                    'params': {
+                        'df': metrics_df,
+                        'title': 'Comprehensive Performance Dashboard - All Metrics'
+                    },
+                    'function': create_giant_complex_chart
+                }
+            ]
+        )
+    
     # Execute all tests using the uniform pattern
     print("\n=== Executing Test 1: Very long text with single table ===")
     content1, results1 = create_comprehensive_analysis_part1()
@@ -379,6 +493,9 @@ These comprehensive tables provide granular insights into regional performance p
     print("\n=== Executing Test 6: Pure text overflow test ===")
     content6, results6 = create_pure_text_overflow_test()
     
+    print("\n=== Executing Test 7: Giant figure with text and tables ===")
+    content7, results7 = create_giant_figure_test()
+    
     # Save presentation
     slides.save('comprehensive_test.pptx')
     print("\nComprehensive test presentation saved as 'comprehensive_test.pptx'")
@@ -387,7 +504,9 @@ These comprehensive tables provide granular insights into regional performance p
     print("- Multiple tables per slide")
     print("- Mixed content with tables and figures")
     print("- Pure text overflow scenarios")
+    print("- Giant figure (20x16 inches) with text and tables")
     print("- Various combinations to test overflow handling")
+    print("- Tests for empty slide generation bug")
     print("- Uses uniform @dual_output decorator pattern")
 
     # File to upload
@@ -412,7 +531,9 @@ These comprehensive tables provide granular insights into regional performance p
         print("- Very long text content (3000+ words)")
         print("- Multiple tables per slide") 
         print("- Mixed content with tables and figures")
+        print("- Giant figure (20x16 inches) with text and tables")  
         print("- Various combinations to test overflow handling")
+        print("- Tests for empty slide generation bug")
         print("- Tests text_tables layout extensively")
             
     except Exception as e:
