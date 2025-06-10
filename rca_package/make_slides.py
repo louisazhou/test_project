@@ -774,13 +774,20 @@ class SlideLayouts:
                     
                     plt.close(fig)
                     
-                    # Create slide with figure
+                    # Create slide with figure - determine correct layout type
+                    if slide_text_chunks and slide_table_positions:
+                        actual_layout_type = 'text_tables_figure'
+                    elif slide_text_chunks:
+                        actual_layout_type = 'text_figure'
+                    else:
+                        actual_layout_type = 'figure'
+                    
                     self._create_slide_with_structured_content(
                         title=slide_title,
                         text_chunks=slide_text_chunks,
                         table_positions=slide_table_positions,
                         figure_path=generated_figure_path,
-                        layout_type=layout_type if slide_table_positions else ('text_figure' if slide_text_chunks else 'figure'),
+                        layout_type=actual_layout_type,
                         highlight_cells=highlight_cells
                     )
                     
@@ -1320,8 +1327,9 @@ class SlideLayouts:
             remaining_top = CONTENT_TOP + clamped_text_height + ELEMENT_GAP
             remaining_height = max(0, CONTENT_HEIGHT - clamped_text_height - ELEMENT_GAP)
             
-            # Calculate table width constraint (40% of slide width)
-            max_table_width = CONTENT_WIDTH * 0.4
+            # Use natural table width (remove artificial 40% constraint)
+            # Only constrain if table is unreasonably wide (>60% of slide)
+            max_table_width = CONTENT_WIDTH * 0.6  
             constrained_table_width = min(table_width, max_table_width)
             
             layouts['tables'] = {
