@@ -1250,7 +1250,7 @@ class SlideLayouts:
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': CONTENT_HEIGHT
+                'height': min(text_height, CONTENT_HEIGHT)  # Clamp to available space
             }
             
         elif content_type == 'text_figure':
@@ -1263,11 +1263,12 @@ class SlideLayouts:
                     'width': CONTENT_WIDTH,
                     'height': text_height
                 }
+                remaining_height = max(0, CONTENT_HEIGHT - text_height - ELEMENT_GAP)
                 layouts['figure'] = {
                     'left': CONTENT_LEFT,
                     'top': CONTENT_TOP + text_height + ELEMENT_GAP,
                     'width': CONTENT_WIDTH,
-                    'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
+                    'height': remaining_height
                 }
             else:
                 # Side by side layout
@@ -1276,49 +1277,66 @@ class SlideLayouts:
                     'left': CONTENT_LEFT,
                     'top': CONTENT_TOP,
                     'width': text_width,
-                    'height': CONTENT_HEIGHT
+                    'height': min(text_height, CONTENT_HEIGHT)  # Clamp to available space
                 }
                 layouts['figure'] = {
                     'left': CONTENT_LEFT + text_width + ELEMENT_GAP,
                     'top': CONTENT_TOP,
-                    'width': CONTENT_WIDTH - text_width - ELEMENT_GAP,
+                    'width': max(0, CONTENT_WIDTH - text_width - ELEMENT_GAP),
                     'height': CONTENT_HEIGHT
                 }
                 
         elif content_type == 'text_tables':
+            # Clamp text height to reasonable portion of slide
+            clamped_text_height = min(text_height, CONTENT_HEIGHT * 0.6)
+            
             layouts['text'] = {
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': text_height
+                'height': clamped_text_height
             }
+            remaining_height = max(0, CONTENT_HEIGHT - clamped_text_height - ELEMENT_GAP)
             layouts['tables'] = {
                 'left': CONTENT_LEFT,
-                'top': CONTENT_TOP + text_height + ELEMENT_GAP,
+                'top': CONTENT_TOP + clamped_text_height + ELEMENT_GAP,
                 'width': CONTENT_WIDTH,
-                'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
+                'height': remaining_height
             }
             
         elif content_type == 'text_tables_figure':
+            # More conservative text height allocation when we have tables AND figures
+            max_text_height = CONTENT_HEIGHT * 0.4  # Reserve 60% for tables and figures
+            clamped_text_height = min(text_height, max_text_height)
+            
             layouts['text'] = {
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': text_height
+                'height': clamped_text_height
             }
-            remaining_top = CONTENT_TOP + text_height + ELEMENT_GAP
-            remaining_height = CONTENT_HEIGHT - text_height - ELEMENT_GAP
+            remaining_top = CONTENT_TOP + clamped_text_height + ELEMENT_GAP
+            remaining_height = max(0, CONTENT_HEIGHT - clamped_text_height - ELEMENT_GAP)
+            
+            # Calculate table width constraint (40% of slide width)
+            max_table_width = CONTENT_WIDTH * 0.4
+            constrained_table_width = min(table_width, max_table_width)
             
             layouts['tables'] = {
                 'left': CONTENT_LEFT,
                 'top': remaining_top,
-                'width': min(table_width, CONTENT_WIDTH * 0.4),
+                'width': constrained_table_width,
                 'height': min(table_height, remaining_height)
             }
+            
+            # Calculate figure space
+            figure_left = CONTENT_LEFT + constrained_table_width + ELEMENT_GAP
+            figure_width = max(0, CONTENT_WIDTH - constrained_table_width - ELEMENT_GAP)
+            
             layouts['figure'] = {
-                'left': CONTENT_LEFT + table_width + ELEMENT_GAP,
+                'left': figure_left,
                 'top': remaining_top,
-                'width': CONTENT_WIDTH - table_width - ELEMENT_GAP,
+                'width': figure_width,
                 'height': remaining_height
             }
             
