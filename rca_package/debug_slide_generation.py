@@ -88,7 +88,16 @@ class DebugSlideLayouts(SlideLayouts):
         logging.info(f"   Layout type: {layout_type}")
         logging.info(f"   Text chunks: {len(text_chunks)}")
         logging.info(f"   Table positions: {len(table_positions)}")
-        logging.info(f"   Figure path: {figure_path is not None}")
+        logging.info(f"   Figure path provided: {figure_path is not None}")
+        if figure_path:
+            logging.info(f"   Figure path: {figure_path}")
+            logging.info(f"   Figure file exists: {os.path.exists(figure_path)}")
+            if os.path.exists(figure_path):
+                try:
+                    size = os.path.getsize(figure_path) / 1024
+                    logging.info(f"   Figure file size: {size:.1f} KB")
+                except:
+                    logging.warning(f"   Could not get figure file size")
         
         # Log text content details
         if text_chunks:
@@ -327,14 +336,18 @@ class DebugSlideLayouts(SlideLayouts):
         logging.info(f"   Constraints: {width} x {height}")
         
         # Check if file exists
+        if not figure_path:
+            logging.error(f"❌ FIGURE PATH IS NONE/EMPTY")
+            return None
+            
         if not os.path.exists(figure_path):
             logging.error(f"❌ FIGURE FILE NOT FOUND: {figure_path}")
             return None
         
         # Check file details
         try:
-            file_size = os.path.getsize(figure_path) / (1024 * 1024)  # MB
-            logging.info(f"   File size: {file_size:.2f} MB")
+            file_size = os.path.getsize(figure_path) / 1024  # KB
+            logging.info(f"   File size: {file_size:.1f} KB")
             
             from PIL import Image
             with Image.open(figure_path) as img:
@@ -343,9 +356,23 @@ class DebugSlideLayouts(SlideLayouts):
         except Exception as e:
             logging.warning(f"⚠️  Could not read image details: {e}")
         
+        # Check if position makes sense
+        if left < 0 or top < 0:
+            logging.warning(f"⚠️  NEGATIVE POSITION: left={left}, top={top}")
+        if left > 13 or top > 7:
+            logging.warning(f"⚠️  POSITION OUTSIDE SLIDE: left={left}, top={top}")
+        if width and width <= 0:
+            logging.error(f"❌ INVALID WIDTH: {width}")
+        if height and height <= 0:
+            logging.error(f"❌ INVALID HEIGHT: {height}")
+        
         try:
             result = super()._add_figure(slide, figure_path, left, top, width, height)
             logging.info(f"✅ Figure added successfully")
+            
+            # Additional verification
+            logging.info(f"   PowerPoint shapes count after adding figure: {len(slide.shapes)}")
+            
             return result
         except Exception as e:
             logging.error(f"❌ FIGURE ADDITION FAILED: {e}")
@@ -586,6 +613,64 @@ The data reveals critical performance gaps that require immediate attention.
         print("✅ Test 4 completed")
     except Exception as e:
         print(f"❌ Test 4 failed: {e}")
+    
+    # Test Case 5: User's exact scenario
+    print(f"\n🔍 TEST 5: User's exact scenario reproduction")
+    
+    # User's exact data structure
+    user_breakdown_data = {
+        'job_level': ['6', '7'],
+        'Region Mix': ['Higher', 'Lower'], 
+        'ROW Mix': ['71.6%', '28.4%'],
+        'Region Lost-Rate': ['53.3%', '46.7%'],
+        'ROW Lost-Rate': ['37.8%', '29.6%']
+    }
+    user_breakdown_df = pd.DataFrame(user_breakdown_data)
+    
+    def user_figure_generator(**params):
+        """Replicate user's figure generation."""
+        logging.info(f"🎨 USER FIGURE GENERATOR called with: {params}")
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.bar(['Job Level 6', 'Job Level 7'], [53.3, 46.7])
+        ax.set_title('CLI Closed Lost - Job Level Analysis')
+        ax.set_ylabel('Lost Rate (%)')
+        
+        # Make figure very obvious for testing
+        ax.text(0.5, 40, 'USER FIGURE TEST', ha='center', fontsize=14, color='red', weight='bold')
+        
+        logging.info(f"✅ User figure created successfully")
+        return fig
+    
+    @debug_dual_output(console=True, slide=True, slide_builder=slides, 
+                      layout_type='text_tables_figure', show_figures=False)
+    def create_user_scenario():
+        return SlideContent(
+            title="CLI Closed Lost - Construct (job_level)",
+            text_template="""CLI Closed Lost in NA is 7.16pp higher than Global mean.
+The main factor for this gap is efficiency (lost-rate within each level).
+
+Job level breakdown:
+{{ breakdown_df }}""",
+            dfs={'breakdown_df': user_breakdown_df},
+            template_params={},
+            figure_generators=[{
+                'function': user_figure_generator,
+                'params': {}
+            }]
+        )
+    
+    try:
+        content5, results5 = create_user_scenario()
+        print("✅ Test 5 (User scenario) completed")
+        logging.info(f"🎯 USER SCENARIO RESULTS:")
+        logging.info(f"   Console output length: {len(results5.get('console', ''))}")
+        logging.info(f"   Slide created: {results5.get('slide') is not None}")
+    except Exception as e:
+        print(f"❌ Test 5 (User scenario) failed: {e}")
+        logging.error(f"❌ USER SCENARIO FAILED: {e}")
+        import traceback
+        logging.error(f"   Full traceback: {traceback.format_exc()}")
     
     # Save and report
     print(f"\n💾 Saving debug presentation...")
