@@ -61,7 +61,7 @@ TABLE_ROW_HEIGHT = 0.35  # Height per table row
 
 # Default dimensions for figures and other elements
 DEFAULT_FIGURE_HEIGHT = 4.0  # Standard figure height
-MAX_CONTENT_HEIGHT = 6.0     # Maximum height for content before overflow
+MAX_CONTENT_HEIGHT = 6.2     # Maximum height for content before overflow (increased to avoid tiny overflows)
 COLUMN_WIDTH_MULTIPLIER = 0.08  # Character length to inches conversion
 MIN_COLUMN_WIDTH = 0.8       # Minimum column width in inches
 MIN_INDEX_WIDTH = 1.3        # Minimum index column width in inches
@@ -811,8 +811,10 @@ class SlideLayouts:
             
             slide_num += 1
         
-        # If we had figures and text/tables were included in first slide, we're done
+        # If we had figures and text/tables, check if text/tables were actually included
         if figure_generators and text_chunks:
+            # Text and tables should have been included on the first figure slide (i=0)
+            # So we're done processing content
             return
             
         # Process remaining text more intelligently - don't split aggressively
