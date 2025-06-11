@@ -61,11 +61,16 @@ TABLE_ROW_HEIGHT = 0.35  # Height per table row
 
 # Default dimensions for figures and other elements
 DEFAULT_FIGURE_HEIGHT = 4.0  # Standard figure height
-MAX_CONTENT_HEIGHT = 6.2     # Maximum height for content before overflow (increased to avoid tiny overflows)
+MAX_CONTENT_HEIGHT = 6.0     # Maximum height for content before overflow
 COLUMN_WIDTH_MULTIPLIER = 0.08  # Character length to inches conversion
 MIN_COLUMN_WIDTH = 0.8       # Minimum column width in inches
 MIN_INDEX_WIDTH = 1.3        # Minimum index column width in inches
 MAX_TABLE_HEIGHT = 4.0       # Maximum table height in inches
+
+# Layout validation constants
+VALID_LAYOUT_TYPES = {
+    'auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'figure'
+}
 
 class SlideContent:
     """Container for slide content with support for figure generation functions and multiple DataFrames."""
@@ -191,13 +196,19 @@ class SlideContent:
 
 
 class SlideLayouts:
-    """Clean slide layout templates."""
+    """Class for creating PowerPoint slides with automatic layout."""
     
     def __init__(self):
         self.prs = Presentation()
         self.prs.slide_width = Inches(SLIDE_WIDTH)
         self.prs.slide_height = Inches(SLIDE_HEIGHT)
     
+    def _validate_layout_type(self, layout_type: str) -> str:
+        """Validate and normalize layout type, raising error if invalid."""
+        if layout_type not in VALID_LAYOUT_TYPES:
+            raise ValueError(f"Invalid layout_type '{layout_type}'. Valid types are: {', '.join(sorted(VALID_LAYOUT_TYPES))}")
+        return layout_type
+
     def _add_title(self, slide, title: str):
         """Add standardized title."""
         title_box = slide.shapes.add_textbox(
@@ -406,16 +417,27 @@ class SlideLayouts:
         
         return table
     
-    def _add_figure(self, slide, figure_path: str, left: float, top: float, width: Optional[float] = None, height: Optional[float] = None):
+    def _add_figure(self, slide, figure_path: str, left: float, top: float, width: Optional[float] = None, height: Optional[float] = None, min_size: Optional[Dict[str, float]] = None):
         """
         Add figure to slide while preserving aspect ratio.
         Fits figure optimally within the specified width/height constraints.
+        
+        Args:
+            slide: PowerPoint slide object
+            figure_path: Path to the figure file
+            left, top: Position coordinates in inches
+            width, height: Optional size constraints in inches
+            min_size: Optional dict with 'width' and 'height' minimum sizes in inches
         """
         if figure_path and os.path.exists(figure_path):
             # Get original image dimensions
             with Image.open(figure_path) as img:
                 img_width, img_height = img.size
                 aspect_ratio = img_width / img_height
+            
+            # Apply minimum size constraints if specified
+            min_width = min_size.get('width', 0) if min_size else 0
+            min_height = min_size.get('height', 0) if min_size else 0
             
             # Calculate dimensions that preserve aspect ratio
             if width is not None and height is not None:
@@ -431,24 +453,39 @@ class SlideLayouts:
                     # Width is the constraining dimension
                     final_width = width
                     final_height = height_from_width
+                    
+                # Apply minimum size constraints
+                if final_width < min_width:
+                    final_width = min_width
+                    final_height = min_width / aspect_ratio
+                if final_height < min_height:
+                    final_height = min_height
+                    final_width = min_height * aspect_ratio
+                    
             elif width is not None:
                 # Only width specified
-                final_width = width
-                final_height = width / aspect_ratio
+                final_width = max(width, min_width)
+                final_height = max(final_width / aspect_ratio, min_height)
+                # Recalculate width if height constraint was binding
+                if final_height > final_width / aspect_ratio:
+                    final_width = final_height * aspect_ratio
             elif height is not None:
                 # Only height specified
-                final_height = height
-                final_width = height * aspect_ratio
+                final_height = max(height, min_height)
+                final_width = max(final_height * aspect_ratio, min_width)
+                # Recalculate height if width constraint was binding
+                if final_width > final_height * aspect_ratio:
+                    final_height = final_width / aspect_ratio
             else:
                 # No dimensions specified, use default size while preserving aspect ratio
                 if aspect_ratio > 1:
                     # Landscape image
-                    final_width = min(12.0, 8.0 * aspect_ratio)  # Max width 12 inches
-                    final_height = final_width / aspect_ratio
+                    final_width = max(min(12.0, 8.0 * aspect_ratio), min_width)  # Max width 12 inches
+                    final_height = max(final_width / aspect_ratio, min_height)
                 else:
                     # Portrait image
-                    final_height = min(6.0, 8.0 / aspect_ratio)  # Max height 6 inches
-                    final_width = final_height * aspect_ratio
+                    final_height = max(min(6.0, 8.0 / aspect_ratio), min_height)  # Max height 6 inches
+                    final_width = max(final_height * aspect_ratio, min_width)
             
             # Add the figure with calculated dimensions
             slide.shapes.add_picture(
@@ -535,12 +572,16 @@ class SlideLayouts:
             layout_type: Layout preference ('auto', 'text_figure', 'text_tables', etc.)
             highlight_cells: Optional dictionary for table cell highlighting
         """
+        # Validate layout type
+        layout_type = self._validate_layout_type(layout_type)
+        
         # Get text chunks and table positions
         text_chunks, table_positions = content.get_text_and_table_positions()
         
         # Handle figure generators - treat as overflow case if multiple figures
         figure_generators = content.figure_generators
         
+        # Handle multiple figures from plotting functions that create figures in for-loops
         if len(figure_generators) > 1:
             # Multiple figures = overflow case, use enhanced overflow handling
             self._create_multiple_slides_for_overflow(
@@ -610,7 +651,7 @@ class SlideLayouts:
                         max_height=max_height
                     )
                 else:
-                    # Pure text content - use intelligent truncation for better readability
+                    # Text-only content - try truncation first, then multi-slide
                     self._create_slide_with_truncated_content(
                         content=content,
                         text_chunks=text_chunks,
@@ -620,7 +661,7 @@ class SlideLayouts:
                         max_height=max_height
                     )
             else:
-                # Single slide - no overflow
+                # Content fits on single slide
                 self._create_slide_with_structured_content(
                     title=content.title,
                     text_chunks=text_chunks,
@@ -642,37 +683,70 @@ class SlideLayouts:
         generator_func = fig_generator.get('function')
         if generator_func:
             try:
-                fig = generator_func(**fig_params)
+                # Handle case where generator function creates multiple figures
+                plt.close('all')  # Close any existing figures
                 
-                # Create temp file
-                temp_dir = tempfile.gettempdir()
-                temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}.png"
-                figure_path = os.path.join(temp_dir, temp_filename)
+                result = generator_func(**fig_params)
                 
-                fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                # Handle different return types from generator functions
+                figures_to_save = []
+                if isinstance(result, plt.Figure):
+                    figures_to_save.append(result)
+                elif hasattr(result, '__iter__') and not isinstance(result, str):
+                    # Handle case where function returns multiple figures
+                    for item in result:
+                        if isinstance(item, plt.Figure):
+                            figures_to_save.append(item)
                 
-                if content.show_figures:
-                    plt.show()
+                # If no figures were returned directly, check all open figures
+                if not figures_to_save:
+                    figures_to_save = [plt.figure(num) for num in plt.get_fignums()]
                 
-                plt.close(fig)
-                
-                # Create slide
-                slide_title = content.title
-                if fig_generator.get('title_suffix'):
-                    slide_title = f"{content.title} - {fig_generator['title_suffix']}"
-                
-                self._create_slide_with_structured_content(
-                    title=slide_title,
-                    text_chunks=text_chunks,
-                    table_positions=table_positions,
-                    figure_path=figure_path,
-                    layout_type=layout_type,
-                    highlight_cells=highlight_cells
-                )
-                
-                # Clean up
-                if os.path.exists(figure_path):
-                    os.unlink(figure_path)
+                # Create slides for each figure
+                for idx, fig in enumerate(figures_to_save):
+                    # Create temp file
+                    temp_dir = tempfile.gettempdir()
+                    temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_{idx}.png"
+                    figure_path = os.path.join(temp_dir, temp_filename)
+                    
+                    fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                    
+                    if content.show_figures:
+                        plt.figure(fig.number)
+                        plt.show()
+                    
+                    plt.close(fig)
+                    
+                    # Create slide title
+                    slide_title = content.title
+                    if len(figures_to_save) > 1:
+                        if idx == 0:
+                            slide_title = content.title  # First slide keeps original title
+                        else:
+                            slide_title = f"{content.title} (cont.)"  # Subsequent slides use (cont.)
+                    elif fig_generator.get('title_suffix'):
+                        slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+                    
+                    # Only include text and tables on the first figure slide
+                    slide_text_chunks = text_chunks if idx == 0 else []
+                    slide_table_positions = table_positions if idx == 0 else []
+                    
+                    # Respect figure size - set minimum dimensions to prevent over-shrinking
+                    min_figure_size = {'width': 4.0, 'height': 3.0}  # Minimum size in inches
+                    
+                    self._create_slide_with_structured_content(
+                        title=slide_title,
+                        text_chunks=slide_text_chunks,
+                        table_positions=slide_table_positions,
+                        figure_path=figure_path,
+                        layout_type=layout_type,
+                        highlight_cells=highlight_cells,
+                        min_figure_size=min_figure_size
+                    )
+                    
+                    # Clean up
+                    if os.path.exists(figure_path):
+                        os.unlink(figure_path)
                     
             except Exception as e:
                 logger.warning(f"Failed to generate figure: {e}")
@@ -744,59 +818,90 @@ class SlideLayouts:
         
         # Handle figures first - each figure gets its own slide
         for i, fig_generator in enumerate(figure_generators):
-            # Determine slide title
-            if fig_generator.get('title_suffix'):
-                slide_title = f"{content.title} - {fig_generator['title_suffix']}"
-            else:
-                slide_title = f"{content.title} (Part {slide_num})"
-            
-            # First figure slide gets text and tables, subsequent ones are figure-only
-            slide_text_chunks = text_chunks if i == 0 else []
-            slide_table_positions = table_positions if i == 0 else []
-            
             # Generate and add the figure
             fig_params = fig_generator.get('params', {})
             generator_func = fig_generator.get('function')
             
             if generator_func:
                 try:
-                    fig = generator_func(**fig_params)
+                    plt.close('all')  # Close any existing figures
                     
-                    # Create temp file
-                    temp_dir = tempfile.gettempdir()
-                    temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}.png"
-                    generated_figure_path = os.path.join(temp_dir, temp_filename)
+                    result = generator_func(**fig_params)
                     
-                    fig.savefig(generated_figure_path, dpi=300, bbox_inches='tight')
+                    # Handle different return types from generator functions
+                    figures_to_save = []
+                    if isinstance(result, plt.Figure):
+                        figures_to_save.append(result)
+                    elif hasattr(result, '__iter__') and not isinstance(result, str):
+                        # Handle case where function returns multiple figures
+                        for item in result:
+                            if isinstance(item, plt.Figure):
+                                figures_to_save.append(item)
                     
-                    if content.show_figures:
-                        plt.show()
+                    # If no figures were returned directly, check all open figures
+                    if not figures_to_save:
+                        figures_to_save = [plt.figure(num) for num in plt.get_fignums()]
                     
-                    plt.close(fig)
-                    
-                    # Create slide with figure - determine correct layout type
-                    if slide_text_chunks and slide_table_positions:
-                        actual_layout_type = 'text_tables_figure'
-                    elif slide_text_chunks:
-                        actual_layout_type = 'text_figure'
-                    else:
-                        actual_layout_type = 'figure'
-                    
-                    self._create_slide_with_structured_content(
-                        title=slide_title,
-                        text_chunks=slide_text_chunks,
-                        table_positions=slide_table_positions,
-                        figure_path=generated_figure_path,
-                        layout_type=actual_layout_type,
-                        highlight_cells=highlight_cells
-                    )
-                    
-                    # Clean up
-                    if os.path.exists(generated_figure_path):
-                        os.unlink(generated_figure_path)
+                    # Create slides for each figure
+                    for fig_idx, fig in enumerate(figures_to_save):
+                        # Determine slide title
+                        if fig_generator.get('title_suffix'):
+                            if len(figures_to_save) > 1:
+                                if fig_idx == 0:
+                                    slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+                                else:
+                                    slide_title = f"{content.title} - {fig_generator['title_suffix']} (cont.)"
+                            else:
+                                slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+                        else:
+                            if slide_num == 1 and fig_idx == 0:
+                                slide_title = content.title  # First slide keeps original title
+                            else:
+                                slide_title = f"{content.title} (cont.)"  # Use (cont.) for continuation
+                        
+                        # First figure slide gets text and tables, subsequent ones are figure-only
+                        slide_text_chunks = text_chunks if i == 0 and fig_idx == 0 else []
+                        slide_table_positions = table_positions if i == 0 and fig_idx == 0 else []
+                        
+                        # Create temp file
+                        temp_dir = tempfile.gettempdir()
+                        temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_{i}_{fig_idx}.png"
+                        generated_figure_path = os.path.join(temp_dir, temp_filename)
+                        
+                        fig.savefig(generated_figure_path, dpi=300, bbox_inches='tight')
+                        
+                        if content.show_figures:
+                            plt.figure(fig.number)
+                            plt.show()
+                        
+                        plt.close(fig)
+                        
+                        # Respect figure size - set minimum dimensions
+                        min_figure_size = {'width': 4.0, 'height': 3.0}
+                        
+                        # Create slide with figure
+                        self._create_slide_with_structured_content(
+                            title=slide_title,
+                            text_chunks=slide_text_chunks,
+                            table_positions=slide_table_positions,
+                            figure_path=generated_figure_path,
+                            layout_type=layout_type if slide_table_positions else ('text_figure' if slide_text_chunks else 'figure'),
+                            highlight_cells=highlight_cells,
+                            min_figure_size=min_figure_size
+                        )
+                        
+                        # Clean up
+                        if os.path.exists(generated_figure_path):
+                            os.unlink(generated_figure_path)
+                        
+                        slide_num += 1
                         
                 except Exception as e:
                     logger.warning(f"Failed to generate figure: {e}")
+                    slide_title = f"{content.title} (cont.)" if slide_num > 1 else content.title
+                    slide_text_chunks = text_chunks if i == 0 else []
+                    slide_table_positions = table_positions if i == 0 else []
+                    
                     self._create_slide_with_structured_content(
                         title=slide_title,
                         text_chunks=slide_text_chunks,
@@ -805,8 +910,13 @@ class SlideLayouts:
                         layout_type='text_tables' if slide_text_chunks or slide_table_positions else 'text',
                         highlight_cells=highlight_cells
                     )
+                    slide_num += 1
             else:
                 logger.warning(f"No generator function found in figure_generator config")
+                slide_title = f"{content.title} (cont.)" if slide_num > 1 else content.title
+                slide_text_chunks = text_chunks if i == 0 else []
+                slide_table_positions = table_positions if i == 0 else []
+                
                 self._create_slide_with_structured_content(
                     title=slide_title,
                     text_chunks=slide_text_chunks,
@@ -815,13 +925,10 @@ class SlideLayouts:
                     layout_type='text_tables' if slide_text_chunks or slide_table_positions else 'text',
                     highlight_cells=highlight_cells
                 )
-            
-            slide_num += 1
+                slide_num += 1
         
-        # If we had figures and text/tables, check if text/tables were actually included
+        # If we had figures and text/tables were included in first slide, we're done
         if figure_generators and text_chunks:
-            # Text and tables should have been included on the first figure slide (i=0)
-            # So we're done processing content
             return
             
         # Process remaining text more intelligently - don't split aggressively
@@ -834,9 +941,10 @@ class SlideLayouts:
         realistic_max_height = max_height * 1.05
         
         if total_text_height <= realistic_max_height:
-            # All text fits on one slide - don't split!
+            # All text fits on one slide - don't add (Part X) if it's the first slide!
+            slide_title = content.title if slide_num == 1 else f"{content.title} (cont.)"
             self._create_slide_with_structured_content(
-                title=f"{content.title} (Part {slide_num})" if slide_num > 1 else content.title,
+                title=slide_title,
                 text_chunks=[full_text],
                 table_positions=table_positions,
                 figure_path=None,
@@ -862,8 +970,9 @@ class SlideLayouts:
             # Use 90% of max height for better readability and more conservative splitting
             if current_height + paragraph_height > max_height * 0.9 and current_slide_text:
                 # Create slide with current content
+                slide_title = content.title if slide_num == 1 else f"{content.title} (cont.)"
                 self._create_slide_with_structured_content(
-                    title=f"{content.title} (Part {slide_num})",
+                    title=slide_title,
                     text_chunks=['\n\n'.join(current_slide_text)],
                     table_positions=[] if slide_num > 1 else table_positions,  # Tables only on first slide
                     figure_path=None,
@@ -879,8 +988,9 @@ class SlideLayouts:
         
         # Create final slide with remaining content
         if current_slide_text:
+            slide_title = content.title if slide_num == 1 else f"{content.title} (cont.)"
             self._create_slide_with_structured_content(
-                title=f"{content.title} (Part {slide_num})",
+                title=slide_title,
                 text_chunks=['\n\n'.join(current_slide_text)],
                 table_positions=[] if slide_num > 1 else table_positions,  # Tables only if this is the first/only slide
                 figure_path=None,
@@ -899,7 +1009,7 @@ class SlideLayouts:
                 
                 if current_height + table_height > max_height * 0.8 and current_tables:
                     self._create_slide_with_structured_content(
-                        title=f"{content.title} - Data Tables (Part {slide_num})",
+                        title=f"{content.title} - Data Tables (cont.)",
                         text_chunks=[],
                         table_positions=current_tables,
                         figure_path=None,
@@ -916,7 +1026,7 @@ class SlideLayouts:
             # Final table slide
             if current_tables:
                 self._create_slide_with_structured_content(
-                    title=f"{content.title} - Data Tables (Part {slide_num})",
+                    title=f"{content.title} - Data Tables (cont.)",
                     text_chunks=[],
                     table_positions=current_tables,
                     figure_path=None,
@@ -927,8 +1037,12 @@ class SlideLayouts:
     def _create_slide_with_structured_content(self, title: str, text_chunks: List[str], 
                                             table_positions: List[Tuple[str, pd.DataFrame]], 
                                             figure_path: Optional[str], layout_type: str, 
-                                            highlight_cells: Optional[Dict]):
+                                            highlight_cells: Optional[Dict],
+                                            min_figure_size: Optional[Dict[str, float]] = None):
         """Create slide with structured content positioning using helper functions."""
+        # Validate layout type
+        layout_type = self._validate_layout_type(layout_type)
+        
         # Create basic slide structure
         slide = self._create_basic_slide_structure(title)
         
@@ -976,7 +1090,7 @@ class SlideLayouts:
                 self._add_content_block(
                     slide=slide,
                     content_type='figure',
-                    content_data={'figure_path': figure_path},
+                    content_data={'figure_path': figure_path, 'min_size': min_figure_size},
                     layout_info=layouts['figure']
                 )
                 
@@ -990,7 +1104,7 @@ class SlideLayouts:
             self._add_content_block(
                 slide=slide,
                 content_type='figure',
-                content_data={'figure_path': figure_path},
+                content_data={'figure_path': figure_path, 'min_size': min_figure_size},
                 layout_info=figure_layout
             )
             
@@ -1043,7 +1157,7 @@ class SlideLayouts:
                 self._add_content_block(
                     slide=slide,
                     content_type='figure',
-                    content_data={'figure_path': figure_path},
+                    content_data={'figure_path': figure_path, 'min_size': min_figure_size},
                     layout_info=layouts['figure']
                 )
         
@@ -1165,8 +1279,18 @@ class SlideLayouts:
     
     def create_metrics_summary_slide(self, df: pd.DataFrame, metrics_text: Dict[str, str], 
                                    metric_anomaly_map: Dict[str, Dict[str, Any]], 
-                                   title: str = "Metrics Summary") -> None:
-        """Create a summary slide with a styled table of metrics data and pre-formatted text explanations."""
+                                   title: str = "Metrics Summary", 
+                                   max_table_width: Optional[float] = None) -> None:
+        """
+        Create a summary slide with a styled table of metrics data and pre-formatted text explanations.
+        
+        Args:
+            df: DataFrame with metrics data
+            metrics_text: Dictionary mapping metric names to text explanations
+            metric_anomaly_map: Dictionary with anomaly information for highlighting
+            title: Slide title
+            max_table_width: Maximum width for the table (useful for narrow tables to prevent text overlap)
+        """
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
         
         # Add standardized title using helper
@@ -1182,11 +1306,16 @@ class SlideLayouts:
         # Create highlight cells map for transposed data
         highlight_cells = self._create_highlight_cells_map(metrics_df_transposed, metric_anomaly_map)
         
-        # Calculate optimal table dimensions and add safety margin for PowerPoint rendering
-        calculated_table_width, table_height = self._calculate_table_dimensions(metrics_df_transposed, max_width=6.0)
+        # Calculate optimal table dimensions with optional width constraint
+        default_max_width = 6.0 if max_table_width is None else max_table_width
+        calculated_table_width, table_height = self._calculate_table_dimensions(metrics_df_transposed, max_width=default_max_width)
         
         # Add safety margin to table width to account for PowerPoint's internal spacing
         table_width = calculated_table_width + 0.2  # Extra margin for safety
+        
+        # If max_table_width was specified, ensure we don't exceed it
+        if max_table_width is not None:
+            table_width = min(table_width, max_table_width)
         
         # Position table on the left side using standard constants
         table_left = CONTENT_LEFT
@@ -1252,6 +1381,9 @@ class SlideLayouts:
                                 table_width: float = 0, table_height: float = 0,
                                 figure_width: float = 0, figure_height: float = 0) -> Dict[str, Dict[str, float]]:
         """Calculate optimal layout positioning for different content types."""
+        # Validate layout type
+        content_type = self._validate_layout_type(content_type)
+        
         layouts = {}
         
         if content_type == 'text':
@@ -1259,7 +1391,7 @@ class SlideLayouts:
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': min(text_height, CONTENT_HEIGHT)  # Clamp to available space
+                'height': CONTENT_HEIGHT
             }
             
         elif content_type == 'text_figure':
@@ -1272,12 +1404,11 @@ class SlideLayouts:
                     'width': CONTENT_WIDTH,
                     'height': text_height
                 }
-                remaining_height = max(0, CONTENT_HEIGHT - text_height - ELEMENT_GAP)
                 layouts['figure'] = {
                     'left': CONTENT_LEFT,
                     'top': CONTENT_TOP + text_height + ELEMENT_GAP,
                     'width': CONTENT_WIDTH,
-                    'height': remaining_height
+                    'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
                 }
             else:
                 # Side by side layout
@@ -1286,67 +1417,49 @@ class SlideLayouts:
                     'left': CONTENT_LEFT,
                     'top': CONTENT_TOP,
                     'width': text_width,
-                    'height': min(text_height, CONTENT_HEIGHT)  # Clamp to available space
+                    'height': CONTENT_HEIGHT
                 }
                 layouts['figure'] = {
                     'left': CONTENT_LEFT + text_width + ELEMENT_GAP,
                     'top': CONTENT_TOP,
-                    'width': max(0, CONTENT_WIDTH - text_width - ELEMENT_GAP),
+                    'width': CONTENT_WIDTH - text_width - ELEMENT_GAP,
                     'height': CONTENT_HEIGHT
                 }
                 
         elif content_type == 'text_tables':
-            # Clamp text height to reasonable portion of slide
-            clamped_text_height = min(text_height, CONTENT_HEIGHT * 0.6)
-            
             layouts['text'] = {
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': clamped_text_height
+                'height': text_height
             }
-            remaining_height = max(0, CONTENT_HEIGHT - clamped_text_height - ELEMENT_GAP)
             layouts['tables'] = {
                 'left': CONTENT_LEFT,
-                'top': CONTENT_TOP + clamped_text_height + ELEMENT_GAP,
+                'top': CONTENT_TOP + text_height + ELEMENT_GAP,
                 'width': CONTENT_WIDTH,
-                'height': remaining_height
+                'height': CONTENT_HEIGHT - text_height - ELEMENT_GAP
             }
             
         elif content_type == 'text_tables_figure':
-            # More conservative text height allocation when we have tables AND figures
-            max_text_height = CONTENT_HEIGHT * 0.4  # Reserve 60% for tables and figures
-            clamped_text_height = min(text_height, max_text_height)
-            
             layouts['text'] = {
                 'left': CONTENT_LEFT,
                 'top': CONTENT_TOP,
                 'width': CONTENT_WIDTH,
-                'height': clamped_text_height
+                'height': text_height
             }
-            remaining_top = CONTENT_TOP + clamped_text_height + ELEMENT_GAP
-            remaining_height = max(0, CONTENT_HEIGHT - clamped_text_height - ELEMENT_GAP)
-            
-            # Use natural table width (remove artificial 40% constraint)
-            # Only constrain if table is unreasonably wide (>60% of slide)
-            max_table_width = CONTENT_WIDTH * 0.6  
-            constrained_table_width = min(table_width, max_table_width)
+            remaining_top = CONTENT_TOP + text_height + ELEMENT_GAP
+            remaining_height = CONTENT_HEIGHT - text_height - ELEMENT_GAP
             
             layouts['tables'] = {
                 'left': CONTENT_LEFT,
                 'top': remaining_top,
-                'width': constrained_table_width,
+                'width': min(table_width, CONTENT_WIDTH * 0.4),
                 'height': min(table_height, remaining_height)
             }
-            
-            # Calculate figure space
-            figure_left = CONTENT_LEFT + constrained_table_width + ELEMENT_GAP
-            figure_width = max(0, CONTENT_WIDTH - constrained_table_width - ELEMENT_GAP)
-            
             layouts['figure'] = {
-                'left': figure_left,
+                'left': CONTENT_LEFT + table_width + ELEMENT_GAP,
                 'top': remaining_top,
-                'width': figure_width,
+                'width': CONTENT_WIDTH - table_width - ELEMENT_GAP,
                 'height': remaining_height
             }
             
@@ -1389,6 +1502,7 @@ class SlideLayouts:
                 
         elif content_type == 'figure':
             figure_path = content_data.get('figure_path')
+            min_size = content_data.get('min_size')
             if figure_path:
                 self._add_figure(
                     slide=slide,
@@ -1396,7 +1510,8 @@ class SlideLayouts:
                     left=layout_info['left'],
                     top=layout_info['top'],
                     width=layout_info.get('width'),
-                    height=layout_info.get('height')
+                    height=layout_info.get('height'),
+                    min_size=min_size
                 )
     
     def _combine_text_chunks(self, text_chunks: List[str]) -> str:
@@ -1528,39 +1643,31 @@ def dual_output(console: bool = True, slide: bool = True,
                layout_type: str = 'auto',
                show_figures: bool = True):
     """
-    Decorator that captures function output and creates both console display and slide.
+    Decorator for functions that generate both console output and slides.
     
     Args:
-        console: Whether to print to console
-        slide: Whether to create slide
-        slide_builder: SlideLayouts instance to add slide to
-        layout_type: Layout type for the slide ('text', 'chart', 'table', 'auto')
-        show_figures: Whether to display figures inline (True) or just show paths (False)
+        console: Whether to display console output
+        slide: Whether to add to slide presentation
+        slide_builder: SlideLayouts instance to add slides to
+        layout_type: Layout type for slides ('auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'figure')
+        show_figures: Whether to display matplotlib figures
     """
     def decorator(func):
         def wrapper(*args, **kwargs):
+            # Validate layout type early
+            if slide and slide_builder:
+                slide_builder._validate_layout_type(layout_type)
+            
             # Execute the function to get SlideContent
-            slide_content = func(*args, **kwargs)
-            
-            # Set show_figures parameter on the content
-            slide_content.show_figures = show_figures
-            
-            results = {}
+            content = func(*args, **kwargs)
             
             if console:
-                console_output = slide_content.render_console()
-                results['console'] = console_output
-                print(console_output)
+                print(content.render_console())
             
             if slide and slide_builder:
-                slide_layout = slide_builder.add_content_slide(slide_content, layout_type)
-                results['slide'] = slide_layout
+                slide_builder.add_content_slide(content, layout_type=layout_type)
             
-            # Clean up any temporary figure files
-            slide_content.cleanup()
-            
-            return slide_content, results
-        
+            return content, content.get_all_dataframes()
         return wrapper
     return decorator
 
