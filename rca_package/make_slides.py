@@ -581,6 +581,23 @@ class SlideLayouts:
         # Handle figure generators - treat as overflow case if multiple figures
         figure_generators = content.figure_generators
         
+        # Auto-detect layout if 'auto' is specified
+        if layout_type == 'auto':
+            has_text = len(text_chunks) > 0 and any(chunk.strip() for chunk in text_chunks)
+            has_tables = len(table_positions) > 0
+            has_figures = len(figure_generators) > 0
+            
+            if has_figures and has_text and has_tables:
+                layout_type = 'text_tables_figure'
+            elif has_figures and has_text:
+                layout_type = 'text_figure'
+            elif has_text and has_tables:
+                layout_type = 'text_tables'
+            elif has_figures:
+                layout_type = 'figure'
+            else:
+                layout_type = 'text'  # Default fallback
+        
         # Handle multiple figures from plotting functions that create figures in for-loops
         if len(figure_generators) > 1:
             # Multiple figures = overflow case, use enhanced overflow handling
@@ -1307,21 +1324,18 @@ class SlideLayouts:
         highlight_cells = self._create_highlight_cells_map(metrics_df_transposed, metric_anomaly_map)
         
         # Calculate optimal table dimensions with optional width constraint
-        default_max_width = 6.0 if max_table_width is None else max_table_width
-        calculated_table_width, table_height = self._calculate_table_dimensions(metrics_df_transposed, max_width=default_max_width)
+        # Use max_table_width directly if specified, otherwise use default
+        max_width_for_calculation = max_table_width if max_table_width is not None else 6.0
+        calculated_table_width, table_height = self._calculate_table_dimensions(metrics_df_transposed, max_width=max_width_for_calculation)
         
-        # Add safety margin to table width to account for PowerPoint's internal spacing
-        table_width = calculated_table_width + 0.2  # Extra margin for safety
-        
-        # If max_table_width was specified, ensure we don't exceed it
-        if max_table_width is not None:
-            table_width = min(table_width, max_table_width)
+        # The calculated width already respects max_table_width, so use it directly
+        table_width = calculated_table_width + 0.2  # Safety margin for PowerPoint spacing
         
         # Position table on the left side using standard constants
         table_left = CONTENT_LEFT
         table_top = CONTENT_TOP
         
-        # Add styled table using helper method
+        # Add styled table using helper method - table_width here controls actual table rendering
         self._add_table(
             slide=slide,
             df=metrics_df_transposed,
@@ -1385,6 +1399,24 @@ class SlideLayouts:
         content_type = self._validate_layout_type(content_type)
         
         layouts = {}
+        
+        # Handle 'auto' layout by determining the best layout based on content
+        if content_type == 'auto':
+            # Automatically choose the best layout based on available content
+            has_text = text_height > 0
+            has_tables = table_width > 0 and table_height > 0
+            has_figure = figure_width > 0 and figure_height > 0
+            
+            if has_figure and has_text and has_tables:
+                content_type = 'text_tables_figure'
+            elif has_figure and has_text:
+                content_type = 'text_figure'
+            elif has_text and has_tables:
+                content_type = 'text_tables'
+            elif has_figure:
+                content_type = 'figure'
+            else:
+                content_type = 'text'  # Default to text layout
         
         if content_type == 'text':
             layouts['text'] = {
