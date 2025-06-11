@@ -397,22 +397,47 @@ class SlideLayouts:
                 
                 self._apply_cell_styling(cell, bg_color=bg_color, text_color=text_color)
         
-        # Distribute column widths proportionally
-        calculated_index_width = 0
+        # Distribute column widths proportionally within the actual_width constraint
         if include_index:
+            # For constrained tables, calculate proportional widths
+            # Calculate what the natural index width would be
             max_index_length = max(len(str(idx)) for idx in df.index)
-            calculated_index_width = max(max_index_length * COLUMN_WIDTH_MULTIPLIER, MIN_INDEX_WIDTH)
-        
-        for i in range(cols):
-            if include_index and i == 0:
-                # Give index column its calculated width
-                table.columns[i].width = Inches(calculated_index_width)
+            natural_index_width = max(max_index_length * COLUMN_WIDTH_MULTIPLIER, MIN_INDEX_WIDTH)
+            
+            # Calculate natural data column widths
+            natural_data_widths = []
+            for col in df.columns:
+                header_length = len(str(col))
+                content_lengths = [len(str(val)) for val in df[col] if pd.notna(val)]
+                max_length = max([header_length] + content_lengths) if content_lengths else header_length
+                natural_width = max(max_length * COLUMN_WIDTH_MULTIPLIER, MIN_COLUMN_WIDTH)
+                natural_data_widths.append(natural_width)
+            
+            total_natural_width = natural_index_width + sum(natural_data_widths)
+            
+            # If we need to constrain, scale all widths proportionally
+            if total_natural_width > actual_width:
+                scale_factor = actual_width / total_natural_width
+                constrained_index_width = natural_index_width * scale_factor
+                constrained_data_widths = [w * scale_factor for w in natural_data_widths]
             else:
-                # Calculate data column width using consistent index width
-                remaining_cols = cols - (1 if include_index else 0)
-                remaining_width = actual_width - (calculated_index_width if include_index else 0)
-                data_col_width = max(remaining_width / remaining_cols, MIN_COLUMN_WIDTH)
-                table.columns[i].width = Inches(data_col_width)
+                # Use natural widths if they fit
+                constrained_index_width = natural_index_width
+                constrained_data_widths = natural_data_widths
+            
+            # Apply the calculated widths
+            for i in range(cols):
+                if i == 0:
+                    # Index column
+                    table.columns[i].width = Inches(constrained_index_width)
+                else:
+                    # Data columns
+                    table.columns[i].width = Inches(constrained_data_widths[i-1])
+        else:
+            # No index, distribute width equally among data columns
+            col_width = actual_width / cols
+            for i in range(cols):
+                table.columns[i].width = Inches(col_width)
         
         return table
     
