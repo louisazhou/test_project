@@ -332,10 +332,9 @@ class SlideLayouts:
         include_index = not isinstance(df.index, pd.RangeIndex)
         rows, cols = df.shape[0] + 1, df.shape[1] + (1 if include_index else 0)
         
-        # Calculate optimal dimensions
-        optimal_width, optimal_height = self._calculate_table_dimensions(df)
-        actual_width = min(optimal_width, width)
-        actual_height = min(optimal_height, height)
+        # Use the passed width and height directly - they've already been calculated with constraints
+        actual_width = width
+        actual_height = height
         
         # Create table
         table_shape = slide.shapes.add_table(rows, cols, Inches(left), Inches(top), 
@@ -1348,11 +1347,12 @@ class SlideLayouts:
         
         # Calculate text area on the right side with minimal spacing
         text_left = table_left + table_width + ELEMENT_GAP + 0.03  # Reduced spacing
-        text_width = CONTENT_WIDTH - table_width - ELEMENT_GAP - 0.03  # Reduce width accordingly
+        # Calculate available width from text start to slide end
+        text_width = (CONTENT_LEFT + CONTENT_WIDTH) - text_left
         
-        # Ensure text doesn't go beyond slide boundaries
-        if text_left + text_width > CONTENT_LEFT + CONTENT_WIDTH:
-            text_width = CONTENT_LEFT + CONTENT_WIDTH - text_left
+        # Ensure text doesn't go beyond slide boundaries (already handled above)
+        if text_width < 0:
+            text_width = 0
         
         # Ensure minimum text width
         if text_width < 2.0:
