@@ -87,35 +87,6 @@ def _calculate_two_sided_contributions(actual_values: pd.Series, expected_values
     return contributions
 
 
-def _calculate_normalized_contributions(actual_values: pd.Series, expected_values: pd.Series, delta: float) -> pd.Series:
-    """
-    Calculate contributions that sum to exactly 1.0 while preserving positive/negative signs.
-    This works reliably even with very small deltas by normalizing after calculation.
-    
-    Args:
-        actual_values: Actual values for each slice
-        expected_values: Expected values for each slice
-        delta: The total delta (actual_sum - expected_sum)
-        
-    Returns:
-        Series of contributions that sum to exactly 1.0
-    """
-    raw_deviations = actual_values - expected_values
-    
-    if delta != 0:
-        # Step 1: Calculate raw contributions (may have precision issues with small delta)
-        raw_contributions = raw_deviations / delta
-        
-        # Step 2: Normalize to ensure exact sum of 1.0 while preserving signs
-        actual_sum = raw_contributions.sum()
-        if actual_sum != 0:
-            # Scale all contributions by the same factor to make them sum to exactly 1.0
-            normalized_contributions = raw_contributions / actual_sum
-            return normalized_contributions
-        else:
-            return pd.Series(0.0, index=actual_values.index)
-    else:
-        return pd.Series(0.0, index=actual_values.index)
 
 
 def rate_contrib(
@@ -172,27 +143,46 @@ def rate_contrib(
     
     if delta != 0:
         if use_two_sided_normalization:
-            # For small deltas, use two-sided normalization: positives sum to +1, negatives to -1
+            # Two-sided normalization produces mathematically correct signs, but we need to
+            # adjust for the higher_is_better context to get intuitive interpretation
             raw_contribution = _calculate_two_sided_contributions(df[numerator_col], df['expected'])
+            
+            # Store raw contribution for ranking drivers of delta
+            df['raw_contribution'] = raw_contribution
+            
+            if higher_is_better:
+                # For metrics where higher is better:
+                # - actual > expected (positive raw) = good performance = hero (positive)
+                # - actual < expected (negative raw) = bad performance = culprit (negative)
+                df['contribution'] = raw_contribution  # Keep as-is
+            else:
+                # For metrics where lower is better:
+                # - actual > expected (positive raw) = bad performance = culprit (negative)
+                # - actual < expected (negative raw) = good performance = hero (positive)
+                df['contribution'] = -raw_contribution  # Flip sign
             
         else:
             # Standard attribution for normal-sized deltas
             raw_contribution = (df[numerator_col] - df['expected']) / delta
             
-        # Adjust sign based on context for intuitive interpretation
-        if higher_is_better:
-            if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
-                df['contribution'] = -raw_contribution
+            # Store raw contribution for ranking drivers of delta
+            df['raw_contribution'] = raw_contribution
+            
+            # Adjust sign based on context for intuitive interpretation
+            if higher_is_better:
+                if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
+                    df['contribution'] = -raw_contribution
+                else:
+                    df['contribution'] = raw_contribution
             else:
-                df['contribution'] = raw_contribution
-        else:
-            if delta > 0:  # Region underperforming (higher than desired) - flip sign
-                df['contribution'] = -raw_contribution
-            else:
-                df['contribution'] = raw_contribution
+                if delta > 0:  # Region underperforming (higher than desired) - flip sign
+                    df['contribution'] = -raw_contribution
+                else:
+                    df['contribution'] = raw_contribution
     else:
         # If delta is exactly 0, all contributions are 0
         df['contribution'] = 0.0
+        df['raw_contribution'] = 0.0
     
     # Calculate heuristic score: sqrt(|contribution| + max(|contribution| - coverage, 0) / coverage)
     # Floor coverage at 1% to avoid division by zero
@@ -239,8 +229,9 @@ def additive_contrib(
     # Calculate expected value based on proportional allocation
     df['expected'] = df['coverage'] * row_total
     
-    # Calculate intuitive contribution: positive = helpful, negative = harmful
+    # Calculate raw contribution for ranking drivers of delta
     raw_contribution = (df[metric_col] - df['expected']) / delta if delta != 0 else 0
+    df['raw_contribution'] = raw_contribution
     
     # Adjust sign based on context for intuitive interpretation
     if higher_is_better:
@@ -479,11 +470,11 @@ def analyze_region_depth(
             
             # Create full analysis data sorted by score (for chart - show ALL slices)
             contrib_df = contrib_df.sort_values('score', ascending=False)
-            summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score']
+            summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score', 'raw_contribution']
             full_analysis_df = contrib_df[summary_cols].copy().set_index('slice')
             
             # Create formatted display table (top 3 only for table display)
-            display_table = full_analysis_df.head(3).copy()
+            display_table = full_analysis_df.drop(['raw_contribution'], axis=1).head(3).copy()
             display_table['contribution'] = display_table['contribution'].apply(lambda x: f"{x:.1%}")
             display_table['coverage'] = display_table['coverage'].apply(lambda x: f"{x:.1%}")
             display_table['score'] = display_table['score'].apply(lambda x: f"{x:.2f}")
@@ -493,37 +484,18 @@ def analyze_region_depth(
             else:
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Generate concise summary text with correct hero/culprit identification
-            # After consolidated sign flipping: positive contrib = hero, negative contrib = culprit
-            # So we can use a simple approach regardless of context
-            heroes = contrib_df[contrib_df['contribution'] > 0].nlargest(2, 'contribution')
-            culprits = contrib_df[contrib_df['contribution'] < 0].nsmallest(2, 'contribution')  # Most negative = biggest culprit
+            # Generate concise summary text showing top 2 drivers of the delta
+            # Use raw contribution (before sign flipping) to rank actual drivers of delta
+            # Raw contribution represents: (actual - expected) / delta
+            # So biggest absolute raw contributions are the biggest drivers regardless of delta sign
+            contrib_df['abs_raw_contribution'] = contrib_df['raw_contribution'].abs()
+            top_drivers = contrib_df.nlargest(2, 'abs_raw_contribution')
             
-            # Generate summary focusing on the most actionable insights
             summary_parts = []
-            
-            # Show top culprit (the main driver of the problem)
-            if len(culprits) > 0:
-                top_culprit = culprits.iloc[0]
-                culprit_name = top_culprit['slice']
-                culprit_contrib = top_culprit['contribution'] * 100
-                summary_parts.append(f"{culprit_name} ({culprit_contrib:+.0f}% culprit)")
-            
-            # Show top hero (what's working well or mitigating the problem)
-            if len(heroes) > 0:
-                top_hero = heroes.iloc[0]
-                hero_name = top_hero['slice']
-                hero_contrib = top_hero['contribution'] * 100
-                summary_parts.append(f"{hero_name} ({hero_contrib:+.0f}% hero)")
-            
-            # Fallback to top 2 by absolute contribution if no clear culprits/heroes
-            if not summary_parts:
-                contrib_df['abs_contribution'] = contrib_df['contribution'].abs()
-                top_by_abs = contrib_df.nlargest(2, 'abs_contribution')
-                for _, row in top_by_abs.iterrows():
-                    name = row['slice']
-                    contrib = row['contribution'] * 100
-                    summary_parts.append(f"{name} ({contrib:+.0f}%)")
+            for _, row in top_drivers.iterrows():
+                name = row['slice']
+                contrib = row['contribution'] * 100
+                summary_parts.append(f"{name} ({contrib:+.0f}%)")
             
             summary_text = ", ".join(summary_parts) if summary_parts else f"Depth analysis completed for {metric_name}"
 
