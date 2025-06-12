@@ -159,10 +159,16 @@ def rate_contrib(
     # Calculate coverage (share of total visits within the region)
     df['coverage'] = df[denominator_col] / df[denominator_col].sum()
     
-    # Calculate contribution using appropriate method based on delta size
+    # Calculate contribution using appropriate method based on delta size and potential overflow
     expected_total = df['expected'].sum()
     delta_ratio = abs(delta) / expected_total if expected_total > 0 else 0
-    use_two_sided_normalization = delta_ratio < 0.05  # Use two-sided normalization for small deltas
+    
+    # Check if standard approach would produce >100% contributions
+    max_deviation = (df[numerator_col] - df['expected']).abs().max()
+    max_potential_contrib = max_deviation / abs(delta) if delta != 0 else 0
+    
+    # Use two-sided normalization if delta is small OR if contributions would exceed 100%
+    use_two_sided_normalization = (delta_ratio < 0.05) or (max_potential_contrib > 1.0)
     
     if delta != 0:
         if use_two_sided_normalization:
@@ -487,20 +493,39 @@ def analyze_region_depth(
             else:
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Generate concise summary text (prepared during processing!)
-            top_contributors = contrib_df.nlargest(2, 'contribution')
-            if len(top_contributors) >= 2:
-                top1_name = top_contributors.iloc[0]['slice']
-                top1_contrib = top_contributors.iloc[0]['contribution'] * 100
-                top2_name = top_contributors.iloc[1]['slice']
-                top2_contrib = top_contributors.iloc[1]['contribution'] * 100
-                summary_text = f"{top1_name} ({top1_contrib:.0f}%), {top2_name} ({top2_contrib:.0f}%)"
-            elif len(top_contributors) == 1:
-                top1_name = top_contributors.iloc[0]['slice']
-                top1_contrib = top_contributors.iloc[0]['contribution'] * 100
-                summary_text = f"{top1_name} ({top1_contrib:.0f}%)"
-            else:
-                summary_text = f"Depth analysis completed for {metric_name}"
+            # Generate concise summary text with correct hero/culprit identification
+            # After consolidated sign flipping: positive contrib = hero, negative contrib = culprit
+            # So we can use a simple approach regardless of context
+            heroes = contrib_df[contrib_df['contribution'] > 0].nlargest(2, 'contribution')
+            culprits = contrib_df[contrib_df['contribution'] < 0].nsmallest(2, 'contribution')  # Most negative = biggest culprit
+            
+            # Generate summary focusing on the most actionable insights
+            summary_parts = []
+            
+            # Show top culprit (the main driver of the problem)
+            if len(culprits) > 0:
+                top_culprit = culprits.iloc[0]
+                culprit_name = top_culprit['slice']
+                culprit_contrib = top_culprit['contribution'] * 100
+                summary_parts.append(f"{culprit_name} ({culprit_contrib:+.0f}% culprit)")
+            
+            # Show top hero (what's working well or mitigating the problem)
+            if len(heroes) > 0:
+                top_hero = heroes.iloc[0]
+                hero_name = top_hero['slice']
+                hero_contrib = top_hero['contribution'] * 100
+                summary_parts.append(f"{hero_name} ({hero_contrib:+.0f}% hero)")
+            
+            # Fallback to top 2 by absolute contribution if no clear culprits/heroes
+            if not summary_parts:
+                contrib_df['abs_contribution'] = contrib_df['contribution'].abs()
+                top_by_abs = contrib_df.nlargest(2, 'abs_contribution')
+                for _, row in top_by_abs.iterrows():
+                    name = row['slice']
+                    contrib = row['contribution'] * 100
+                    summary_parts.append(f"{name} ({contrib:+.0f}%)")
+            
+            summary_text = ", ".join(summary_parts) if summary_parts else f"Depth analysis completed for {metric_name}"
 
             # Return in unified format directly - no integration needed!
             analysis_type = 'depth'  # Derived from config_depth.yaml
