@@ -192,8 +192,8 @@ def rate_contrib(
         np.maximum(np.abs(df['contribution']) - df['coverage'], 0) / coverage_floored
     )
     
-    # Add actual rate using the proper metric name
-    df[metric_name] = df[numerator_col] / df[denominator_col]
+    # Add actual rate using the proper metric name, handling zero denominators
+    df[metric_name] = df[numerator_col] / df[denominator_col].replace(0, np.nan)
     
     return df, delta, row_rate
 
@@ -289,8 +289,11 @@ def plot_subregion_bars(
     # Create figure and axis
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Get values and labels
+    # Get values and labels, handling NaN values
     values = df_slice[metric_col].values
+    
+    # Replace NaN values with 0 for plotting
+    values = np.nan_to_num(values, nan=0.0)
     
     # Handle case where 'slice' is either a column or the index
     if 'slice' in df_slice.columns:
@@ -334,13 +337,20 @@ def plot_subregion_bars(
     bars = ax.bar(range(len(values)), values, width=0.6, color=colors, linewidth=0.5)
     
     # Add value labels on bars
+    original_values = df_slice[metric_col].values  # Keep original values for labeling
     for i, val in enumerate(values):
         # Position text above the bar
         max_val = max(values) if len(values) > 0 else 0
         text_y = val + (max_val * 0.02)
         
-        # Format and add text
-        ax.text(i, text_y, value_formatter(val), ha="center", va="bottom", 
+        # Format and add text, handling NaN in original values
+        original_val = original_values[i]
+        if pd.isna(original_val):
+            label_text = "N/A"
+        else:
+            label_text = value_formatter(original_val)
+        
+        ax.text(i, text_y, label_text, ha="center", va="bottom", 
                fontweight=FONTS['annotation']['weight'], fontsize=FONTS['annotation']['size'])
     
     # Customize the plot
