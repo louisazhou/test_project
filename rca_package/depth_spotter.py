@@ -49,44 +49,33 @@ COLORS = {
 }
 
 
-def _calculate_scaled_attribution(actual_values: pd.Series, expected_values: pd.Series) -> pd.Series:
+def _calculate_normalized_contributions(actual_values: pd.Series, expected_values: pd.Series, delta: float) -> pd.Series:
     """
-    Calculate contributions using scaled absolute deviation method for small deltas.
-    This ensures contributions sum to exactly 1.0 and stay in reasonable range.
+    Calculate contributions that sum to exactly 1.0 while preserving positive/negative signs.
+    This works reliably even with very small deltas by normalizing after calculation.
     
     Args:
         actual_values: Actual values for each slice
         expected_values: Expected values for each slice
+        delta: The total delta (actual_sum - expected_sum)
         
     Returns:
-        Series of contributions that sum to 1.0
+        Series of contributions that sum to exactly 1.0
     """
     raw_deviations = actual_values - expected_values
     
-    # Separate positive and negative deviations
-    pos_deviations = np.maximum(raw_deviations, 0)
-    neg_deviations = np.minimum(raw_deviations, 0)
-    
-    total_pos = pos_deviations.sum()
-    total_neg = abs(neg_deviations.sum())
-    
-    # Calculate contributions that sum to 1.0
-    if total_pos + total_neg > 0:
-        # Each slice gets: (its_deviation / total_deviation_of_same_sign) * (sign_share_of_total)
-        pos_weight = total_pos / (total_pos + total_neg)
-        neg_weight = total_neg / (total_pos + total_neg)
+    if delta != 0:
+        # Step 1: Calculate raw contributions (may have precision issues with small delta)
+        raw_contributions = raw_deviations / delta
         
-        # Assign contributions
-        contributions = np.zeros(len(actual_values))
-        for i in range(len(actual_values)):
-            if raw_deviations.iloc[i] > 0:
-                contributions[i] = (pos_deviations.iloc[i] / total_pos) * pos_weight if total_pos > 0 else 0
-            elif raw_deviations.iloc[i] < 0:
-                contributions[i] = (neg_deviations.iloc[i] / (-total_neg)) * neg_weight if total_neg > 0 else 0
-            else:
-                contributions[i] = 0
-        
-        return pd.Series(contributions, index=actual_values.index)
+        # Step 2: Normalize to ensure exact sum of 1.0 while preserving signs
+        actual_sum = raw_contributions.sum()
+        if actual_sum != 0:
+            # Scale all contributions by the same factor to make them sum to exactly 1.0
+            normalized_contributions = raw_contributions / actual_sum
+            return normalized_contributions
+        else:
+            return pd.Series(0.0, index=actual_values.index)
     else:
         return pd.Series(0.0, index=actual_values.index)
 
@@ -135,23 +124,27 @@ def rate_contrib(
     # Calculate contribution using appropriate method based on delta size
     expected_total = df['expected'].sum()
     delta_ratio = abs(delta) / expected_total if expected_total > 0 else 0
-    use_scaled_attribution = delta_ratio < 0.1  # Use alternative method for small deltas
+    use_scaled_attribution = delta_ratio < 0.05  # Use normalization method for small to medium deltas
     
     if delta != 0:
         if use_scaled_attribution:
-            # For small deltas, use scaled attribution to keep values reasonable
-            df['contribution'] = _calculate_scaled_attribution(df[numerator_col], df['expected'])
+            # For small deltas, use normalized contributions to ensure exact sum of 1.0
+            df['contribution'] = _calculate_normalized_contributions(df[numerator_col], df['expected'], delta)
         else:
             # Standard attribution for normal-sized deltas
-            df['contribution'] = (df[numerator_col] - df['expected']) / delta
-        
-        # Adjust sign based on context for intuitive interpretation
-        if higher_is_better:
-            if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
-                df['contribution'] = -df['contribution']
-        else:
-            if delta > 0:  # Region underperforming (higher than desired) - flip sign
-                df['contribution'] = -df['contribution']
+            raw_contribution = (df[numerator_col] - df['expected']) / delta
+            
+            # Adjust sign based on context for intuitive interpretation
+            if higher_is_better:
+                if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
+                    df['contribution'] = -raw_contribution
+                else:
+                    df['contribution'] = raw_contribution
+            else:
+                if delta > 0:  # Region underperforming (higher than desired) - flip sign
+                    df['contribution'] = -raw_contribution
+                else:
+                    df['contribution'] = raw_contribution
     else:
         # If delta is exactly 0, all contributions are 0
         df['contribution'] = 0.0
