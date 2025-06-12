@@ -468,7 +468,14 @@ def create_multi_hypothesis_plot(
             )
             # Since we now use display names as column headers, hypo_name is already the display name
             hypo_display_name = hypo_name
-            ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=FONTS['title']['size'])
+            
+            # Adjust title based on number of hypotheses
+            if len(hypo_cols) > 4:
+                # For >4 hypotheses, only show "Hypothesis {i+2}"
+                ax.set_title(f"Hypothesis {i+2}", fontsize=FONTS['title']['size'])
+            else:
+                # For ≤4 hypotheses, show full title with hypothesis name
+                ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=FONTS['title']['size'])
     
     # Add score formula if included
     if include_score_formula:
