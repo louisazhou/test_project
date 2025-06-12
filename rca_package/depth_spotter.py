@@ -49,6 +49,44 @@ COLORS = {
 }
 
 
+def _calculate_two_sided_contributions(actual_values: pd.Series, expected_values: pd.Series) -> pd.Series:
+    """
+    Calculate contributions using two-sided normalization for small delta cases.
+    Positive contributions sum to +1, negative contributions sum to -1.
+    This approach provides stable, interpretable results even when large deviations cancel out.
+    
+    Based on the formula:
+    - diff = actual - expected (signed gap per slice)
+    - pos_sum = Σ positive gaps
+    - neg_sum = Σ |negative| gaps  
+    - contribution_i = diff_i / pos_sum (if positive) or diff_i / neg_sum (if negative)
+    
+    Args:
+        actual_values: Actual values for each slice
+        expected_values: Expected values for each slice
+        
+    Returns:
+        Series of contributions where positives sum to +1, negatives sum to -1
+    """
+    # Calculate signed gaps per slice
+    diff = actual_values - expected_values
+    
+    # Calculate positive and negative sums
+    pos_sum = diff.clip(lower=0).sum()  # Σ positive gaps
+    neg_sum = -diff.clip(upper=0).sum()  # Σ |negative| gaps
+    
+    def _share(x):
+        if x > 0 and pos_sum > 0:
+            return x / pos_sum  # Normalize positives to sum to +1
+        elif x < 0 and neg_sum > 0:
+            return x / neg_sum  # Normalize negatives to sum to -1 (x is negative, neg_sum is positive)
+        else:
+            return 0.0
+    
+    contributions = diff.apply(_share)
+    return contributions
+
+
 def _calculate_normalized_contributions(actual_values: pd.Series, expected_values: pd.Series, delta: float) -> pd.Series:
     """
     Calculate contributions that sum to exactly 1.0 while preserving positive/negative signs.
@@ -124,27 +162,28 @@ def rate_contrib(
     # Calculate contribution using appropriate method based on delta size
     expected_total = df['expected'].sum()
     delta_ratio = abs(delta) / expected_total if expected_total > 0 else 0
-    use_scaled_attribution = delta_ratio < 0.05  # Use normalization method for small to medium deltas
+    use_two_sided_normalization = delta_ratio < 0.05  # Use two-sided normalization for small deltas
     
     if delta != 0:
-        if use_scaled_attribution:
-            # For small deltas, use normalized contributions to ensure exact sum of 1.0
-            df['contribution'] = _calculate_normalized_contributions(df[numerator_col], df['expected'], delta)
+        if use_two_sided_normalization:
+            # For small deltas, use two-sided normalization: positives sum to +1, negatives to -1
+            raw_contribution = _calculate_two_sided_contributions(df[numerator_col], df['expected'])
+            
         else:
             # Standard attribution for normal-sized deltas
             raw_contribution = (df[numerator_col] - df['expected']) / delta
             
-            # Adjust sign based on context for intuitive interpretation
-            if higher_is_better:
-                if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
-                    df['contribution'] = -raw_contribution
-                else:
-                    df['contribution'] = raw_contribution
+        # Adjust sign based on context for intuitive interpretation
+        if higher_is_better:
+            if delta < 0:  # Region underperforming - flip sign for intuitive interpretation
+                df['contribution'] = -raw_contribution
             else:
-                if delta > 0:  # Region underperforming (higher than desired) - flip sign
-                    df['contribution'] = -raw_contribution
-                else:
-                    df['contribution'] = raw_contribution
+                df['contribution'] = raw_contribution
+        else:
+            if delta > 0:  # Region underperforming (higher than desired) - flip sign
+                df['contribution'] = -raw_contribution
+            else:
+                df['contribution'] = raw_contribution
     else:
         # If delta is exactly 0, all contributions are 0
         df['contribution'] = 0.0
