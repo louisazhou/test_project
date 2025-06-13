@@ -116,8 +116,17 @@ def sign_based_score_hypothesis(
     # Calculate binomial p-value (not used in score but included for reference)
     p_binom = stats.binomtest(sign_agreements.sum(), n=len(regions), p=0.5)
     
-    # Calculate explained ratio for the anomalous region
-    explained_ratio = min(abs(hypo_delta) / abs(metric_delta), 1.0) if abs(metric_delta) > 1e-6 else 0
+    # Calculate explained ratio for the anomalous region using MAD-normalized z-scores
+    # Compute robust spreads using MAD (Median Absolute Deviation)
+    sigma_m = np.median(np.abs(metric_deltas - np.median(metric_deltas)))
+    sigma_h = np.median(np.abs(hypo_deltas - np.median(hypo_deltas)))
+    
+    # Convert focal region deltas to z-scores
+    z_m = metric_delta / sigma_m if sigma_m > 1e-6 else 0
+    z_h = hypo_delta / sigma_h if sigma_h > 1e-6 else 0
+    
+    # Redefine explained ratio using z-scores (scale-free)
+    explained_ratio = min(abs(z_h) / abs(z_m), 1.0) if abs(z_m) > 1e-6 else 0
     
     # Calculate final score: 60% sign agreement + 40% explained ratio
     final_score = 0.6 * sign_agreement_score + 0.4 * explained_ratio
@@ -1087,10 +1096,6 @@ def score_hypotheses_for_metrics(
                         'summary': {
                             'summary_text': summary_text
                         },
-                        'payload': {
-                            'best_hypothesis': best_hypo_result,
-                            'all_results': hypothesis_results
-                        },
                         'slide_info': {
                             'title': f"{metric_name} - Root Cause",
                             'template_text': template,
@@ -1100,7 +1105,11 @@ def score_hypotheses_for_metrics(
                             'layout_type': "text_figure"
                         }
                     }
-                }
+                },
+                'payload': {
+                            'best_hypothesis': best_hypo_result,
+                            'all_results': hypothesis_results
+                        },
             }
             
         except Exception as e:

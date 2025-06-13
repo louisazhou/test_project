@@ -517,11 +517,6 @@ def analyze_region_depth(
                         'summary': {
                             'summary_text': summary_text
                         },
-                        'payload': {
-                            'summary_df': full_analysis_df,  # Full analysis data for internal inspection
-                            'delta': delta,
-                            'row_value': row_value
-                        },
                         'slide_info': {
                             'title': f"{metric_name} - Depth Analysis",
                             'template_text': template,
@@ -542,7 +537,12 @@ def analyze_region_depth(
                             'layout_type': "text_tables_figure"
                         }
                     }
-                }
+                },
+                'payload': {
+                            'summary_df': full_analysis_df,  # Full analysis data for internal inspection
+                            'delta': delta,
+                            'row_value': row_value
+                        },
             }
                 
         except KeyError as e:
