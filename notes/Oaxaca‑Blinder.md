@@ -127,3 +127,38 @@ if sign(Δ_mix) != sign(Δ_perf):
 Net –3 pp
 ```
 
+### Mock data (APAC vs. ROW)
+
+| Segment | Mix (APAC) | Win-rate (APAC) | Mix (ROW) | Win-rate (ROW) |
+| ------- | ---------- | --------------- | --------- | -------------- |
+| Junior  | 0.40       | 11 %            | 0.60      | 10 %           |
+| Senior  | 0.60       | 22 %            | 0.40      | 20 %           |
+
+* ROW overall win-rate = 0.6 × 10 % + 0.4 × 20 % = **14 %**
+* APAC overall win-rate = 0.4 × 11 % + 0.6 × 22 % = **17.6 %**
+* **Total gap** (APAC − ROW) = **+3.6 pp**
+
+---
+
+### Oaxaca–Blinder decomposition
+
+| Segment | **Composition term**<br>(Δ mix × rate ROW) | **Performance term**<br>(mix APAC × Δ rate) |
+| ------- | ------------------------------------------ | ------------------------------------------- |
+| Junior  | (0.40 − 0.60) × 10 % = **–2.0 pp**         | 0.40 × (11 % − 10 %) = **+0.4 pp**          |
+| Senior  | (0.60 − 0.40) × 20 % = **+4.0 pp**         | 0.60 × (22 % − 20 %) = **+1.2 pp**          |
+| **Sum** | **+2.0 pp (Δ\_mix)**                       | **+1.6 pp (Δ\_perf)**                       |
+
+* **Composition gap (Δ\_mix)** = +2.0 pp
+  → more Seniors in APAC lifts the rate.
+* **Performance gap (Δ\_perf)** = +1.6 pp
+  → APAC managers win more often even within the same tier.
+* **Δ\_total = +3.6 pp = Δ\_mix + Δ\_perf**
+
+---
+
+### Quick rule-based check (X = Y = 5 pp)
+
+* |Δ\_mix| = 2 pp  < 5 pp
+* |Δ\_perf| = 1.6 pp < 5 pp
+
+Both below the 5 pp threshold ⇒ flag as **“mixed / weak evidence”** in the fast filter; full decomposition above gives the exact split.
