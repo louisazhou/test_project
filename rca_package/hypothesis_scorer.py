@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Union
 import math
 from jinja2 import Template
 import scipy.stats as stats
@@ -131,6 +131,23 @@ def sign_based_score_hypothesis(
     # Calculate final score: 60% sign agreement + 40% explained ratio
     final_score = 0.6 * sign_agreement_score + 0.4 * explained_ratio
     
+    # Apply guardrail logic for 'explains' field
+    meets_guardrails = (sign_agreement_score >= 0.5 and 
+                       explained_ratio >= 0.2 and 
+                       final_score >= 0.5)
+    
+    # Determine failure reason if it doesn't explain
+    failure_reason = ""
+    if not meets_guardrails:
+        reasons = []
+        if sign_agreement_score < 0.5:
+            reasons.append("wrong hypothesis direction")
+        if explained_ratio < 0.2:
+            reasons.append("coincidental moves")
+        if final_score < 0.5:
+            reasons.append("final score <0.5")
+        failure_reason = ", ".join(reasons)
+    
     # Format magnitude based on column name (same as original function)
     is_percent_column = '_pct' in hypo_col or '%' in hypo_col
     if is_percent_column:
@@ -151,7 +168,8 @@ def sign_based_score_hypothesis(
             'explained_ratio': explained_ratio,
             'p_value': p_binom.pvalue,
             'final_score': final_score,
-            'explains': final_score > 0.5
+            'explains': meets_guardrails,
+            'failure_reason': failure_reason
         }
     }
 
@@ -361,10 +379,11 @@ def create_multi_hypothesis_plot(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
+    ordered_hypos: List[Tuple[str, Dict[str, Any]]],
     hypo_results: Optional[Dict[str, Dict[str, Any]]] = None,
-    ordered_hypos: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
-    figsize: Tuple[int, int] = (18, 13),
-    include_score_formula: bool = True
+    figsize: Tuple[int, int] = (18, 10),
+    include_score_formula: bool = True,
+    is_conclusive: bool = True
 ) -> plt.Figure:
     """
     Create a multi-panel figure showing hypothesis analysis with bar charts.
@@ -375,10 +394,11 @@ def create_multi_hypothesis_plot(
         metric_col: Name of the metric column
         hypo_cols: List of hypothesis column names
         metric_anomaly_info: Anomaly information for the metric
+        ordered_hypos: Ordered list of hypotheses by score
         hypo_results: Results from hypothesis scoring (optional)
-        ordered_hypos: Ordered list of hypotheses by score (optional)
         figsize: Figure size as (width, height)
         include_score_formula: Whether to add score formula to the figure (default: True)
+        is_conclusive: Whether the analysis is conclusive (to show a 'best' hypothesis)
         
     Returns:
         matplotlib Figure object
@@ -387,82 +407,76 @@ def create_multi_hypothesis_plot(
     fig = plt.figure(figsize=figsize)
     
     # Define figure layout with reserved space for top and bottom
-    # Hard-code these values since subplots_adjust may be overridden by tight_layout()
     top_margin = 0.80  # Reserve top 20% for explanatory text
     bottom_margin = 0.15  # Reserve bottom 15% for formula
     
-    # Determine the best hypothesis and sort others
-    best_hypo_name, best_hypo_result = ordered_hypos[0]
-    other_hypos = ordered_hypos[1:]
-    
-    # Calculate grid dimensions based on number of hypotheses
-    num_other_hypos = len(other_hypos)
-    
-    # Determine if we need more than 2 columns for other hypotheses
-    if num_other_hypos <= 4:
-        # Use 2x2 grid for other hypotheses (2 columns)
-        total_cols = 3  # 1 for metric/best hypo + 2 for others
-        total_rows = 2  # Always 2 rows (metric + best hypo on left)
+    # Determine which hypotheses to plot on the right side
+    if is_conclusive:
+        best_hypo_name, best_hypo_result = ordered_hypos[0]
+        hypos_on_right = ordered_hypos[1:]
     else:
-        # Calculate optimal grid dimensions for other hypotheses
-        other_cols = min(3, math.ceil(math.sqrt(num_other_hypos)))  # Max 3 columns
-        other_rows = math.ceil(num_other_hypos / other_cols)
-        total_cols = other_cols + 1  # +1 for metric/best hypo column
-        total_rows = max(2, other_rows)  # At least 2 rows
+        # For inconclusive, all hypos go on the right, none are "best"
+        best_hypo_name, best_hypo_result = None, None
+        hypos_on_right = ordered_hypos
+        
+    # Calculate grid dimensions based on number of hypotheses to show on the right
+    num_hypos_on_right = len(hypos_on_right)
     
-    # Create GridSpec with explicit positioning to respect margins
+    # Determine grid dimensions
+    if num_hypos_on_right <= 4:
+        total_cols = 3  # 1 for metric/best + 2 for others
+        total_rows = 2  # Always 2 rows
+    else:
+        other_cols = min(3, math.ceil(math.sqrt(num_hypos_on_right)))
+        other_rows = math.ceil(num_hypos_on_right / other_cols)
+        total_cols = other_cols + 1  # +1 for metric/best column
+        total_rows = max(2, other_rows)
+    
+    # Create GridSpec with explicit positioning
     gs = gridspec.GridSpec(
         total_rows, total_cols,
         left=0.05, right=0.95,
-        top=top_margin, bottom=bottom_margin,  # Use our explicit margins
-        wspace=0.3, hspace=0.3  # Add reasonable spacing
+        top=top_margin, bottom=bottom_margin,
+        wspace=0.3, hspace=0.3
     )
     
-    # Create axes for metric (spanning top left) and best hypothesis (bottom left)
+    # Create axes for metric (top left) and best hypothesis (bottom left)
     ax_metric = fig.add_subplot(gs[0, 0])
     ax_best_hypo = fig.add_subplot(gs[1, 0])
     
-    # Since we now use display names as column headers, these are already display names
-    metric_display_name = metric_col
-    best_hypo_display_name = best_hypo_name
-    
     # Plot metric
-    plot_bars(
-        ax_metric, 
-        df[[metric_col]], 
-        metric_anomaly_info, 
-        plot_type='metric'
-    )
+    metric_display_name = metric_col
+    plot_bars(ax_metric, df[[metric_col]], metric_anomaly_info, plot_type='metric')
     ax_metric.set_title(f"Metric: {metric_display_name}", fontsize=FONTS['title']['size'])
     
-    # Plot best hypothesis
-    plot_bars(
-        ax_best_hypo, 
-        df[[metric_col, best_hypo_name]], 
-        metric_anomaly_info, 
-        best_hypo_result, 
-        plot_type='hypothesis',
-        highlight_region=True  # Only highlight region in best hypothesis
-    )
-    ax_best_hypo.set_title(
-        f"Best Hypothesis: {best_hypo_display_name}", 
-        fontsize=FONTS['title']['size']
-    )
-    
-    # Create axes and plot for other hypotheses
-    for i, (hypo_name, hypo_result) in enumerate(other_hypos):
-        if i >= num_other_hypos:
+    # Handle the "Best Hypothesis" plot area
+    if is_conclusive:
+        best_hypo_display_name = best_hypo_name
+        plot_bars(
+            ax_best_hypo, 
+            df[[metric_col, best_hypo_name]], 
+            metric_anomaly_info, 
+            best_hypo_result, 
+            plot_type='hypothesis',
+            highlight_region=True
+        )
+        ax_best_hypo.set_title(f"Best Hypothesis: {best_hypo_display_name}", fontsize=FONTS['title']['size'])
+    else:
+        # For inconclusive cases, leave the "best hypothesis" area blank
+        ax_best_hypo.set_visible(False)
+        
+    # Plot the other hypotheses on the right
+    for i, (hypo_name, hypo_result) in enumerate(hypos_on_right):
+        if i >= num_hypos_on_right:
             break  # Safety check
             
-        # Calculate position in grid (skipping first column)
-        if num_other_hypos <= 4:
-            # For 2x2 grid of other hypotheses
+        # Calculate position in grid (skipping the first column)
+        if num_hypos_on_right <= 4:
             row = i // 2
-            col = (i % 2) + 1  # +1 to skip first column
+            col = (i % 2) + 1
         else:
-            # For larger grids
             row = i // (total_cols - 1)
-            col = (i % (total_cols - 1)) + 1  # +1 to skip first column
+            col = (i % (total_cols - 1)) + 1
         
         # Create axis and plot
         if row < total_rows and col < total_cols:  # Safety check
@@ -473,18 +487,17 @@ def create_multi_hypothesis_plot(
                 metric_anomaly_info, 
                 hypo_result, 
                 plot_type='hypothesis',
-                highlight_region=False  # Don't highlight region in other hypotheses
+                highlight_region=False  # No highlight on the right side
             )
-            # Since we now use display names as column headers, hypo_name is already the display name
             hypo_display_name = hypo_name
             
-            # Adjust title based on number of hypotheses
+            # Adjust title based on context
+            title_prefix = f"Hypothesis {i+2}" if is_conclusive else f"Hypothesis {i+1}"
+            
             if len(hypo_cols) > 4:
-                # For >4 hypotheses, only show "Hypothesis {i+2}"
-                ax.set_title(f"Hypothesis {i+2}", fontsize=FONTS['title']['size'])
+                ax.set_title(title_prefix, fontsize=FONTS['title']['size'])
             else:
-                # For ≤4 hypotheses, show full title with hypothesis name
-                ax.set_title(f"Hypothesis {i+2}: {hypo_display_name}", fontsize=FONTS['title']['size'])
+                ax.set_title(f"{title_prefix}: {hypo_display_name}", fontsize=FONTS['title']['size'])
     
     # Add score formula if included
     if include_score_formula:
@@ -604,6 +617,25 @@ def get_ranked_hypotheses(hypo_results: Dict[str, Dict[str, Any]]) -> List[Tuple
     return hypo_list
 
 
+def rank_with_guardrail(hypo_results: Dict[str, Dict[str, Any]]) -> Union[List[Tuple[str, Dict[str, Any]]], str]:
+    """
+    Apply guardrail filtering before ranking hypotheses.
+    
+    Args:
+        hypo_results: Dictionary mapping hypothesis names to their score results
+    
+    Returns:
+        List of (hypothesis_name, result) tuples sorted by final score, or "Inconclusive" if none pass guardrails
+    """
+    # Apply guardrail filter by checking the 'explains' flag
+    qualified = {h: r for h, r in hypo_results.items() if r['scores']['explains']}
+    
+    if not qualified:
+        return "Inconclusive – no hypothesis meets guardrails"
+    else:
+        return get_ranked_hypotheses(qualified)
+
+
 def save_results_to_dataframe(all_results: Dict[str, Dict[str, Dict[str, Any]]]) -> pd.DataFrame:
     """
     Convert scoring results to a pandas DataFrame for easy analysis and storage.
@@ -629,11 +661,11 @@ def save_results_to_dataframe(all_results: Dict[str, Dict[str, Dict[str, Any]]])
                 'hypothesis': hypo_name,
                 'final_score': scores['final_score'],
                 'explains': scores['explains'],
+                'failure_reason': scores['failure_reason'],
                 'magnitude': result['magnitude'],
                 'direction': result['direction'],
                 'ref_hypo_val': result['ref_hypo_val'],
                 'hypo_val': result['hypo_val'],
-                'scoring_method': 'sign_based' 
             }
               
             record.update({
@@ -1027,25 +1059,64 @@ def score_hypotheses_for_metrics(
             if not hypothesis_results:
                 continue
             
-            # Get ranked hypotheses using existing function
-            ranked_hypotheses = get_ranked_hypotheses(hypothesis_results)
-            best_hypo_name, best_hypo_result = ranked_hypotheses[0]
+            # Get all hypotheses ranked by score (regardless of guardrail)
+            all_ranked_hypotheses = get_ranked_hypotheses(hypothesis_results)
             
-            template = metric_config['hypotheses'][best_hypo_name].get('template', '')
+            # Check if any hypothesis meets guardrail criteria
+            qualified_hypotheses = rank_with_guardrail(hypothesis_results)
+            is_conclusive = not isinstance(qualified_hypotheses, str)
             
-            # Prepare template parameters for SlideContent rendering (only template variables!)
-            template_params = {
-                'region': anomaly_info['anomalous_region'],
-                'metric_name': metric_name,
-                'metric_deviation': anomaly_info.get('magnitude', '0%'),
-                'metric_dir': anomaly_info['direction'],
-                'hypo_name': best_hypo_name,
-                'hypo_dir': best_hypo_result['direction'],
-                'hypo_delta': best_hypo_result['magnitude'],
-                'ref_hypo_val': best_hypo_result['ref_hypo_val'],
-                'score': best_hypo_result['scores']['final_score'],
-                'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
-            }
+            if is_conclusive:
+                # Conclusive case - we have qualified hypotheses
+                best_hypo_name, best_hypo_result = qualified_hypotheses[0]
+                template = metric_config['hypotheses'][best_hypo_name].get('template', '')
+                summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
+                
+                # Prepare template parameters for SlideContent rendering (only template variables!)
+                template_params = {
+                    'region': anomaly_info['anomalous_region'],
+                    'metric_name': metric_name,
+                    'metric_deviation': anomaly_info.get('magnitude', '0%'),
+                    'metric_dir': anomaly_info['direction'],
+                    'hypo_name': best_hypo_name,
+                    'hypo_dir': best_hypo_result['direction'],
+                    'hypo_delta': best_hypo_result['magnitude'],
+                    'ref_hypo_val': best_hypo_result['ref_hypo_val'],
+                    'score': best_hypo_result['scores']['final_score'],
+                    'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
+                }
+                
+                # Generate summary text
+                if summary_template:
+                    summary_text = render_template_text(
+                        template=summary_template,
+                        best_hypo_name=best_hypo_name,
+                        best_hypo_result=best_hypo_result,
+                        metric_anomaly_info=anomaly_info,
+                        metric_col=metric_name
+                    )
+                else:
+                    summary_text = f"{best_hypo_name} is {best_hypo_result['direction']}"
+                
+                slide_title = f"{metric_name} - Root Cause"
+                
+            else:
+                # Inconclusive case - no hypothesis meets guardrails, but still show all hypotheses
+                inconclusive_template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the global mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
+                
+                template_params = {
+                    'region': anomaly_info['anomalous_region'],
+                    'metric_name': metric_name,
+                    'metric_deviation': anomaly_info.get('magnitude', '0%'),
+                    'metric_dir': anomaly_info['direction']
+                }
+                
+                summary_text = f"Inconclusive - no hypothesis meets minimum evidence thresholds."
+                template = inconclusive_template
+                slide_title = f"{metric_name} - Inconclusive Analysis"
+                # Set these to None since no hypothesis qualifies as "best"
+                best_hypo_name = None
+                best_hypo_result = None
             
             # Store functions directly in figure_generators (much simpler!)
             figure_generators = [
@@ -1057,8 +1128,8 @@ def score_hypotheses_for_metrics(
                         'metric_col': metric_name,
                         'hypo_cols': hypothesis_names,
                         'metric_anomaly_info': anomaly_info,
-                        'hypo_results': hypothesis_results,
-                        'ordered_hypos': ranked_hypotheses
+                        'ordered_hypos': all_ranked_hypotheses,  # Always show all hypotheses ranked by score
+                        'is_conclusive': is_conclusive
                     }
                 },
                 {
@@ -1074,20 +1145,6 @@ def score_hypotheses_for_metrics(
                 }
             ]
             
-            # Generate summary text
-            summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
-            if summary_template:
-                # Use the same parameters as the main template
-                summary_text = render_template_text(
-                    template=summary_template,
-                    best_hypo_name=best_hypo_name,
-                    best_hypo_result=best_hypo_result,
-                    metric_anomaly_info=anomaly_info,
-                    metric_col=metric_name
-                )
-            else:
-                summary_text = ""
-            
             # Create slide data in unified format
             analysis_type = 'scorer'
             unified_results[metric_name] = {
@@ -1097,7 +1154,7 @@ def score_hypotheses_for_metrics(
                             'summary_text': summary_text
                         },
                         'slide_info': {
-                            'title': f"{metric_name} - Root Cause",
+                            'title': slide_title,
                             'template_text': template,
                             'template_params': template_params,
                             'figure_generators': figure_generators,
@@ -1107,9 +1164,9 @@ def score_hypotheses_for_metrics(
                     }
                 },
                 'payload': {
-                            'best_hypothesis': best_hypo_result,
-                            'all_results': hypothesis_results
-                        },
+                    'best_hypothesis': best_hypo_result if is_conclusive else None,
+                    'all_results': hypothesis_results
+                },
             }
             
         except Exception as e:
@@ -1236,51 +1293,70 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     print("\nTop Hypothesis for Each Metric:")
     for metric_col in metric_cols:
         hypo_results = all_results[metric_col]
-        ranked_hypos = get_ranked_hypotheses(hypo_results)
-        best_hypo_name, best_hypo_result = ranked_hypos[0]
-        score = best_hypo_result['scores']['final_score']
-        print(f"  {metric_col}: {best_hypo_name} (Score: {score:.2f})")
+        ranked_hypos = rank_with_guardrail(hypo_results)
+        if isinstance(ranked_hypos, str):
+            print(f"  {metric_col}: {ranked_hypos}")
+        else:
+            best_hypo_name, best_hypo_result = ranked_hypos[0]
+            score = best_hypo_result['scores']['final_score']
+            print(f"  {metric_col}: {best_hypo_name} (Score: {score:.2f})")
     
     # 4. Create visualization using pre-sorted results
     print("\n===== VISUALIZATION WITH PRE-SORTED RESULTS =====")
     metric_col = 'conversion_rate_pct'
     hypo_results = all_results[metric_col]
-    ranked_hypos = get_ranked_hypotheses(hypo_results)
+    ranked_hypos = rank_with_guardrail(hypo_results)
     
-    # Create visualization
-    fig = create_multi_hypothesis_plot(
-        df=df,
-        metric_col=metric_col,
-        hypo_cols=hypo_cols,
-        metric_anomaly_info=metric_anomaly_map[metric_col],
-        hypo_results=hypo_results,
-        ordered_hypos=ranked_hypos,  # Use pre-sorted list
-        include_score_formula=True
-    )
-    
-    # Use the template with Jinja2 double-brace syntax
-    template = "{{metric_name}} in {{region}} is {{metric_deviation}} {{metric_dir}} than Global mean.\n"\
-               "Root cause: {{region}} has {{hypo_delta}} {{hypo_dir}} of {{hypo_name}} than the global mean ({{ref_hypo_val}}). "\
-               "This suggests Account Managers have different interaction volumes, potentially impacting their ability to "\
-               "effectively manage and prioritize CLIs in their portfolio."
-    
-    # Add template text and score formula
-    best_hypo_name, best_hypo_result = ranked_hypos[0]
-    add_template_text(
-        fig, 
-        template, 
-        best_hypo_name,
-        best_hypo_result, 
-        metric_anomaly_map[metric_col],
-        metric_col
-    )
-    add_score_formula(fig)
-    
-    # Save with descriptive filename
-    filename = f"{save_path}/bar_{metric_col}_sign_based.png"
-    fig.savefig(filename, dpi=120, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Created multi-metric visualization: {filename}")
+    if isinstance(ranked_hypos, str):
+        # Handle inconclusive case
+        print(f"Cannot create visualization for {metric_col}: {ranked_hypos}")
+        fig = plt.figure(figsize=(12, 8))
+        fig.text(0.5, 0.5, f"{metric_col}\n\n{ranked_hypos}", 
+                ha='center', va='center', fontsize=16,
+                bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.7))
+        filename = f"{save_path}/inconclusive_{metric_col}.png"
+        fig.savefig(filename, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Created inconclusive visualization: {filename}")
+    else:
+        # Create visualization with qualified hypotheses
+        all_ranked = get_ranked_hypotheses(hypo_results)
+        is_conclusive_main = not isinstance(ranked_hypos, str)
+        
+        fig = create_multi_hypothesis_plot(
+            df=df,
+            metric_col=metric_col,
+            hypo_cols=hypo_cols,
+            metric_anomaly_info=metric_anomaly_map[metric_col],
+            ordered_hypos=all_ranked,  # Always show all hypotheses
+            hypo_results=hypo_results,
+            include_score_formula=True,
+            is_conclusive=is_conclusive_main
+        )
+        
+        # Use the template with Jinja2 double-brace syntax
+        template = "{{metric_name}} in {{region}} is {{metric_deviation}} {{metric_dir}} than Global mean.\n"\
+                   "Root cause: {{region}} has {{hypo_delta}} {{hypo_dir}} of {{hypo_name}} than the global mean ({{ref_hypo_val}}). "\
+                   "This suggests Account Managers have different interaction volumes, potentially impacting their ability to "\
+                   "effectively manage and prioritize CLIs in their portfolio."
+        
+        # Add template text and score formula
+        best_hypo_name, best_hypo_result = ranked_hypos[0]
+        add_template_text(
+            fig, 
+            template, 
+            best_hypo_name,
+            best_hypo_result, 
+            metric_anomaly_map[metric_col],
+            metric_col
+        )
+        add_score_formula(fig)
+        
+        # Save with descriptive filename
+        filename = f"{save_path}/bar_{metric_col}_sign_based.png"
+        fig.savefig(filename, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Created multi-metric visualization: {filename}")
     
     print("\nAll visualizations and analyses completed successfully.")
 
