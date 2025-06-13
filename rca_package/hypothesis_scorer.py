@@ -1,15 +1,15 @@
-import pandas as pd
+from typing import Dict, List, Tuple, Union, Optional, Any, TypedDict, Literal
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from typing import Dict, Any, List, Tuple, Optional, Union, TypedDict
 import math
 from jinja2 import Template
 import scipy.stats as stats
 
 
 # Color scheme for visualizations
-COLORS = {
+COLORS: Dict[str, Union[str, Dict[str, str]]] = {
     'metric_negative': '#e74c3c',     # Red for bad metric anomalies
     'metric_positive': '#2ecc71',     # Green for good metric anomalies
     'hypo_highlight': '#5DADE2',      # Blue for highlighted hypothesis region
@@ -29,12 +29,9 @@ COLORS = {
 }
 
 # Font styling constants for consistent appearance
-FONTS = {
-    'title': {
-        'size': 16,
-        'weight': 'normal',
-        'family': 'Arial'
-    },
+FONTS: Dict[str, Dict[str, Union[int, str]]] = {
+    'title': {'size': 16, 'weight': 'normal',
+        'family': 'Arial'},
     'axis_label': {
         'size': 14,
         'weight': 'normal',
@@ -412,8 +409,8 @@ def create_multi_hypothesis_plot(
         metric_anomaly_info: Anomaly information for the metric
         ordered_hypos: Ordered list of hypotheses by score
         figsize: Figure size as (width, height)
-        include_score_formula: Whether to add score formula to the figure (default: True)
-        is_conclusive: Whether the analysis is conclusive (to show a 'best' hypothesis)
+        include_score_formula: Whether to add score formula to the figure
+        is_conclusive: Whether the analysis is conclusive
         
     Returns:
         matplotlib Figure object
@@ -426,7 +423,7 @@ def create_multi_hypothesis_plot(
     bottom_margin = 0.15  # Reserve bottom 15% for formula
     
     # Determine which hypotheses to plot on the right side
-    if is_conclusive:
+    if is_conclusive and ordered_hypos:
         best_hypo_name, best_hypo_result = ordered_hypos[0]
         hypos_on_right = ordered_hypos[1:]
     else:
@@ -460,13 +457,11 @@ def create_multi_hypothesis_plot(
     ax_best_hypo = fig.add_subplot(gs[1, 0])
     
     # Plot metric
-    metric_display_name = metric_col
     plot_bars(ax_metric, df[[metric_col]], metric_anomaly_info, plot_type='metric')
-    ax_metric.set_title(f"Metric: {metric_display_name}", fontsize=FONTS['title']['size'])
+    ax_metric.set_title(f"Metric: {metric_col}", fontsize=FONTS['title']['size'])
     
     # Handle the "Best Hypothesis" plot area
-    if is_conclusive:
-        best_hypo_display_name = best_hypo_name
+    if is_conclusive and best_hypo_name is not None and best_hypo_result is not None:
         plot_bars(
             ax_best_hypo, 
             df[[metric_col, best_hypo_name]], 
@@ -475,7 +470,7 @@ def create_multi_hypothesis_plot(
             plot_type='hypothesis',
             highlight_region=True
         )
-        ax_best_hypo.set_title(f"Best Hypothesis: {best_hypo_display_name}", fontsize=FONTS['title']['size'])
+        ax_best_hypo.set_title(f"Best Hypothesis: {best_hypo_name}", fontsize=FONTS['title']['size'])
     else:
         # For inconclusive cases, leave the "best hypothesis" area blank
         ax_best_hypo.set_visible(False)
@@ -504,7 +499,6 @@ def create_multi_hypothesis_plot(
                 plot_type='hypothesis',
                 highlight_region=False  # No highlight on the right side
             )
-            hypo_display_name = hypo_name
             
             # Adjust title based on context
             title_prefix = f"Hypothesis {i+2}" if is_conclusive else f"Hypothesis {i+1}"
@@ -512,7 +506,7 @@ def create_multi_hypothesis_plot(
             if len(hypo_cols) > 4:
                 ax.set_title(title_prefix, fontsize=FONTS['title']['size'])
             else:
-                ax.set_title(f"{title_prefix}: {hypo_display_name}", fontsize=FONTS['title']['size'])
+                ax.set_title(f"{title_prefix}: {hypo_name}", fontsize=FONTS['title']['size'])
     
     # Add score formula if included
     if include_score_formula:
@@ -1348,7 +1342,6 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
             hypo_cols=hypo_cols,
             metric_anomaly_info=metric_anomaly_map[metric_col],
             ordered_hypos=all_ranked,  # Always show all hypotheses
-            hypo_results=hypo_results,
             include_score_formula=True,
             is_conclusive=is_conclusive_main
         )
