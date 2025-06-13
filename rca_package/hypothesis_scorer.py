@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from typing import Dict, Any, List, Tuple, Optional, Union
+from typing import Dict, Any, List, Tuple, Optional, Union, TypedDict
 import math
 from jinja2 import Template
 import scipy.stats as stats
@@ -62,11 +62,28 @@ FONTS = {
     }
 }
 
+class HypothesisScores(TypedDict):
+    sign_agreement: float
+    explained_ratio: float
+    p_value: float
+    final_score: float
+    explains: bool
+    failure_reason: str
+
+
+class HypothesisResult(TypedDict):
+    hypo_val: float
+    direction: str
+    ref_hypo_val: float
+    magnitude: str
+    scores: HypothesisScores
+
+
 def sign_based_score_hypothesis(
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
     expected_direction: str = 'same'
-) -> Dict[str, Any]:
+) -> HypothesisResult:
     """
     Score hypothesis using sign-agreement and explained-ratio metrics,
     which is more robust with small sample sizes (4-5 regions).
@@ -178,7 +195,7 @@ def plot_bars(
     ax: plt.Axes, 
     df: pd.DataFrame, 
     metric_anomaly_info: Dict[str, Any], 
-    hypo_result: Optional[Dict[str, Any]] = None, 
+    hypo_result: Optional[HypothesisResult] = None, 
     plot_type: str = 'metric',
     highlight_region: bool = True
 ) -> plt.Axes:
@@ -379,8 +396,7 @@ def create_multi_hypothesis_plot(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    ordered_hypos: List[Tuple[str, Dict[str, Any]]],
-    hypo_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    ordered_hypos: List[Tuple[str, HypothesisResult]],
     figsize: Tuple[int, int] = (18, 10),
     include_score_formula: bool = True,
     is_conclusive: bool = True
@@ -395,7 +411,6 @@ def create_multi_hypothesis_plot(
         hypo_cols: List of hypothesis column names
         metric_anomaly_info: Anomaly information for the metric
         ordered_hypos: Ordered list of hypotheses by score
-        hypo_results: Results from hypothesis scoring (optional)
         figsize: Figure size as (width, height)
         include_score_formula: Whether to add score formula to the figure (default: True)
         is_conclusive: Whether the analysis is conclusive (to show a 'best' hypothesis)
@@ -512,7 +527,7 @@ def score_all_hypotheses(
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
     expected_directions: Dict[str, str]
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, HypothesisResult]:
     """
     Score all hypotheses for a given metric using sign-based scoring.
     
@@ -550,7 +565,7 @@ def process_metrics(
     metric_anomaly_map: Dict[str, Dict[str, Any]],
     expected_directions: Dict[str, str],
     metric_hypothesis_map: Dict[str, List[str]]
-) -> Dict[str, Dict[str, Dict[str, Any]]]:
+) -> Dict[str, Dict[str, HypothesisResult]]:
     """
     Process multiple metrics and their hypotheses, storing results for each.
     
@@ -598,7 +613,7 @@ def process_metrics(
     return all_results
 
 
-def get_ranked_hypotheses(hypo_results: Dict[str, Dict[str, Any]]) -> List[Tuple[str, Dict[str, Any]]]:
+def get_ranked_hypotheses(hypo_results: Dict[str, HypothesisResult]) -> List[Tuple[str, HypothesisResult]]:
     """
     Rank hypotheses by their final score in descending order.
     
@@ -617,7 +632,7 @@ def get_ranked_hypotheses(hypo_results: Dict[str, Dict[str, Any]]) -> List[Tuple
     return hypo_list
 
 
-def rank_with_guardrail(hypo_results: Dict[str, Dict[str, Any]]) -> Union[List[Tuple[str, Dict[str, Any]]], str]:
+def rank_with_guardrail(hypo_results: Dict[str, HypothesisResult]) -> Union[List[Tuple[str, HypothesisResult]], str]:
     """
     Apply guardrail filtering before ranking hypotheses.
     
@@ -636,7 +651,7 @@ def rank_with_guardrail(hypo_results: Dict[str, Dict[str, Any]]) -> Union[List[T
         return get_ranked_hypotheses(qualified)
 
 
-def save_results_to_dataframe(all_results: Dict[str, Dict[str, Dict[str, Any]]]) -> pd.DataFrame:
+def save_results_to_dataframe(all_results: Dict[str, Dict[str, HypothesisResult]]) -> pd.DataFrame:
     """
     Convert scoring results to a pandas DataFrame for easy analysis and storage.
     
@@ -912,37 +927,41 @@ def add_score_formula(fig: plt.Figure) -> None:
 
 def render_template_text(
     template: str, 
-    best_hypo_name: str,
-    best_hypo_result: Dict[str, Any], 
     metric_anomaly_info: Dict[str, Any],
-    metric_col: str
+    metric_col: str,
+    best_hypo_name: Optional[str] = None,
+    best_hypo_result: Optional[HypothesisResult] = None
 ) -> str:
     """
     Render a Jinja2 template with values from the results.
     
     Args:
         template: Text template with placeholders in {{variable}} using Jinja2 syntax
-        best_hypo_name: Name of the best hypothesis
-        best_hypo_result: Results from the best hypothesis
         metric_anomaly_info: Metric anomaly information
         metric_col: Name of the metric column
+        best_hypo_name: Name of the best hypothesis
+        best_hypo_result: Results from the best hypothesis
     
     Returns:
         Rendered text string
     """
     # Prepare template values - only include what's actually in the template
-    context = {
+    context: Dict[str, Any] = {
         'region': metric_anomaly_info['anomalous_region'],
         'metric_name': metric_col,
         'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),  # Use string magnitude directly
         'metric_dir': metric_anomaly_info['direction'],
-        'hypo_name': best_hypo_name,
-        'hypo_dir': best_hypo_result['direction'],
-        'hypo_delta': best_hypo_result['magnitude'],
-        'ref_hypo_val': best_hypo_result['ref_hypo_val'],
-        'score': best_hypo_result['scores']['final_score'],
-        'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
     }
+    
+    if best_hypo_name and best_hypo_result:
+        context.update({
+            'hypo_name': best_hypo_name,
+            'hypo_dir': best_hypo_result['direction'],
+            'hypo_delta': best_hypo_result['magnitude'],
+            'ref_hypo_val': best_hypo_result['ref_hypo_val'],
+            'score': best_hypo_result['scores']['final_score'],
+            'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
+        })
     
     # Fill template with values using Jinja2 Template
     try:
@@ -958,10 +977,10 @@ def render_template_text(
 def add_template_text(
     fig: plt.Figure, 
     template: str, 
-    best_hypo_name: str,
-    best_hypo_result: Dict[str, Any], 
     metric_anomaly_info: Dict[str, Any],
     metric_col: str,
+    best_hypo_name: Optional[str] = None,
+    best_hypo_result: Optional[HypothesisResult] = None, 
     position: Tuple[float, float] = (0.05, 0.85),  # Moved down from 0.97 to 0.85 to reduce spacing
     max_width: float = 0.9,
     fontsize: int = 12
@@ -972,10 +991,10 @@ def add_template_text(
     Args:
         fig: The figure to add the text to
         template: Text template with placeholders in {{variable}} using Jinja2 syntax
-        best_hypo_name: Name of the best hypothesis
-        best_hypo_result: Results from the best hypothesis
         metric_anomaly_info: Metric anomaly information
         metric_col: Name of the metric column
+        best_hypo_name: Name of the best hypothesis
+        best_hypo_result: Results from the best hypothesis
         position: (x, y) coordinates for the text (figure coordinates)
         max_width: Maximum width for the text as fraction of figure width
         fontsize: Font size for the text
@@ -983,10 +1002,10 @@ def add_template_text(
     # Render the template text
     filled_text = render_template_text(
         template=template,
-        best_hypo_name=best_hypo_name,
-        best_hypo_result=best_hypo_result,
         metric_anomaly_info=metric_anomaly_info,
-        metric_col=metric_col
+        metric_col=metric_col,
+        best_hypo_name=best_hypo_name,
+        best_hypo_result=best_hypo_result
     )
     
     # Add text to figure
@@ -1006,7 +1025,7 @@ def score_hypotheses_for_metrics(
     anomaly_map: Dict[str, Dict[str, Any]],
     config: Dict[str, Any],
     region_col: str = 'region'
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
     Score hypotheses for multiple metrics and return results in unified format directly.
     
@@ -1090,10 +1109,10 @@ def score_hypotheses_for_metrics(
                 if summary_template:
                     summary_text = render_template_text(
                         template=summary_template,
-                        best_hypo_name=best_hypo_name,
-                        best_hypo_result=best_hypo_result,
                         metric_anomaly_info=anomaly_info,
-                        metric_col=metric_name
+                        metric_col=metric_name,
+                        best_hypo_name=best_hypo_name,
+                        best_hypo_result=best_hypo_result
                     )
                 else:
                     summary_text = f"{best_hypo_name} is {best_hypo_result['direction']}"
@@ -1164,7 +1183,7 @@ def score_hypotheses_for_metrics(
                     }
                 },
                 'payload': {
-                    'best_hypothesis': best_hypo_result if is_conclusive else None,
+                    'best_hypothesis': best_hypo_result,
                     'all_results': hypothesis_results
                 },
             }
@@ -1345,10 +1364,10 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
         add_template_text(
             fig, 
             template, 
+            metric_anomaly_map[metric_col],
+            metric_col,
             best_hypo_name,
             best_hypo_result, 
-            metric_anomaly_map[metric_col],
-            metric_col
         )
         add_score_formula(fig)
         
