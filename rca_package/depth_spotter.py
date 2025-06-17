@@ -266,6 +266,19 @@ def additive_contrib(
     return df, delta
 
 
+def format_value(value: float, is_percent: bool) -> str:
+    """Format a value as either percentage or regular number."""
+    if is_percent:
+        return f"{value*100:.1f}%"
+    return f"{value:,.0f}"
+
+def format_ratio_display(numerator: float, denominator: float, ratio: float) -> str:
+    """Format a ratio with its components for display."""
+    ratio_str = f"{ratio*100:.1f}%"
+    if denominator > 0:  # Only show components if denominator exists
+        return f"{ratio_str} ({numerator:,.0f}/{denominator:,.0f})"
+    return ratio_str
+
 def plot_subregion_bars(
     df_slice: pd.DataFrame,
     metric_col: str,
@@ -311,10 +324,6 @@ def plot_subregion_bars(
     
     # Format values based on metric name
     is_percent = ('_pct' in metric_col or '%' in metric_col or 'rate' in metric_col.lower())
-    if is_percent:
-        value_formatter = lambda x: f"{x*100:.1f}%"
-    else:
-        value_formatter = lambda x: f"{x:,.0f}"
     
     # Identify top-3 by score
     top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
@@ -343,12 +352,20 @@ def plot_subregion_bars(
         max_val = max(values) if len(values) > 0 else 0
         text_y = val + (max_val * 0.02)
         
-        # Format and add text, handling NaN in original values
+        # First check for NaN
         original_val = original_values[i]
         if pd.isna(original_val):
             label_text = "N/A"
         else:
-            label_text = value_formatter(original_val)
+            # Format text based on metric type
+            if is_percent and 'numerator_col' in df_slice.columns and 'denominator_col' in df_slice.columns:
+                # For rate metrics, show ratio with components
+                numerator = df_slice.iloc[i]['numerator_col']
+                denominator = df_slice.iloc[i]['denominator_col']
+                label_text = format_ratio_display(numerator, denominator, original_val)
+            else:
+                # For non-rate metrics or when components aren't available
+                label_text = format_value(original_val, is_percent)
         
         ax.text(i, text_y, label_text, ha="center", va="bottom", 
                fontweight=FONTS['annotation']['weight'], fontsize=FONTS['annotation']['size'])
@@ -359,15 +376,11 @@ def plot_subregion_bars(
     ax.set_ylabel(ylabel, fontsize=FONTS['axis_label']['size'])
     ax.set_title(title, fontsize=FONTS['title']['size'], fontweight=FONTS['title']['weight'])
     
-    # Format y-axis to match value annotations
+    # Format y-axis
     if is_percent:
-        # Format y-axis as percentages
-        from matplotlib.ticker import FuncFormatter
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{x*100:.0f}%"))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{x*100:.0f}%"))
     else:
-        # Format y-axis as regular numbers with commas
-        from matplotlib.ticker import FuncFormatter
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{x:,.0f}"))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{x:,.0f}"))
     
     # Add reference line if row_value is provided
     if row_value is not None:
@@ -494,20 +507,45 @@ def analyze_region_depth(
             else:
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Generate concise summary text showing top 2 drivers of the delta
-            # Use raw contribution (before sign flipping) to rank actual drivers of delta
-            # Raw contribution represents: (actual - expected) / delta
-            # So biggest absolute raw contributions are the biggest drivers regardless of delta sign
-            contrib_df['abs_raw_contribution'] = contrib_df['raw_contribution'].abs()
-            top_drivers = contrib_df.nlargest(2, 'abs_raw_contribution')
+            # Generate main contributors sentence
+            contrib_df['contributor_type'] = np.where(
+                contrib_df['contribution'] * np.sign(delta) > 0,
+                'help',
+                'drag'
+            )
             
-            summary_parts = []
-            for _, row in top_drivers.iterrows():
-                name = row['slice']
-                contrib = row['contribution'] * 100
-                summary_parts.append(f"{name} ({contrib:+.0f}%)")
+            # Sort by absolute contribution and get top contributors
+            contrib_df['abs_contribution'] = contrib_df['contribution'].abs()
+            top_contributors = contrib_df.nlargest(3, 'abs_contribution')
             
-            summary_text = ", ".join(summary_parts) if summary_parts else f"Depth analysis completed for {metric_name}"
+            # Format contribution percentages with actual values
+            def format_contrib(row):
+                contrib_pct = row['contribution'] * 100  # Use actual value, not absolute
+                return f"{row['slice']} ({contrib_pct:+.0f}%)"  # Add + sign for positive values
+            
+            # Generate sentence based on delta direction
+            if delta > 0:
+                # Focus on drags for positive delta (underperformance)
+                drags = top_contributors[top_contributors['contributor_type'] == 'drag']
+                if not drags.empty:
+                    main_contributors = drags.apply(format_contrib, axis=1).tolist()
+                    main_contributors_sentence = f"Key drags are {', '.join(main_contributors)}"
+                else:
+                    main_contributors_sentence = "No significant drags identified"
+            else:
+                # Focus on helps for negative delta (overperformance)
+                helps = top_contributors[top_contributors['contributor_type'] == 'help']
+                if not helps.empty:
+                    main_contributors = helps.apply(format_contrib, axis=1).tolist()
+                    main_contributors_sentence = f"Key helps are {', '.join(main_contributors)}"
+                else:
+                    main_contributors_sentence = "No significant helps identified"
+            
+            # Update template parameters with main contributors sentence
+            template_params['main_contributors_sentence'] = main_contributors_sentence
+            
+            # Use main_contributors_sentence as summary_text
+            summary_text = main_contributors_sentence
 
             # Return in unified format directly - no integration needed!
             analysis_type = 'depth'  # Derived from config_depth.yaml
@@ -524,8 +562,8 @@ def analyze_region_depth(
                             'figure_generators': [
                                 {
                                     "function": plot_subregion_bars,
-                                    "title_suffix": "",
-                                    "params": {
+                                    'title_suffix': "",
+                                    'params': {
                                         'df_slice': full_analysis_df,  # Pass ALL slices to chart function
                                         'metric_col': plot_metric_col,
                                         'title': f"{metric_name} by sub-regions",

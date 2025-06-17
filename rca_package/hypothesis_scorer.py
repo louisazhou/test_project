@@ -1030,7 +1030,7 @@ def score_hypotheses_for_metrics(
         region_col: Name of the region column
     
     Returns:
-        Dictionary in unified format: {metric_name: {'slides': {'scorer': slide_data}}}
+        Dictionary in unified format: {metric_name: {'slides': {'Directional': slide_data}}}
     """
     metrics_config = config.get('metrics', {})
     unified_results = {}
@@ -1083,7 +1083,7 @@ def score_hypotheses_for_metrics(
                 # Conclusive case - we have qualified hypotheses
                 best_hypo_name, best_hypo_result = qualified_hypotheses[0]
                 template = metric_config['hypotheses'][best_hypo_name].get('template', '')
-                summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
+                # summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
                 
                 # Prepare template parameters for SlideContent rendering (only template variables!)
                 template_params = {
@@ -1099,15 +1099,18 @@ def score_hypotheses_for_metrics(
                     'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
                 }
                 
-                # Generate summary text
-                if summary_template:
-                    summary_text = render_template_text(
-                        template=summary_template,
-                        metric_anomaly_info=anomaly_info,
-                        metric_col=metric_name,
-                        best_hypo_name=best_hypo_name,
-                        best_hypo_result=best_hypo_result
-                    )
+                # Generate summary text from template
+                filled_text = render_template_text(
+                    template=template,
+                    metric_anomaly_info=anomaly_info,
+                    metric_col=metric_name,
+                    best_hypo_name=best_hypo_name,
+                    best_hypo_result=best_hypo_result
+                )
+                
+                # Extract root cause portion for summary
+                if "Root cause:" in filled_text:
+                    summary_text = filled_text.split("Root cause:")[1].strip()
                 else:
                     summary_text = f"{best_hypo_name} is {best_hypo_result['direction']}"
                 
@@ -1126,7 +1129,7 @@ def score_hypotheses_for_metrics(
                 
                 summary_text = f"Inconclusive - no hypothesis meets minimum evidence thresholds."
                 template = inconclusive_template
-                slide_title = f"{metric_name} - Inconclusive Analysis"
+                slide_title = f"{metric_name} - Inconclusive to determine root cause"
                 # Set these to None since no hypothesis qualifies as "best"
                 best_hypo_name = None
                 best_hypo_result = None
@@ -1145,21 +1148,21 @@ def score_hypotheses_for_metrics(
                         'is_conclusive': is_conclusive
                     }
                 },
-                {
-                    "function": create_scatter_grid, 
-                    "title_suffix": " (Part 2)",
-                    "params": {
-                        'df': regional_df,
-                        'metric_col': metric_name,
-                        'hypo_cols': hypothesis_names,
-                        'metric_anomaly_info': anomaly_info,
-                        'expected_directions': expected_directions
-                    }
-                }
+                # {
+                #     "function": create_scatter_grid, 
+                #     "title_suffix": " (Part 2)",
+                #     "params": {
+                #         'df': regional_df,
+                #         'metric_col': metric_name,
+                #         'hypo_cols': hypothesis_names,
+                #         'metric_anomaly_info': anomaly_info,
+                #         'expected_directions': expected_directions
+                #     }
+                # }
             ]
             
             # Create slide data in unified format
-            analysis_type = 'scorer'
+            analysis_type = 'Directional'  # Changed from 'scorer' to 'Directional'
             unified_results[metric_name] = {
                 'slides': {
                     analysis_type: {
