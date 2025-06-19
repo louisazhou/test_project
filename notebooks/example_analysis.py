@@ -25,21 +25,6 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict
 
-def get_function_by_name(func_name: str):
-    # Look in current module's globals first
-    if func_name in globals():
-        return globals()[func_name]
-    
-    # Look in imported modules
-    import rca_package.depth_spotter as depth_module
-    import rca_package.hypothesis_scorer as scorer_module
-    
-    for module in [depth_module, scorer_module]:
-        if hasattr(module, func_name):
-            return getattr(module, func_name)
-    
-    raise ValueError(f"Function '{func_name}' not found in available modules")
-
 # Auto-detect working directory and adjust paths accordingly
 current_dir = Path.cwd()
 if current_dir.name == 'notebooks':
@@ -57,8 +42,7 @@ sys.path.append(str(base_dir))
 
 from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
 from rca_package.yaml_processor import (
-    load_config, get_all_metrics, 
-    get_expected_directions, get_metric_hypothesis_map,
+    load_config, get_all_metrics, get_metric_hypothesis_map,
     get_metric_info, convert_dataframe_to_display_names
 )
 from rca_package.hypothesis_scorer import (
@@ -83,7 +67,6 @@ print(f"Figure display mode: {'Enabled (interactive)' if SHOW_FIGURES else 'Disa
 # Create slide builder once for the entire analysis
 slides = SlideLayouts()
 
-print("🎯 RCA ANALYSIS - SIMPLIFIED CONFIG-DRIVEN APPROACH", SHOW_FIGURES)
 print("=" * 65)
 
 # %% [markdown]
@@ -120,7 +103,6 @@ print("✅ Test data created with technical column names")
 # ## 2. Config-Driven Processing
 
 # %% [config_processing]
-print("\n⚙️  CONFIG-DRIVEN PROCESSING")
 
 # Load the main config that drives everything
 config = load_config('configs/config_scorer.yaml')
@@ -157,10 +139,8 @@ print("\n📋 CREATING TITLE SLIDE")
 @dual_output(console=True, slide=True, slide_builder=slides, layout_type='text', show_figures=SHOW_FIGURES)
 def create_title_slide():
     return SlideContent(
-        title="RCA Analysis Results - Config-Driven",
+        title="RCA Analysis Results",
         text_template="""
-Root Cause Analysis using simplified config-driven approach.
-
 Analysis Summary:
 • {{ num_metrics }} metrics analyzed
 • {{ num_anomalies }} anomalies detected
@@ -185,135 +165,177 @@ print("✅ Title slide created")
 # %% [analysis_workflow]
 print("\n🚀 RUNNING AUTOMATED ANALYSIS WORKFLOW")
 
+def process_analysis_results(analysis_results, unified_results):
+    """
+    Generic processor for any type of analysis results.
+    Updates unified_results in place.
+    """
+    for metric_name, result in analysis_results.items():
+        if metric_name not in unified_results:
+            unified_results[metric_name] = {'slides': {}, 'payload': {}}
+            
+        unified_results[metric_name]['slides'].update(result['slides'])
+        unified_results[metric_name]['payload'].update(result['payload'])
+
+def generate_analysis_slide(metric_name, analysis_type, slide_data, total_hypotheses, current_count, increment_count=True):
+    """
+    Generate a single analysis slide with proper formatting and titles.
+    
+    Args:
+        metric_name: Name of the metric being analyzed
+        analysis_type: Type of analysis being performed
+        slide_data: Data for the slide
+        total_hypotheses: Total number of hypotheses for this metric
+        current_count: Current hypothesis count
+        increment_count: Whether this slide should increment the hypothesis count (default True)
+                       Set to False for continuation slides that are part of the same hypothesis
+    """
+    # Get the number of hypotheses in this analysis
+    hypotheses_in_analysis = slide_data['slide_info'].get('total_hypotheses', 0) if increment_count else 0
+    
+    # Calculate the starting hypothesis number for this slide
+    if increment_count:
+        start_num = current_count - hypotheses_in_analysis + 1
+    else:
+        # For continuation slides, use the current count as both start and end
+        start_num = current_count - hypotheses_in_analysis
+    
+    # If this slide contains multiple hypotheses, show the range, otherwise show single number
+    if hypotheses_in_analysis > 1:
+        range_text = f"{start_num}-{current_count}"
+    else:
+        range_text = str(current_count)
+    
+    slide_data['slide_info']['title'] = f"{slide_data['slide_info']['title']} ({range_text}/{total_hypotheses})"
+    
+    @dual_output(console=True, slide=True, slide_builder=slides, 
+                layout_type=slide_data['slide_info'].get('layout_type', 'text_figure'), 
+                show_figures=SHOW_FIGURES)
+    def create_analysis_slide():
+        template_params = slide_data['slide_info'].get('template_params', {}).copy()
+        figure_generators = slide_data['slide_info'].get('figure_generators', [])
+        template_params['total_hypotheses'] = total_hypotheses
+        dfs = slide_data['slide_info'].get('dfs', {}).copy()
+        
+        return SlideContent(
+            title=slide_data['slide_info']['title'],
+            text_template=slide_data['slide_info'].get('template_text', ''),
+            dfs=dfs,
+            template_params=template_params,
+            figure_generators=figure_generators,
+            show_figures=SHOW_FIGURES
+        )
+    
+    content, results = create_analysis_slide()
+    print(f"✅ Generated {analysis_type} slide for {metric_name}")
+
+# Initialize results containers
+unified_results = {}
+total_hypotheses_per_metric = {}
+
 # Get metric hypothesis mapping from config
 metric_hypo_map = get_metric_hypothesis_map(config)
-
 print(f"📋 Metrics with hypotheses: {list(metric_hypo_map.keys())}")
 
-# Process scorer config - only metrics with hypotheses
-metrics_with_hypotheses = [
-    m for m in metric_names 
-    if m in metric_hypo_map and metric_hypo_map[m]  # Non-empty hypothesis list
-]
-
-scorer_results = {}
+# Process directional analysis
+metrics_with_hypotheses = [m for m in metric_names if m in metric_hypo_map and metric_hypo_map[m]]
 if metrics_with_hypotheses:
-    print(f"🔄 Processing {len(metrics_with_hypotheses)} metrics with hypotheses...")
-    scorer_results = score_hypotheses_for_metrics(
-        regional_df=df,
-        anomaly_map=metric_anomaly_map,
-        config=config  # Just pass the full config
-    )
-    print(f"✅ Processed scorer results for: {list(scorer_results.keys())}")
+    print(f"🔄 Processing directional analysis for {len(metrics_with_hypotheses)} metrics...")
+    try:
+        results = score_hypotheses_for_metrics(
+            regional_df=df,
+            anomaly_map=metric_anomaly_map,
+            config=config
+        )
+        process_analysis_results(results, unified_results)
+    except Exception as e:
+        print(f"⚠️  Directional analysis skipped: {e}")
 
-# Process depth config
-depth_results = {}
+# Process depth analysis
 try:
-    from rca_package import load_config as load_depth_config
-    depth_config = load_depth_config('configs/config_depth.yaml')
-    sub_regional_data = create_synthetic_data()
-    
     print("🔄 Processing depth analysis...")
-    depth_results = analyze_region_depth(
-        sub_df=sub_regional_data,
-        config=depth_config,
+    results = analyze_region_depth(
+        sub_df=create_synthetic_data(),
+        config=load_config('configs/config_depth.yaml'),
         metric_anomaly_map=metric_anomaly_map
     )
-    print(f"✅ Processed depth results for: {list(depth_results.keys())}")
+    process_analysis_results(results, unified_results)
 except Exception as e:
     print(f"⚠️  Depth analysis skipped: {e}")
 
-# Process slides in correct order with proper slide generation
-for metric_name, metric_config in config['metrics'].items():  # ← Get both key and value
-    
-    print(f"\n🔄 Generating all slides for metric: {metric_name}")
-    
-    # Process all analysis types for this metric
-    all_results = {}
-    if scorer_results and metric_name in scorer_results:  # ← Use metric_name (the key)
-        all_results.update(scorer_results[metric_name]['slides'])
-    if depth_results and metric_name in depth_results:  # ← Use metric_name (the key)
-        all_results.update(depth_results[metric_name]['slides'])
-    
-    # Generate slides for each analysis type using proper slide system
-    for analysis_type, slide_data in all_results.items():
-        slide_info = slide_data['slide_info']
-        
-        # Create proper slide using dual_output decorator
-        @dual_output(console=True, slide=True, slide_builder=slides, 
-                    layout_type=slide_info.get('layout_type', 'text_figure'), 
-                    show_figures=SHOW_FIGURES)
-        def create_analysis_slide():
-            # Extract clean components
-            template_params = slide_info.get('template_params', {}).copy()
-            figure_generators = slide_info.get('figure_generators', [])
-            
-            return SlideContent(
-                title=slide_info['title'],
-                text_template=slide_info.get('template_text', ''),
-                dfs=slide_info.get('dfs', {}),
-                template_params=template_params,  # Only template variables!
-                figure_generators=figure_generators,  # Functions stored directly inside!
-                show_figures=SHOW_FIGURES
-            )
-        
-        # Generate the slide 
-        content, results = create_analysis_slide()
-        
-        print(f"✅ Generated {analysis_type} slide for {metric_name}")
-
-# %% [markdown]
-# ## 6. Summary Slide Creation
-
-# %% [summary_slide]
-print("\n📊 CREATING SUMMARY SLIDE")
-
-# Generic summary text extraction - works for ANY number of analysis types!
-def extract_summary_texts(all_results: Dict) -> Dict[str, str]:
-    """Extract summary texts generically from any analysis results"""
-    summary_texts = {}
-    
-    for metric_name, metric_data in all_results.items():
-        summary_parts = []
-        
-        # Process all analysis types generically
-        for analysis_type, slide_data in metric_data.get('slides', {}).items():
-            summary_text = slide_data.get('summary', {}).get('summary_text', '')
-            if summary_text:
-                summary_parts.append(f"{analysis_type.title()}: {summary_text}")
-        
-        # Combine all summary parts for this metric
-        if summary_parts:
-            summary_texts[metric_name] = "\n".join(summary_parts)
-    
-    return summary_texts
-
-# Combine all results for summary extraction
-combined_results = {}
-if scorer_results:
-    combined_results.update(scorer_results)
-if depth_results:
-    # Merge depth results into existing metrics or create new entries
-    for metric_name, metric_data in depth_results.items():
-        if metric_name in combined_results:
-            combined_results[metric_name]['slides'].update(metric_data['slides'])
-        else:
-            combined_results[metric_name] = metric_data
-
-# Extract summaries generically
-summary_texts = extract_summary_texts(combined_results)
-print(f"📋 Summary texts collected for {len(summary_texts)} metrics")
-
-if summary_texts:
-    slides.create_metrics_summary_slide(
-        df=df,
-        metrics_text=summary_texts,
-        metric_anomaly_map=metric_anomaly_map,
-        title="Analysis Summary"
+# Calculate total hypotheses per metric once
+for metric_name in unified_results:
+    total_hypotheses_per_metric[metric_name] = sum(
+        slide_data['slide_info'].get('total_hypotheses', 0)
+        for slide_data in unified_results[metric_name]['slides'].values()
     )
-    print(f"✅ Summary slide created for {len(summary_texts)} metrics")
-else:
-    print("⚠️  No summary information available - skipping summary slide")
+
+# Generate summary slide (will be second after title slide)
+# Create a new DataFrame with only the metrics we want to show
+metrics_to_show = [m for m in metric_names if m in df.columns]
+summary_df = df[metrics_to_show].copy()
+
+# Add the hypotheses count column - per metric
+hypotheses_counts = {}
+for metric_name in metrics_to_show:
+    if metric_name in unified_results:
+        hypotheses_counts[metric_name] = sum(
+            slide_data['slide_info'].get('total_hypotheses', 0)
+            for slide_data in unified_results[metric_name]['slides'].values()
+        )
+    else:
+        hypotheses_counts[metric_name] = 0
+
+# Add the hypotheses count as a new row
+summary_df.loc['# of Hypotheses'] = pd.Series(hypotheses_counts).astype(int)
+
+# Collect summary texts from slide data (only for metrics with results)
+summary_texts = {}
+for metric_name, result in unified_results.items():
+    texts = []
+    for analysis_type, slide_data in result['slides'].items():
+        if 'summary' in slide_data and 'summary_text' in slide_data['summary']:
+            texts.append(f"{analysis_type}: {slide_data['summary']['summary_text']}")
+    if texts:
+        summary_texts[metric_name] = "\n".join(texts)
+
+# Create summary slide with all metrics
+slides.create_metrics_summary_slide(
+    df=summary_df,
+    metrics_text=summary_texts,  # Only metrics with analysis will have summary text
+    metric_anomaly_map=metric_anomaly_map,  # Only metrics with anomalies will be highlighted
+    title="Analysis Summary"
+)
+print("✅ Summary slide created (will appear as second slide)")
+
+# Generate detailed analysis slides
+for metric_name, metric_config in config['metrics'].items():
+    if metric_name not in unified_results:
+        continue
+        
+    print(f"\n🔄 Generating detailed slides for metric: {metric_name}")
+    
+    # Add a divider slide for this metric
+    slides._create_divider_slide(metric_name)
+    
+    # Get total hypotheses for this metric
+    total_hypotheses = sum(
+        slide_data['slide_info'].get('total_hypotheses', 0)
+        for slide_data in unified_results[metric_name]['slides'].values()
+    )
+    
+    # Generate slides with running hypothesis count
+    current_count = 0
+    for analysis_type, slide_data in unified_results[metric_name]['slides'].items():
+        hypotheses_in_analysis = slide_data['slide_info'].get('total_hypotheses', 0)
+        current_count += hypotheses_in_analysis
+        generate_analysis_slide(
+            metric_name, 
+            analysis_type, 
+            slide_data, 
+            total_hypotheses, 
+            current_count
+        )
 
 # %% [markdown]
 # ## 7. Save and Upload Presentation
@@ -350,25 +372,18 @@ print(f"\n📊 ANALYSIS RESULTS SUMMARY")
 
 print(f"\n🎯 METRICS PROCESSED:")
 
-# Count slides by analysis type
-scorer_count = len(scorer_results) if scorer_results else 0
-depth_count = len(depth_results) if depth_results else 0
+# Count total metrics with any analysis
+total_metrics = len(unified_results)
 
 for metric_name in metric_names:
-    if metric_name in scorer_results:
+    if metric_name in unified_results:
         print(f"\n📈 {metric_name}:")
-        print(f"   Available slide types: ['scorer']")
-        print(f"   Generated slides: 1")
-
-for metric_name in metric_names:
-    if metric_name in depth_results:
-        print(f"\n🔍 {metric_name} (Depth):")
-        print(f"   Available slide types: ['depth']")
-        print(f"   Generated slides: 1")
+        print(f"   Available slide types: {list(unified_results[metric_name]['slides'].keys())}")
+        print(f"   Generated slides: {len(unified_results[metric_name]['slides'])}")
 
 print(f"\n📊 OVERALL STATISTICS:")
-print(f"   • Total metrics analyzed: {scorer_count + depth_count}")
-print(f"   • Total slides generated: {scorer_count + depth_count}")
+print(f"   • Total metrics analyzed: {total_metrics}")
+print(f"   • Total slides generated: {sum(len(result['slides']) for result in unified_results.values())}")
 print(f"   • Figure display: {'Enabled' if SHOW_FIGURES else 'Disabled'}")
 print(f"   • Architecture: Direct analysis → Direct slide generation (no unnecessary layers!)")
 
@@ -379,12 +394,7 @@ file_size = os.path.getsize(presentation_path) / 1024  # KB
 print(f"   • Size: {file_size:.1f} KB")
 
 # Calculate total slides
-total_content_slides = 0
-if scorer_results:
-    total_content_slides += len(scorer_results)
-if depth_results:
-    total_content_slides += len(depth_results)
-
+total_content_slides = sum(len(result['slides']) for result in unified_results.values())
 print(f"   • Slides: {total_content_slides} content slides + title + summary")
 
 print(f"\n✨ SUCCESS! Simplified config-driven RCA analysis complete!")

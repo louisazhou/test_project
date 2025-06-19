@@ -1170,18 +1170,20 @@ def score_hypotheses_for_metrics(
                             'summary_text': summary_text
                         },
                         'slide_info': {
-                            'title': slide_title,
+                            'title': f"{metric_name} - Root Cause",
                             'template_text': template,
                             'template_params': template_params,
                             'figure_generators': figure_generators,
                             'dfs': {},
-                            'layout_type': "text_figure"
+                            'layout_type': "text_figure",
+                            'total_hypotheses': len(hypothesis_names)  # Add count of hypotheses
                         }
                     }
                 },
                 'payload': {
                     'best_hypothesis': best_hypo_result,
-                    'all_results': hypothesis_results
+                    'all_results': hypothesis_results,
+                    'total_hypotheses': len(hypothesis_names)  # Add to payload as well
                 },
             }
             

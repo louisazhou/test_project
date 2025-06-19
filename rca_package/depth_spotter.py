@@ -117,7 +117,6 @@ def rate_contrib(
         - row_rate: Rest-of-world rate used as benchmark
     """
     df = df_slice.copy()
-    
     # Calculate rest-of-world rate
     row_rate = row_numerator / row_denominator if row_denominator > 0 else 0
     
@@ -194,6 +193,23 @@ def rate_contrib(
     
     # Add actual rate using the proper metric name, handling zero denominators
     df[metric_name] = df[numerator_col] / df[denominator_col].replace(0, np.nan)
+    
+    # Create display string with ratio components
+    def format_ratio_display(row):
+        num = row[numerator_col]
+        denom = row[denominator_col]
+        rate = row[metric_name]
+        
+        if pd.isna(rate):
+            return "N/A"
+        ratio_str = f"{rate*100:.1f}%"
+        if denom > 0:  # Only show components if denominator exists
+            return f"{ratio_str} ({int(num):,}/{int(denom):,})"
+        return ratio_str
+    
+    # Add display string column
+    df['display_value'] = df.apply(format_ratio_display, axis=1)
+
     
     return df, delta, row_rate
 
@@ -272,12 +288,7 @@ def format_value(value: float, is_percent: bool) -> str:
         return f"{value*100:.1f}%"
     return f"{value:,.0f}"
 
-def format_ratio_display(numerator: float, denominator: float, ratio: float) -> str:
-    """Format a ratio with its components for display."""
-    ratio_str = f"{ratio*100:.1f}%"
-    if denominator > 0:  # Only show components if denominator exists
-        return f"{ratio_str} ({numerator:,.0f}/{denominator:,.0f})"
-    return ratio_str
+
 
 def plot_subregion_bars(
     df_slice: pd.DataFrame,
@@ -299,6 +310,7 @@ def plot_subregion_bars(
     Returns:
         Matplotlib figure with the contribution-aware bar chart
     """
+    
     # Create figure and axis
     fig, ax = plt.subplots(figsize=figsize)
     
@@ -332,9 +344,6 @@ def plot_subregion_bars(
     colors = []
     for i, contrib in enumerate(contributions):
         if i in top_3_indices:  # Only highlight top-3 by score
-            # SIMPLIFIED LOGIC: Contribution calculation is now intuitive
-            # Positive contribution = helpful = GREEN
-            # Negative contribution = harmful = RED
             if contrib > 0:
                 colors.append(COLORS['metric_positive'])  # Green (helpful)
             else:
@@ -357,12 +366,9 @@ def plot_subregion_bars(
         if pd.isna(original_val):
             label_text = "N/A"
         else:
-            # Format text based on metric type
-            if is_percent and 'numerator_col' in df_slice.columns and 'denominator_col' in df_slice.columns:
-                # For rate metrics, show ratio with components
-                numerator = df_slice.iloc[i]['numerator_col']
-                denominator = df_slice.iloc[i]['denominator_col']
-                label_text = format_ratio_display(numerator, denominator, original_val)
+            # Use pre-calculated display string if available
+            if 'display_value' in df_slice.columns:
+                label_text = df_slice.iloc[i]['display_value']
             else:
                 # For non-rate metrics or when components aren't available
                 label_text = format_value(original_val, is_percent)
@@ -493,11 +499,17 @@ def analyze_region_depth(
             
             # Create full analysis data sorted by score (for chart - show ALL slices)
             contrib_df = contrib_df.sort_values('score', ascending=False)
-            summary_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score', 'raw_contribution']
-            full_analysis_df = contrib_df[summary_cols].copy().set_index('slice')
             
-            # Create formatted display table (top 3 only for table display)
-            display_table = full_analysis_df.drop(['raw_contribution'], axis=1).head(3).copy()
+            # Keep display_value separate from summary columns
+            chart_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score', 'raw_contribution']
+            if 'display_value' in contrib_df.columns:
+                chart_cols.append('display_value')
+            
+            # Create display table without display_value
+            display_cols = ['slice', plot_metric_col, 'contribution', 'coverage', 'score']
+            display_table = contrib_df[display_cols].head(3).copy().set_index('slice')
+            
+            # Format display table
             display_table['contribution'] = display_table['contribution'].apply(lambda x: f"{x:.1%}")
             display_table['coverage'] = display_table['coverage'].apply(lambda x: f"{x:.1%}")
             display_table['score'] = display_table['score'].apply(lambda x: f"{x:.2f}")
@@ -507,39 +519,50 @@ def analyze_region_depth(
             else:
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Generate main contributors sentence
-            contrib_df['contributor_type'] = np.where(
-                contrib_df['contribution'] * np.sign(delta) > 0,
-                'help',
-                'drag'
-            )
+            # Determine if we're looking for lifts or drags based on context
+            # For higher_is_better=True:
+            #   - If delta > 0 (underperforming), show lifts (positive contributions help close the gap)
+            #   - If delta < 0 (overperforming), show drags (negative contributions reduce the advantage)
+            # For higher_is_better=False:
+            #   - If delta > 0 (underperforming), show drags (negative contributions help close the gap)
+            #   - If delta < 0 (overperforming), show lifts (positive contributions reduce the advantage)
+            higher_is_better = metric_anomaly_map[metric_name].get('higher_is_better', True)
             
-            # Sort by absolute contribution and get top contributors
+            # Calculate absolute contribution for sorting
             contrib_df['abs_contribution'] = contrib_df['contribution'].abs()
-            top_contributors = contrib_df.nlargest(3, 'abs_contribution')
+            
+            # Determine if we're looking for positive or negative contributions
+            if (higher_is_better and delta > 0) or (not higher_is_better and delta < 0):
+                # Looking for positive contributions (lifts)
+                contrib_df['contributor_type'] = np.where(contrib_df['contribution'] > 0, 'lift', 'drag')
+                top_contributors = contrib_df[contrib_df['contribution'] > 0].nlargest(3, 'abs_contribution')
+                contributor_type = 'lifts'
+            else:
+                # Looking for negative contributions (drags)
+                contrib_df['contributor_type'] = np.where(contrib_df['contribution'] < 0, 'drag', 'lift')
+                top_contributors = contrib_df[contrib_df['contribution'] < 0].nlargest(3, 'abs_contribution')
+                contributor_type = 'drags'
             
             # Format contribution percentages with actual values
             def format_contrib(row):
-                contrib_pct = row['contribution'] * 100  # Use actual value, not absolute
-                return f"{row['slice']} ({contrib_pct:+.0f}%)"  # Add + sign for positive values
+                contrib_pct = row['contribution'] * 100  # Use actual value
+                return f"{row['slice']}"  # Just return the slice name
             
-            # Generate sentence based on delta direction
-            if delta > 0:
-                # Focus on drags for positive delta (underperformance)
-                drags = top_contributors[top_contributors['contributor_type'] == 'drag']
-                if not drags.empty:
-                    main_contributors = drags.apply(format_contrib, axis=1).tolist()
-                    main_contributors_sentence = f"Key drags are {', '.join(main_contributors)}"
-                else:
-                    main_contributors_sentence = "No significant drags identified"
+            def format_pct(x):
+                return f"{x*100:+.1f}%"  # Format as percentage with sign
+            
+            # Generate more explanatory sentence
+            if not top_contributors.empty:
+                slices = top_contributors.apply(format_contrib, axis=1).tolist()
+                contributions = top_contributors['contribution'].apply(format_pct).tolist()
+                contributors_parts = [f"{s}" for s in slices]
+                main_contributors_sentence = f"{', '.join(contributors_parts)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
             else:
-                # Focus on helps for negative delta (overperformance)
-                helps = top_contributors[top_contributors['contributor_type'] == 'help']
-                if not helps.empty:
-                    main_contributors = helps.apply(format_contrib, axis=1).tolist()
-                    main_contributors_sentence = f"Key helps are {', '.join(main_contributors)}"
-                else:
-                    main_contributors_sentence = "No significant helps identified"
+                main_contributors_sentence = f"No significant {contributor_type} identified in the gap between {anomalous_region} and Rest-of-World"
+            
+            # Create full analysis DataFrame for chart
+            chart_cols.append('abs_contribution')  # Add abs_contribution to chart columns
+            full_analysis_df = contrib_df[chart_cols].copy().set_index('slice')
             
             # Update template parameters with main contributors sentence
             template_params['main_contributors_sentence'] = main_contributors_sentence
@@ -548,7 +571,7 @@ def analyze_region_depth(
             summary_text = main_contributors_sentence
 
             # Return in unified format directly - no integration needed!
-            analysis_type = 'depth'  # Derived from config_depth.yaml
+            analysis_type = 'Depth'  # Derived from config_depth.yaml
             unified_results[metric_name] = {
                 'slides': {
                     analysis_type: {
@@ -572,15 +595,17 @@ def analyze_region_depth(
                                 }
                             ],
                             'dfs': {"summary_table": display_table},  # Top 3 only for table display
-                            'layout_type': "text_tables_figure"
+                            'layout_type': "text_tables_figure",
+                            'total_hypotheses': 1  # Depth analysis counts as one hypothesis
                         }
                     }
                 },
                 'payload': {
-                            'summary_df': full_analysis_df,  # Full analysis data for internal inspection
-                            'delta': delta,
-                            'row_value': row_value
-                        },
+                    'summary_df': full_analysis_df,  # Full analysis data for internal inspection
+                    'delta': delta,
+                    'row_value': row_value,
+                    'total_hypotheses': 1  # Add to payload as well
+                },
             }
                 
         except KeyError as e:
@@ -691,9 +716,18 @@ def main(output_dir: str = '.'):
     
     # Create test metric_anomaly_map for the test
     test_metric_anomaly_map = {
-        'conversion_rate_pct': {'anomalous_region': anomalous_region},
-        'revenue': {'anomalous_region': anomalous_region}, 
-        'customer_satisfaction': {'anomalous_region': anomalous_region}
+        'conversion_rate_pct': {
+            'anomalous_region': anomalous_region,
+            'higher_is_better': True
+        },
+        'revenue': {
+            'anomalous_region': anomalous_region,
+            'higher_is_better': True
+        }, 
+        'customer_satisfaction': {
+            'anomalous_region': anomalous_region,
+            'higher_is_better': True
+        }
     }
     
     results = analyze_region_depth(
@@ -702,7 +736,7 @@ def main(output_dir: str = '.'):
         metric_anomaly_map=test_metric_anomaly_map
     )
     
-    # Print structured results
+    # Print structured results with more detail
     print(f"\n{'='*60}")
     print("STRUCTURED RESULTS")
     print(f"{'='*60}")
@@ -711,40 +745,29 @@ def main(output_dir: str = '.'):
         print(f"\nMetric: {metric_name}")
         
         # Access the depth slide data
-        depth_data = metric_result['slides']['depth']['data']
-        slide_info = metric_result['slides']['depth']['slide_info']
-        
-        print(f"Name: {depth_data['name']}")
-        print(f"Type: {metric_result['slides']['depth']['type']}")
-        print(f"Summary: {depth_data['summary_text']}")
-        
-        # Show rendered template text
-        if slide_info['template_text']:
-            print(f"Template Text:\n{slide_info['template_text'][:200]}...")  # Truncate for readability
+        if 'Depth' in metric_result['slides']:
+            depth_data = metric_result['slides']['Depth']
+            
+            print(f"Summary: {depth_data['summary']['summary_text']}")
+            
+            # Print figure parameters
+            if 'slide_info' in depth_data:
+                slide_info = depth_data['slide_info']
+                if 'figure_generators' in slide_info:
+                    for i, gen in enumerate(slide_info['figure_generators']):
+                        print(f"\nFigure {i+1} Parameters:")
+                        print(f"Function: {gen['function'].__name__}")
+                        print("Parameters:")
+                        for k, v in gen['params'].items():
+                            if isinstance(v, pd.DataFrame):
+                                print(f"{k} (DataFrame):")
+                                print(v.head())
+                            else:
+                                print(f"{k}: {v}")
+        else:
+            print("No Depth analysis data found")
     
-    # Additional analysis: Show data summary
-    print(f"\n{'='*60}")
-    print("DATA SUMMARY")
-    print(f"{'='*60}")
-    
-    # Regional summary
-    regional_summary = sub_df.groupby('region').agg({
-        'visits': 'sum',
-        'conversions': 'sum',
-        'revenue': 'sum',
-        'surveys': 'sum',
-        'sum_csat': 'sum'
-    }).round(2)
-    
-    # Calculate rates
-    regional_summary['conversion_rate'] = regional_summary['conversions'] / regional_summary['visits']
-    regional_summary['avg_csat'] = regional_summary['sum_csat'] / regional_summary['surveys']
-    
-    print("\nRegional Summary:")
-    print(regional_summary[['visits', 'conversion_rate', 'revenue', 'avg_csat']].round(3))
-    
-    print(f"\nDepth analysis completed successfully!")
-    print(f"Results would be saved to: {output_dir}")
+    print(f"\nDepth analysis completed!")
     
     return results
 
