@@ -430,7 +430,7 @@ These comprehensive tables provide granular insights into regional performance p
         )
     
     # Test 6: Pure text overflow test 
-    @dual_output(console=False, slide=True, slide_builder=slides, layout_type='text', show_figures=True)
+    @dual_output(console=False, slide=True, slide_builder=slides, layout_type='text', show_figures=False)
     def create_pure_text_overflow_test():
         return SlideContent(
             title="Pure Text Overflow Test",

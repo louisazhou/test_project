@@ -287,11 +287,23 @@ class SlideLayouts:
         
         return total_width, total_height
     
+    def _create_divider_slide(self, title: str) -> None:
+        """Create a divider slide with just a title."""
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        title_box = self._add_title(slide, title)
+        # Center the title vertically and make it larger
+        title_box.text_frame.paragraphs[0].font.size = Pt(24)
+        title_box.top = Inches(SLIDE_HEIGHT/2 - TITLE_HEIGHT/2)  # Center vertically
+        return slide
+    
     def _format_cell_value(self, value, is_percent=False):
         """Format cell value consistently."""
         if pd.isna(value):
             return "N/A"
-        elif isinstance(value, (int, float)):
+        elif isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
+            # Handle integers (including floats that are actually integers)
+            return str(int(value))
+        elif isinstance(value, float):
             if is_percent:
                 return f"{value*100:.0f}%"
             elif abs(value) < 0.01 and value != 0:
