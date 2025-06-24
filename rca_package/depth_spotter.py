@@ -337,17 +337,21 @@ def plot_subregion_bars(
     # Format values based on metric name
     is_percent = ('_pct' in metric_col or '%' in metric_col or 'rate' in metric_col.lower())
     
+    # Calculate region average for comparison
+    region_average = np.mean(values) if len(values) > 0 else 0
+    
     # Identify top-3 by score
     top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
     
-    # Color-code bars: only highlight top-3, with INTUITIVE LOGIC (positive = helpful = green)
+    # Color-code bars: only highlight top-3, comparing against region average
     colors = []
-    for i, contrib in enumerate(contributions):
+    for i, (contrib, val) in enumerate(zip(contributions, values)):
         if i in top_3_indices:  # Only highlight top-3 by score
-            if contrib > 0:
-                colors.append(COLORS['metric_positive'])  # Green (helpful)
+            # Compare against region average instead of rest-of-world
+            if val > region_average:
+                colors.append(COLORS['metric_negative'])  # Red (above region average = problematic)
             else:
-                colors.append(COLORS['metric_negative'])  # Red (harmful)
+                colors.append(COLORS['metric_positive'])  # Green (below region average = better)
         else:  # Not in top-3
             colors.append(COLORS['default_bar'])  # Gray
     
@@ -388,10 +392,24 @@ def plot_subregion_bars(
     else:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{x:,.0f}"))
     
-    # Add reference line if row_value is provided
+    # Add reference lines
+    legend_labels = []
+    
+    # Add rest-of-world line if provided
     if row_value is not None:
-        ax.axhline(row_value, color=COLORS['global_line'], linestyle='--', linewidth=2, alpha=0.7, label='Rest-of-World')
-        ax.legend(fontsize=FONTS['tick_label']['size'])
+        ax.axhline(row_value, color=COLORS['global_line'], linestyle='--', linewidth=2, alpha=0.7)
+        legend_labels.append('Rest-of-World')
+    
+    # Add region average line
+    ax.axhline(region_average, color='#FF6B35', linestyle='-', linewidth=2, alpha=0.8)
+    legend_labels.append('Region Average')
+    
+    # Add legend if we have lines
+    if legend_labels:
+        if row_value is not None:
+            ax.legend(legend_labels, fontsize=FONTS['tick_label']['size'])
+        else:
+            ax.legend(['Region Average'], fontsize=FONTS['tick_label']['size'])
     
     # Add grid for better readability
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
@@ -519,20 +537,17 @@ def analyze_region_depth(
             else:
                 display_table[plot_metric_col] = display_table[plot_metric_col].apply(lambda x: f"{int(x):,}")
             
-            # Determine if we're looking for lifts or drags based on context
-            # For higher_is_better=True:
-            #   - If delta > 0 (underperforming), show lifts (positive contributions help close the gap)
-            #   - If delta < 0 (overperforming), show drags (negative contributions reduce the advantage)
-            # For higher_is_better=False:
-            #   - If delta > 0 (underperforming), show drags (negative contributions help close the gap)
-            #   - If delta < 0 (overperforming), show lifts (positive contributions reduce the advantage)
-            higher_is_better = metric_anomaly_map[metric_name].get('higher_is_better', True)
-            
             # Calculate absolute contribution for sorting
             contrib_df['abs_contribution'] = contrib_df['contribution'].abs()
             
+            # Calculate region average for comparison
+            if metric_type == 'rate':
+                region_value = region_rate
+            else:
+                region_value = region_total / len(contrib_df) if len(contrib_df) > 0 else 0
+            
             # Determine if we're looking for positive or negative contributions
-            if (higher_is_better and delta > 0) or (not higher_is_better and delta < 0):
+            if (metric_anomaly_map[metric_name].get('higher_is_better', True) and delta > 0) or (not metric_anomaly_map[metric_name].get('higher_is_better', True) and delta < 0):
                 # Looking for positive contributions (lifts)
                 contrib_df['contributor_type'] = np.where(contrib_df['contribution'] > 0, 'lift', 'drag')
                 top_contributors = contrib_df[contrib_df['contribution'] > 0].nlargest(3, 'abs_contribution')
@@ -551,12 +566,26 @@ def analyze_region_depth(
             def format_pct(x):
                 return f"{x*100:+.1f}%"  # Format as percentage with sign
             
-            # Generate more explanatory sentence
+            # Generate more explanatory sentence comparing against region average
             if not top_contributors.empty:
                 slices = top_contributors.apply(format_contrib, axis=1).tolist()
                 contributions = top_contributors['contribution'].apply(format_pct).tolist()
-                contributors_parts = [f"{s}" for s in slices]
-                main_contributors_sentence = f"{', '.join(contributors_parts)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
+                
+                # Focus only on problematic sub-regions (those above region average for underperforming regions)
+                problematic_slices = []
+                for _, row in top_contributors.iterrows():
+                    slice_value = row[plot_metric_col]
+                    # For underperforming regions, problematic slices are those above region average
+                    # For overperforming regions, problematic slices are those below region average
+                    is_problematic = (delta > 0 and slice_value > region_value) or (delta < 0 and slice_value < region_value)
+                    if is_problematic:
+                        problematic_slices.append(row['slice'])
+                
+                # Create simplified sentence focusing on problematic areas
+                if problematic_slices:
+                    main_contributors_sentence = f"{', '.join(problematic_slices)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
+                else:
+                    main_contributors_sentence = f"{', '.join(slices)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
             else:
                 main_contributors_sentence = f"No significant {contributor_type} identified in the gap between {anomalous_region} and Rest-of-World"
             

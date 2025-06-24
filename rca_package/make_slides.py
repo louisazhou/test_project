@@ -1350,8 +1350,9 @@ class SlideLayouts:
         self._add_title(slide, title)
         
         # Filter DataFrame to only include metrics we have text for
-        metrics = list(metrics_text.keys())
-        metrics_df = df[metrics]
+        # metrics = list(metrics_text.keys())
+        # metrics_df = df[metrics]
+        metrics_df = df
         
         # Transpose the DataFrame so regions are columns and metrics are rows
         metrics_df_transposed = metrics_df.T

@@ -470,7 +470,15 @@ def create_multi_hypothesis_plot(
             plot_type='hypothesis',
             highlight_region=True
         )
-        ax_best_hypo.set_title(f"Best Hypothesis: {best_hypo_name}", fontsize=FONTS['title']['size'])
+        
+        # Check if metric name + "Best Hypothesis" is too long (more than ~25 characters)
+        full_title = f"Best Hypothesis: {best_hypo_name}"
+        if len(full_title) > 25:
+            title = "Best Hypothesis"
+        else:
+            title = full_title
+        
+        ax_best_hypo.set_title(title, fontsize=FONTS['title']['size'])
     else:
         # For inconclusive cases, leave the "best hypothesis" area blank
         ax_best_hypo.set_visible(False)
