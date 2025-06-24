@@ -295,6 +295,7 @@ def plot_subregion_bars(
     metric_col: str,
     title: str,
     row_value: Optional[float] = None,
+    region_value: Optional[float] = None,
     figsize: Tuple[int, int] = (12, 6)
 ) -> plt.Figure:
     """
@@ -305,6 +306,7 @@ def plot_subregion_bars(
         metric_col: Name of the metric column to plot
         title: Chart title
         row_value: Rest-of-world value to show as reference line (optional)
+        region_value: Region average value to show as reference line (optional)
         figsize: Figure size as (width, height) tuple
     
     Returns:
@@ -337,23 +339,23 @@ def plot_subregion_bars(
     # Format values based on metric name
     is_percent = ('_pct' in metric_col or '%' in metric_col or 'rate' in metric_col.lower())
     
-    # Calculate region average for comparison
-    region_average = np.mean(values) if len(values) > 0 else 0
-    
     # Identify top-3 by score
     top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
     
-    # Color-code bars: only highlight top-3, comparing against region average
+    # Color-code bars: highlight top-3 contributors based on whether they're good or bad
     colors = []
-    for i, (contrib, val) in enumerate(zip(contributions, values)):
-        if i in top_3_indices:  # Only highlight top-3 by score
-            # Compare against region average instead of rest-of-world
-            if val > region_average:
-                colors.append(COLORS['metric_negative'])  # Red (above region average = problematic)
+    for i, val in enumerate(values):
+        if i in top_3_indices and len(contributions) > i:
+            contribution = contributions[i]
+            if abs(contribution) > 1e-6:  # Significant contribution
+                if contribution > 0:
+                    colors.append(COLORS['metric_positive'])  # Green for positive contributors
+                else:
+                    colors.append(COLORS['metric_negative'])  # Red for negative contributors
             else:
-                colors.append(COLORS['metric_positive'])  # Green (below region average = better)
-        else:  # Not in top-3
-            colors.append(COLORS['default_bar'])  # Gray
+                colors.append(COLORS['default_bar'])  # Gray for negligible contribution
+        else:
+            colors.append(COLORS['default_bar'])  # Gray for non-top-3
     
     # Create bars
     bars = ax.bar(range(len(values)), values, width=0.6, color=colors, linewidth=0.5)
@@ -400,16 +402,14 @@ def plot_subregion_bars(
         ax.axhline(row_value, color=COLORS['global_line'], linestyle='--', linewidth=2, alpha=0.7)
         legend_labels.append('Rest-of-World')
     
-    # Add region average line
-    ax.axhline(region_average, color='#FF6B35', linestyle='-', linewidth=2, alpha=0.8)
-    legend_labels.append('Region Average')
+    # Add region average line if provided
+    if region_value is not None:
+        ax.axhline(region_value, color='#FF6B35', linestyle='-', linewidth=2, alpha=0.8)
+        legend_labels.append('Region Average')
     
     # Add legend if we have lines
     if legend_labels:
-        if row_value is not None:
-            ax.legend(legend_labels, fontsize=FONTS['tick_label']['size'])
-        else:
-            ax.legend(['Region Average'], fontsize=FONTS['tick_label']['size'])
+        ax.legend(legend_labels, fontsize=FONTS['tick_label']['size'])
     
     # Add grid for better readability
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
@@ -619,7 +619,8 @@ def analyze_region_depth(
                                         'df_slice': full_analysis_df,  # Pass ALL slices to chart function
                                         'metric_col': plot_metric_col,
                                         'title': f"{metric_name} by sub-regions",
-                                        'row_value': row_value
+                                        'row_value': row_value,
+                                        'region_value': region_value
                                     }
                                 }
                             ],
