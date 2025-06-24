@@ -568,24 +568,36 @@ def analyze_region_depth(
             
             # Generate more explanatory sentence comparing against region average
             if not top_contributors.empty:
-                slices = top_contributors.apply(format_contrib, axis=1).tolist()
-                contributions = top_contributors['contribution'].apply(format_pct).tolist()
-                
-                # Focus only on problematic sub-regions (those above region average for underperforming regions)
-                problematic_slices = []
+                # Build lists of slices & contributions but only keep those that are problematic
+                problematic_slices: list[str] = []
+                problematic_contribs: list[str] = []
                 for _, row in top_contributors.iterrows():
+                    slice_name = row['slice']
                     slice_value = row[plot_metric_col]
+                    contrib_formatted = format_pct(row['contribution'])
+
                     # For underperforming regions, problematic slices are those above region average
                     # For overperforming regions, problematic slices are those below region average
                     is_problematic = (delta > 0 and slice_value > region_value) or (delta < 0 and slice_value < region_value)
+
                     if is_problematic:
-                        problematic_slices.append(row['slice'])
-                
-                # Create simplified sentence focusing on problematic areas
+                        problematic_slices.append(slice_name)
+                        problematic_contribs.append(contrib_formatted)
+
+                # Fallback to top contributors if no problematic slice meets criteria
                 if problematic_slices:
-                    main_contributors_sentence = f"{', '.join(problematic_slices)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
+                    main_contributors_sentence = (
+                        f"{', '.join(problematic_slices)} contribute {', '.join(problematic_contribs)} "
+                        f"to the gap between {anomalous_region} and Rest-of-World"
+                    )
                 else:
-                    main_contributors_sentence = f"{', '.join(slices)} contribute {', '.join(contributions)} to the gap between {anomalous_region} and Rest-of-World"
+                    # Use up to 3 top contributors regardless
+                    fallback_slices = top_contributors['slice'].tolist()
+                    fallback_contribs = top_contributors['contribution'].apply(format_pct).tolist()
+                    main_contributors_sentence = (
+                        f"{', '.join(fallback_slices)} contribute {', '.join(fallback_contribs)} "
+                        f"to the gap between {anomalous_region} and Rest-of-World"
+                    )
             else:
                 main_contributors_sentence = f"No significant {contributor_type} identified in the gap between {anomalous_region} and Rest-of-World"
             
