@@ -296,6 +296,7 @@ def plot_subregion_bars(
     title: str,
     row_value: Optional[float] = None,
     region_value: Optional[float] = None,
+    highlight_slices: Optional[list] = None,
     figsize: Tuple[int, int] = (12, 6)
 ) -> plt.Figure:
     """
@@ -307,6 +308,7 @@ def plot_subregion_bars(
         title: Chart title
         row_value: Rest-of-world value to show as reference line (optional)
         region_value: Region average value to show as reference line (optional)
+        highlight_slices: List of slices to highlight (optional)
         figsize: Figure size as (width, height) tuple
     
     Returns:
@@ -339,23 +341,21 @@ def plot_subregion_bars(
     # Format values based on metric name
     is_percent = ('_pct' in metric_col or '%' in metric_col or 'rate' in metric_col.lower())
     
-    # Identify top-3 by score
-    top_3_indices = set(np.argsort(scores)[-3:]) if len(scores) > 0 else set()
-    
-    # Color-code bars: highlight top-3 contributors based on whether they're good or bad
+    # Determine slices to highlight (problematic ones passed in)
+    highlight_set = set(highlight_slices) if highlight_slices else set()
+
+    # Color-code bars: highlight only problematic slices provided
     colors = []
     for i, val in enumerate(values):
-        if i in top_3_indices and len(contributions) > i:
+        slice_name = labels[i]
+        if slice_name in highlight_set and len(contributions) > i:
             contribution = contributions[i]
-            if abs(contribution) > 1e-6:  # Significant contribution
-                if contribution > 0:
-                    colors.append(COLORS['metric_positive'])  # Green for positive contributors
-                else:
-                    colors.append(COLORS['metric_negative'])  # Red for negative contributors
+            if contribution > 0:
+                colors.append(COLORS['metric_positive'])  # Green for positive contributors
             else:
-                colors.append(COLORS['default_bar'])  # Gray for negligible contribution
+                colors.append(COLORS['metric_negative'])  # Red for negative contributors
         else:
-            colors.append(COLORS['default_bar'])  # Gray for non-top-3
+            colors.append(COLORS['default_bar'])
     
     # Create bars
     bars = ax.bar(range(len(values)), values, width=0.6, color=colors, linewidth=0.5)
@@ -620,7 +620,8 @@ def analyze_region_depth(
                                         'metric_col': plot_metric_col,
                                         'title': f"{metric_name} by sub-regions",
                                         'row_value': row_value,
-                                        'region_value': region_value
+                                        'region_value': region_value,
+                                        'highlight_slices': problematic_slices
                                     }
                                 }
                             ],
