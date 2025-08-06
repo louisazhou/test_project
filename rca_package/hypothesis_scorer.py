@@ -127,6 +127,10 @@ def sign_based_score_hypothesis(
     sign_agreements = (np.sign(metric_deltas) == np.sign(hypo_deltas))
     sign_agreement_score = sign_agreements.sum() / len(regions)
     
+    # CORNER CASE FIX: Check if focal region agrees with hypothesis direction
+    anomalous_idx = regions.index(anomalous_region)
+    focal_region_agrees = sign_agreements[anomalous_idx]
+    
     # Calculate binomial p-value (not used in score but included for reference)
     p_binom = stats.binomtest(sign_agreements.sum(), n=len(regions), p=0.5)
     
@@ -142,24 +146,38 @@ def sign_based_score_hypothesis(
     # Redefine explained ratio using z-scores (scale-free)
     explained_ratio = min(abs(z_h) / abs(z_m), 1.0) if abs(z_m) > 1e-6 else 0
     
-    # Calculate final score: 60% sign agreement + 40% explained ratio
-    final_score = 0.6 * sign_agreement_score + 0.4 * explained_ratio
+    # Enhanced guardrail logic with focal region check
+    meets_basic_guardrails = (sign_agreement_score >= 0.5 and 
+                             explained_ratio >= 0.2)
     
-    # Apply guardrail logic for 'explains' field
-    meets_guardrails = (sign_agreement_score >= 0.5 and 
-                       explained_ratio >= 0.2 and 
-                       final_score >= 0.5)
+    # CORNER CASE: Even if overall sign agreement is good, focal region must agree
+    meets_focal_check = focal_region_agrees
+    
+    # Combined guardrail check
+    meets_guardrails = meets_basic_guardrails and meets_focal_check
+    
+    # RANKING FIX: Integrate guardrails into final_score for proper ranking
+    base_score = 0.6 * sign_agreement_score + 0.4 * explained_ratio
+    
+    if meets_guardrails:
+        # Good hypothesis: use full score
+        final_score = base_score
+    else:
+        # Failed guardrails: heavily penalize score for proper ranking
+        penalty_factor = 0.3  # Reduce to 30% of base score
+        final_score = base_score * penalty_factor
     
     # Determine failure reason if it doesn't explain
     failure_reason = ""
     if not meets_guardrails:
         reasons = []
-        if sign_agreement_score < 0.5:
-            reasons.append("wrong hypothesis direction")
-        if explained_ratio < 0.2:
-            reasons.append("coincidental moves")
-        if final_score < 0.5:
-            reasons.append("final score <0.5")
+        if not meets_basic_guardrails:
+            if sign_agreement_score < 0.5:
+                reasons.append("wrong hypothesis direction")
+            if explained_ratio < 0.2:
+                reasons.append("coincidental moves")
+        if not meets_focal_check:
+            reasons.append("focal region direction mismatch")
         failure_reason = ", ".join(reasons)
     
     # Format magnitude based on column name (same as original function)
@@ -180,6 +198,7 @@ def sign_based_score_hypothesis(
         'scores': {
             'sign_agreement': sign_agreement_score,
             'explained_ratio': explained_ratio,
+            'focal_region_agrees': focal_region_agrees,
             'p_value': p_binom.pvalue,
             'final_score': final_score,
             'explains': meets_guardrails,
@@ -388,6 +407,367 @@ def create_scatter_grid(
     return fig
 
 
+def calculate_color_intensity(val: float, global_val: float, all_values: np.ndarray) -> float:
+    """Calculate color intensity based on relative deviation across all values."""
+    if val == global_val or global_val == 0:
+        return 0.0
+    
+    deviation = abs((val - global_val) / global_val)
+    max_deviation = max(abs((v - global_val) / global_val) for v in all_values if global_val != 0)
+    
+    if max_deviation == 0:
+        return 0.0
+    
+    return min(1.0, deviation / max_deviation)
+
+
+def get_color_by_intensity(intensity: float, is_positive: bool) -> str:
+    """Get color based on intensity level and direction."""
+    if intensity < 0.05:  # Very small deviations
+        return 'white'
+    
+    if is_positive:
+        # Green shades from light to dark
+        if intensity < 0.3:
+            return '#F0F8F0'  # Very light green
+        elif intensity < 0.6:
+            return '#C8E6C9'  # Light green  
+        elif intensity < 0.8:
+            return '#81C784'  # Medium green
+        else:
+            return '#4CAF50'  # Strong green
+    else:
+        # Red shades from light to dark
+        if intensity < 0.3:
+            return '#FFF0F0'  # Very light red
+        elif intensity < 0.6:
+            return '#FFCDD2'  # Light red
+        elif intensity < 0.8:
+            return '#E57373'  # Medium red
+        else:
+            return '#F44336'  # Strong red
+
+
+def prepare_table_data(
+    df: pd.DataFrame,
+    ordered_hypos: List[Tuple[str, HypothesisResult]],
+    all_regions: List[str]
+) -> Tuple[List[List[str]], List[str]]:
+    """Prepare formatted data for hypothesis table display."""
+    rows = []
+    formatted_row_labels = []
+    
+    for rank, (h, h_result) in enumerate(ordered_hypos, 1):
+        # Format hypothesis name
+        readable_name = h.replace('_', ' ')
+        formatted_row_labels.append(readable_name)
+        
+        # Get values for all regions
+        hypo_vals = df.loc[all_regions, h].values
+        
+        # Format values based on column type
+        is_pct = any(substr in h.lower() for substr in ['pct', '%', 'rate'])
+        if is_pct:
+            formatted_vals = [f"{val*100:.1f}%" for val in hypo_vals]
+        else:
+            formatted_vals = [f"{val:.2f}" if abs(val) < 1000 else f"{val:,.0f}" for val in hypo_vals]
+        
+        # Add score and rank columns
+        score_val = h_result['scores']['final_score']
+        formatted_vals.extend([f"{score_val:.2f}", str(rank)])
+        
+        rows.append(formatted_vals)
+    
+    return rows, formatted_row_labels
+
+
+def calculate_table_colors(
+    df: pd.DataFrame, 
+    ordered_hypos: List[Tuple[str, HypothesisResult]], 
+    all_regions: List[str],
+    metric_anomaly_info: Dict[str, Any]
+) -> List[List[str]]:
+    """Calculate background colors for table cells based on deviation intensity."""
+    higher_is_better = metric_anomaly_info.get('higher_is_better', True)
+    row_colors = []
+    
+    for h, h_result in ordered_hypos:
+        score = h_result['scores']['final_score']
+        explains = h_result['scores']['explains']
+        should_color = score >= 0.5 and explains
+        
+        hypo_vals = df.loc[all_regions, h].values
+        global_hypo = df.loc["Global", h]
+        
+        cell_colors = []
+        for i, region in enumerate(all_regions):
+            val = hypo_vals[i]
+            
+            if not should_color or val == global_hypo:
+                cell_colors.append('white')
+            else:
+                intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
+                is_positive = val > global_hypo
+                color = get_color_by_intensity(intensity, is_positive)
+                cell_colors.append(color)
+        
+        # Score and rank columns - no background color
+        cell_colors.extend(['white', 'white'])
+        row_colors.append(cell_colors)
+    
+    return row_colors
+
+
+def calculate_tight_table_dimensions(
+    all_regions: List[str], 
+    formatted_row_labels: List[str], 
+    table_rows: List[List[str]],
+    metric_col: str
+) -> Tuple[float, float]:
+    """Calculate tight-fitting dimensions with minimal whitespace."""
+    # More precise character width calculation
+    char_width = 0.06  # Reduced from 0.08 - matplotlib tables are more compact
+    
+    # Calculate actual content widths more precisely
+    col_headers = all_regions + ["Score", "Rank"]
+    col_widths = []
+    
+    # More precise column width calculation
+    for i, header in enumerate(col_headers):
+        header_width = len(str(header)) * char_width
+        
+        # Check actual data content for this column
+        data_width = header_width
+        if table_rows:
+            for row in table_rows[:3]:  # Check first few rows for accurate sizing
+                if i < len(row):
+                    data_width = max(data_width, len(str(row[i])) * char_width)
+        
+        # Minimum column width
+        col_widths.append(max(data_width, 0.6))  # Min 0.6" per column
+    
+    # Row labels width - more conservative calculation
+    max_row_label_length = max(len(str(label)) for label in formatted_row_labels + [metric_col])
+    row_label_width = max_row_label_length * char_width
+    
+    # Tight table width calculation
+    data_width = sum(col_widths)
+    table_content_width = row_label_width + data_width
+    
+    # Minimal padding - just enough for readability
+    padding = 0.2  # Very minimal padding
+    total_table_width = table_content_width + padding
+    
+    # Compact height calculation
+    num_hypotheses = len(formatted_row_labels)
+    max_name_length = max(len(label) for label in formatted_row_labels) if formatted_row_labels else 20
+    
+    # More compact row heights
+    base_row_height = 0.25  # Reduced from 0.35
+    if max_name_length > 50:
+        base_row_height = 0.35  # Only increase for very long names
+    elif max_name_length > 30:
+        base_row_height = 0.3
+    
+    # Compact total height
+    metric_table_height = 0.8  # Space for metric table + title
+    hypo_table_height = num_hypotheses * base_row_height + 0.6  # Hypotheses + title
+    total_height = metric_table_height + hypo_table_height + 0.3  # Small gap
+    
+    return total_table_width, total_height
+
+
+def create_hypothesis_delta_table(
+    df: pd.DataFrame,
+    ordered_hypos: List[Tuple[str, HypothesisResult]],
+    metric_anomaly_info: Dict[str, Any],
+    metric_col: str,
+    fontsize: int = 10
+) -> plt.Figure:
+    """Create a compact table showing metric and hypothesis values for all regions.
+    
+    Uses unified sizing approach where both ax1 and ax2 tables are sized together
+    with consistent width calculations and smart wrapping applied uniformly.
+    """
+    # Extract basic info
+    anomalous_region = metric_anomaly_info['anomalous_region']
+    regions = [r for r in df.index if r != "Global"]
+    all_regions = ["Global"] + regions
+    
+    # Use helper functions for data processing (separation of concerns)
+    table_rows, formatted_row_labels = prepare_table_data(df, ordered_hypos, all_regions)
+    row_colors = calculate_table_colors(df, ordered_hypos, all_regions, metric_anomaly_info)
+    
+    # TIGHT SIZING: Calculate minimal dimensions for maximum space utilization
+    table_width, table_height = calculate_tight_table_dimensions(
+        all_regions, formatted_row_labels, table_rows, metric_col
+    )
+    
+    # Tight figure dimensions - minimal margins
+    margin_space = 0.4  # Total margin space (much reduced)
+    fig_width = table_width + margin_space  # No arbitrary cap - size to content
+    fig_height = table_height + 0.3  # Minimal vertical padding
+    
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    
+    # Minimal margins for maximum table space utilization
+    margin_left, margin_right = 0.02, 0.02  # Very tight side margins
+    margin_top, margin_bottom = 0.02, 0.02  # Very tight top/bottom margins  
+    gap_between_tables = 0.01  # Minimal gap
+    
+    # Calculate positions
+    available_height = 1.0 - margin_top - margin_bottom - gap_between_tables
+    metric_height = available_height * 0.2   # 20% for metric
+    hypo_height = available_height * 0.8     # 80% for hypotheses
+    
+    # Create subplots
+    metric_bottom = margin_bottom + hypo_height + gap_between_tables
+    hypo_bottom = margin_bottom
+    
+    ax1 = fig.add_axes([margin_left, metric_bottom, 1.0 - margin_left - margin_right, metric_height])
+    ax2 = fig.add_axes([margin_left, hypo_bottom, 1.0 - margin_left - margin_right, hypo_height])
+    
+    ax1.axis('off')
+    ax2.axis('off')
+    
+    # === METRIC TABLE (simplified) ===
+    metric_vals = df.loc[all_regions, metric_col].values
+    global_metric = df.loc["Global", metric_col]
+    is_pct_metric = any(substr in metric_col.lower() for substr in ['pct', '%', 'rate'])
+    
+    if is_pct_metric:
+        metric_data = [[f"{val*100:.1f}%" for val in metric_vals]]
+    else:
+        metric_data = [[f"{val:.2f}" if abs(val) < 1000 else f"{val:,.0f}" for val in metric_vals]]
+    
+    metric_table = ax1.table(
+        cellText=metric_data,
+        colLabels=all_regions,
+        rowLabels=[metric_col],
+        loc='center',
+        cellLoc='center'
+    )
+    metric_table.auto_set_font_size(False)
+    metric_table.set_fontsize(fontsize)
+    
+    # Apply TIGHT column width settings for space efficiency
+    for i in range(len(all_regions)):
+        metric_table.auto_set_column_width(i)
+    metric_table.auto_set_column_width(-1)  # Row labels
+    
+    # More compact scaling for better space utilization
+    metric_table.scale(1.0, 1.2)  # Reduced vertical scaling
+    
+    # Color metric cells using existing color calculation logic
+    for i, region in enumerate(all_regions):
+        val = df.loc[region, metric_col]
+        intensity = calculate_color_intensity(val, global_metric, metric_vals)
+        is_positive = (val > global_metric and metric_anomaly_info.get('higher_is_better', True)) or \
+                     (val < global_metric and not metric_anomaly_info.get('higher_is_better', True))
+        color = get_color_by_intensity(intensity, is_positive)
+        metric_table[(1, i)].set_facecolor(color)
+        
+        if region == anomalous_region:
+            metric_table[(1, i)].set_text_props(weight='bold')
+    
+    # Bold headers
+    for i in range(len(all_regions)):
+        metric_table[(0, i)].set_text_props(weight='bold')
+    metric_table[(1, -1)].set_text_props(weight='bold')
+    
+    ax1.text(0.5, 1.05, "Metric Values Across Regions", 
+             fontsize=FONTS['title']['size'], ha='center', va='bottom',
+             transform=ax1.transAxes, weight='normal')
+    
+    # === HYPOTHESIS TABLE (using prepared data) ===
+    hypo_table = ax2.table(
+        cellText=table_rows,
+        colLabels=all_regions + ["Score", "Rank"],
+        rowLabels=formatted_row_labels,
+        loc='center',
+        cellLoc='left'
+    )
+    hypo_table.auto_set_font_size(False)
+    hypo_table.set_fontsize(fontsize)
+    
+    # Apply UNIFIED column width settings to match metric table
+    for i in range(len(all_regions) + 2):  # All data columns (regions + score + rank)
+        hypo_table.auto_set_column_width(i)
+    hypo_table.auto_set_column_width(-1)  # Row labels
+    
+    # Configure UNIFIED smart text wrapping for both table types
+    def apply_smart_wrapping(table, table_type="hypothesis"):
+        """Apply consistent smart wrapping to any table."""
+        cell_dict = table.get_celld()
+        for (row, col), cell in cell_dict.items():
+            # Enable text wrapping and proper alignment for ALL cells
+            cell.get_text().set_fontsize(fontsize)
+            cell.get_text().set_wrap(True)
+            
+            # Smart height adjustment for row labels (works for both metric and hypothesis names)
+            if col == -1 and row > 0:  # Row label cells
+                text_content = cell.get_text().get_text()
+                # Unified wrapping calculation
+                estimated_lines = max(1, len(text_content) // 25 + 1)
+                if estimated_lines > 1:
+                    # Dynamically increase cell height for longer text
+                    current_height = cell.get_height()
+                    cell.set_height(current_height * estimated_lines * 0.7)
+    
+    # Apply smart wrapping to BOTH tables consistently
+    apply_smart_wrapping(metric_table, "metric")
+    apply_smart_wrapping(hypo_table, "hypothesis")
+    
+    # More compact scaling for better space utilization
+    hypo_table.scale(1.0, 1.1)  # Reduced from 1.3 to 1.1 for tighter layout
+    
+    # Apply colors and styling
+    for i, (h, h_result) in enumerate(ordered_hypos):
+        score = h_result['scores']['final_score']
+        is_low_score = score < 0.5
+        
+        # Apply background colors
+        for j, color in enumerate(row_colors[i]):
+            hypo_table[(i+1, j)].set_facecolor(color)
+            
+            # Grey out low score rows
+            if is_low_score:
+                hypo_table[(i+1, j)].set_text_props(color='#808080')
+            
+            # Bold anomalous region
+            if not is_low_score and j < len(all_regions) and all_regions[j] == anomalous_region:
+                hypo_table[(i+1, j)].set_text_props(weight='bold')
+    
+    # Style headers and row labels
+    for (row, col), cell in hypo_table.get_celld().items():
+        if row == 0:  # Headers
+            cell.set_text_props(weight='bold')
+        elif col == -1 and row > 0:  # Row labels
+            h, h_result = ordered_hypos[row-1]
+            score = h_result['scores']['final_score']
+            is_low_score = score < 0.5
+            
+            if is_low_score:
+                cell.set_text_props(weight='normal', color='#808080')
+            else:
+                cell.set_text_props(weight='bold')
+    
+    ax2.text(0.5, 0.98, "Hypothesis Values Across Regions (Ranked by Score)", 
+             fontsize=FONTS['title']['size'], ha='center', va='bottom',
+             transform=ax2.transAxes, weight='normal')
+    
+    return fig
+
+
+
+
+
+
+def _needs_compact_view(num_hypos: int, threshold: int = 7) -> bool:
+    """Check if we need compact view based on number of hypotheses."""
+    return num_hypos > threshold
+
+
 def create_multi_hypothesis_plot(
     df: pd.DataFrame,
     metric_col: str,
@@ -415,6 +795,18 @@ def create_multi_hypothesis_plot(
     Returns:
         matplotlib Figure object
     """
+    # If too many hypotheses, fall back to compact table summary with underlying numbers
+    if _needs_compact_view(len(hypo_cols)):
+        print(f"Using compact table view for {len(hypo_cols)} hypotheses (threshold: 7)")
+        fig = create_hypothesis_delta_table(
+            df=df,
+            ordered_hypos=ordered_hypos,
+            metric_anomaly_info=metric_anomaly_info,
+            metric_col=metric_col,
+            fontsize=10
+        )
+        return fig
+    
     # Create an empty figure
     fig = plt.figure(figsize=figsize)
     
@@ -422,7 +814,7 @@ def create_multi_hypothesis_plot(
     top_margin = 0.80  # Reserve top 20% for explanatory text
     bottom_margin = 0.15  # Reserve bottom 15% for formula
     
-    # Determine which hypotheses to plot on the right side
+    # Determine which hypotheses to plot on the right
     if is_conclusive and ordered_hypos:
         best_hypo_name, best_hypo_result = ordered_hypos[0]
         hypos_on_right = ordered_hypos[1:]
@@ -516,8 +908,8 @@ def create_multi_hypothesis_plot(
             else:
                 ax.set_title(f"{title_prefix}: {hypo_name}", fontsize=FONTS['title']['size'])
     
-    # Add score formula if included
-    if include_score_formula:
+    # Add score formula if included (but not for compact view)
+    if include_score_formula and not _needs_compact_view(len(hypo_cols)):
         add_score_formula(fig)
     
     return fig
@@ -1155,18 +1547,7 @@ def score_hypotheses_for_metrics(
                         'ordered_hypos': all_ranked_hypotheses,  # Always show all hypotheses ranked by score
                         'is_conclusive': is_conclusive
                     }
-                },
-                # {
-                #     "function": create_scatter_grid, 
-                #     "title_suffix": " (Part 2)",
-                #     "params": {
-                #         'df': regional_df,
-                #         'metric_col': metric_name,
-                #         'hypo_cols': hypothesis_names,
-                #         'metric_anomaly_info': anomaly_info,
-                #         'expected_directions': expected_directions
-                #     }
-                # }
+                }
             ]
             
             # Create slide data in unified format
@@ -1214,19 +1595,33 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     np.random.seed(42)
     regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
     
-    # Create test data with multiple metrics and hypotheses
+    # Create test data with multiple metrics and hypotheses (18 hypotheses to test compact view)
     data = {
         # Metrics
         'conversion_rate_pct': np.array([0.12, 0.08, 0.11, 0.13, 0.10]),
         'avg_order_value': np.array([75.0, 65.0, 80.0, 85.0, 72.0]),
         'customer_satisfaction': np.array([4.2, 3.8, 4.3, 4.5, 4.0]),
         
-        # Hypotheses
+        # Hypotheses (18 total to trigger compact view)
         'bounce_rate_pct': np.array([0.35, 0.45, 0.32, 0.28, 0.34]),
         'page_load_time': np.array([2.4, 3.8, 2.2, 1.9, 2.5]),
         'session_duration': np.array([180, 120, 190, 210, 175]),
         'pages_per_session': np.array([4.2, 3.1, 4.5, 4.8, 4.0]),
-        'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23])
+        'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23]),
+        'cart_abandonment_rate': np.array([0.70, 0.85, 0.65, 0.60, 0.72]),
+        'mobile_traffic_pct': np.array([0.60, 0.45, 0.65, 0.70, 0.58]),
+        'search_usage_rate': np.array([0.40, 0.25, 0.45, 0.50, 0.38]),
+        'email_open_rate': np.array([0.22, 0.15, 0.25, 0.28, 0.20]),
+        'social_media_traffic': np.array([0.15, 0.08, 0.18, 0.20, 0.12]),
+        'product_reviews_count': np.array([150, 80, 170, 200, 140]),
+        'customer_service_calls': np.array([25, 45, 20, 15, 28]),
+        'return_rate_pct': np.array([0.08, 0.15, 0.06, 0.05, 0.09]),
+        'inventory_availability': np.array([0.95, 0.85, 0.97, 0.98, 0.93]),
+        'shipping_speed_days': np.array([2.5, 4.2, 2.0, 1.8, 2.8]),
+        'promotional_discount_pct': np.array([0.10, 0.05, 0.12, 0.15, 0.08]),
+        'website_uptime_pct': np.array([0.999, 0.995, 0.9995, 0.9998, 0.998]),
+        'payment_failure_rate': np.array([0.02, 0.08, 0.015, 0.01, 0.025]),
+        'recommendation_ctr': np.array([0.12, 0.06, 0.15, 0.18, 0.10])
     }
     
     # Create DataFrame
@@ -1234,7 +1629,11 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     
     # Define metric columns and hypothesis columns
     metric_cols = ['conversion_rate_pct', 'avg_order_value', 'customer_satisfaction']
-    hypo_cols = ['bounce_rate_pct', 'page_load_time', 'session_duration', 'pages_per_session', 'new_users_pct']
+    hypo_cols = ['bounce_rate_pct', 'page_load_time', 'session_duration', 'pages_per_session', 'new_users_pct',
+                 'cart_abandonment_rate', 'mobile_traffic_pct', 'search_usage_rate', 'email_open_rate', 
+                 'social_media_traffic', 'product_reviews_count', 'customer_service_calls', 'return_rate_pct',
+                 'inventory_availability', 'shipping_speed_days', 'promotional_discount_pct', 'website_uptime_pct',
+                 'payment_failure_rate', 'recommendation_ctr']
     
     # Import anomaly detector
     from rca_package.anomaly_detector import detect_snapshot_anomaly_for_column
@@ -1248,11 +1647,25 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     
     # Define expected directions for each hypothesis
     expected_directions = {
-        'bounce_rate_pct': 'opposite',  # Higher bounce rate -> lower conversion
-        'page_load_time': 'opposite',   # Higher load time -> lower conversion
-        'session_duration': 'same',     # Higher session time -> higher conversion
-        'pages_per_session': 'same',    # More pages viewed -> higher conversion
-        'new_users_pct': 'opposite'     # New users tend to convert less
+        'bounce_rate_pct': 'opposite',          # Higher bounce rate -> lower conversion
+        'page_load_time': 'opposite',           # Higher load time -> lower conversion
+        'session_duration': 'same',             # Higher session time -> higher conversion
+        'pages_per_session': 'same',            # More pages viewed -> higher conversion
+        'new_users_pct': 'opposite',            # New users tend to convert less
+        'cart_abandonment_rate': 'opposite',    # Higher abandonment -> lower conversion
+        'mobile_traffic_pct': 'same',           # Mobile traffic can convert well
+        'search_usage_rate': 'same',            # Search users convert better
+        'email_open_rate': 'same',              # Higher engagement -> better conversion
+        'social_media_traffic': 'same',         # Social engagement -> conversion
+        'product_reviews_count': 'same',        # More reviews -> trust -> conversion
+        'customer_service_calls': 'opposite',   # More calls -> problems -> lower conversion
+        'return_rate_pct': 'opposite',          # High returns -> lower satisfaction -> conversion
+        'inventory_availability': 'same',       # Better stock -> higher conversion
+        'shipping_speed_days': 'opposite',      # Faster shipping -> higher conversion
+        'promotional_discount_pct': 'same',     # More discounts -> higher conversion
+        'website_uptime_pct': 'same',           # Better uptime -> higher conversion
+        'payment_failure_rate': 'opposite',     # Payment issues -> lower conversion
+        'recommendation_ctr': 'same'            # Better recommendations -> higher conversion
     }
     
     # 1. Demonstrate scatter plot visualization

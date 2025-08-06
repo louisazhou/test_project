@@ -48,6 +48,76 @@ metrics:
         expected_direction: "opposite"
         template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than the global baseline.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} percentage of new users ({{ hypo_name }}) compared to the global average ({{ ref_hypo_val }}). New users typically convert at lower rates than returning users, which explains this pattern."
         summary_template: "TBA"
+      "Cart Abandonment Rate":
+        technical_name: "cart_abandonment_rate"
+        expected_direction: "opposite"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global mean ({{ ref_hypo_val }}). Abandonment of carts directly lowers conversions."
+        summary_template: "TBA"
+      "Mobile Traffic %":
+        technical_name: "mobile_traffic_pct"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} share of {{ hypo_name }} than the global mean ({{ ref_hypo_val }}). Mobile-friendly experiences can boost conversions."
+        summary_template: "TBA"
+      "Search Usage Rate":
+        technical_name: "search_usage_rate"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global mean ({{ ref_hypo_val }}). Users who search tend to convert more."
+        summary_template: "TBA"
+      "Email Open Rate":
+        technical_name: "email_open_rate"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Higher email engagement often signals warmer leads."
+        summary_template: "TBA"
+      "Social Media Traffic":
+        technical_name: "social_media_traffic"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Social audiences can drive incremental conversions."
+        summary_template: "TBA"
+      "Product Reviews Count":
+        technical_name: "product_reviews_count"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). More reviews build trust and improve conversions."
+        summary_template: "TBA"
+      "Customer Service Calls":
+        technical_name: "customer_service_calls"
+        expected_direction: "opposite"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global benchmark.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). High contact rates can signal friction that hurts conversion."
+        summary_template: "TBA"
+      "Return Rate %":
+        technical_name: "return_rate_pct"
+        expected_direction: "opposite"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global benchmark.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). High returns erode customer trust and reduce future conversions."
+        summary_template: "TBA"
+      "Inventory Availability":
+        technical_name: "inventory_availability"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global mean.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Better stock improves sell-through and conversions."
+        summary_template: "TBA"
+      "Shipping Speed (days)":
+        technical_name: "shipping_speed_days"
+        expected_direction: "opposite"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Slow shipping discourages purchases."
+        summary_template: "TBA"
+      "Promotional Discount %":
+        technical_name: "promotional_discount_pct"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Stronger offers lift conversion."
+        summary_template: "TBA"
+      "Website Uptime %":
+        technical_name: "website_uptime_pct"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Higher uptime ensures transaction completion."
+        summary_template: "TBA"
+      "Payment Failure Rate":
+        technical_name: "payment_failure_rate"
+        expected_direction: "opposite"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Payment errors directly block conversions."
+        summary_template: "TBA"
+      "Recommendation CTR":
+        technical_name: "recommendation_ctr"
+        expected_direction: "same"
+        template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than global.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than global ({{ ref_hypo_val }}). Better recommender engagement drives sales."
+        summary_template: "TBA"
 
   "Average Order Value":
     technical_name: "avg_order_value"

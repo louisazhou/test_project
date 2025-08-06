@@ -92,7 +92,21 @@ data = {
     'page_load_time': np.array([2.4, 3.8, 2.2, 1.9, 2.5]),
     'session_duration': np.array([180, 120, 190, 210, 175]),
     'pages_per_session': np.array([4.2, 3.1, 4.5, 4.8, 4.0]),
-    'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23])
+    'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23]),
+    'cart_abandonment_rate': np.array([0.70, 0.85, 0.65, 0.60, 0.72]),
+    'mobile_traffic_pct': np.array([0.60, 0.45, 0.65, 0.70, 0.58]),
+    'search_usage_rate': np.array([0.40, 0.25, 0.45, 0.50, 0.38]),
+    'email_open_rate': np.array([0.22, 0.15, 0.25, 0.28, 0.20]),
+    'social_media_traffic': np.array([0.15, 0.08, 0.18, 0.20, 0.12]),
+    'product_reviews_count': np.array([150, 80, 170, 200, 140]),
+    'customer_service_calls': np.array([25, 45, 20, 15, 28]),
+    'return_rate_pct': np.array([0.08, 0.15, 0.06, 0.05, 0.09]),
+    'inventory_availability': np.array([0.95, 0.85, 0.97, 0.98, 0.93]),
+    'shipping_speed_days': np.array([2.5, 4.2, 2.0, 1.8, 2.8]),
+    'promotional_discount_pct': np.array([0.10, 0.05, 0.12, 0.15, 0.08]),
+    'website_uptime_pct': np.array([0.999, 0.995, 0.9995, 0.9998, 0.998]),
+    'payment_failure_rate': np.array([0.02, 0.08, 0.015, 0.01, 0.025]),
+    'recommendation_ctr': np.array([0.12, 0.06, 0.15, 0.18, 0.10])
 }
 
 # Create DataFrame with technical names (as it comes from data sources)
