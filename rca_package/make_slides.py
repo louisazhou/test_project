@@ -386,7 +386,20 @@ class SlideLayouts:
                 
                 # Get and format value
                 value = df.iloc[row_idx, col_idx]
-                is_percent = any(x in str(col_name).lower() for x in ['_pct', '%', 'pct', 'rate', 'ratio'])
+                # Enhanced percentage detection - check column name patterns and value ranges
+                col_name_lower = str(col_name).lower()
+                
+                # Direct text indicators
+                name_indicates_percent = any(x in col_name_lower for x in [
+                    '_pct', '%', 'pct', 'percentage', 'rate', 'ratio', 'conversion'
+                ])
+                
+                # Value-based detection for likely percentages (values between 0-1)
+                value_indicates_percent = (isinstance(value, (int, float)) and 
+                                         0 <= value <= 1 and value != 0)
+                
+                # Combine both checks
+                is_percent = name_indicates_percent or value_indicates_percent
                 cell.text = self._format_cell_value(value, is_percent)
                 
                 # Apply styling
