@@ -62,6 +62,7 @@ FONTS: Dict[str, Dict[str, Union[int, str]]] = {
 class HypothesisScores(TypedDict):
     sign_agreement: float
     explained_ratio: float
+    focal_region_agrees: bool
     p_value: float
     final_score: float
     explains: bool
@@ -101,22 +102,43 @@ def sign_based_score_hypothesis(
     metric_val = metric_anomaly_info['metric_val']
     ref_metric_val = metric_anomaly_info['global_val']
     
-    # Calculate deltas for anomalous region
-    metric_delta = (metric_val - ref_metric_val) / ref_metric_val if ref_metric_val > 0 else 0
+    # Handle NaNs for focal/global values
+    if pd.isna(metric_val) or pd.isna(ref_metric_val):
+        metric_delta = np.nan
+    else:
+        metric_delta = (metric_val - ref_metric_val) / ref_metric_val if ref_metric_val != 0 else np.nan
     
     # Get hypothesis values for anomalous region
     hypo_val = df.loc[anomalous_region, hypo_col]
     ref_hypo_val = df.loc["Global", hypo_col]
-    hypo_delta = (hypo_val - ref_hypo_val) / ref_hypo_val if ref_hypo_val > 0 else 0
+    if pd.isna(hypo_val) or pd.isna(ref_hypo_val):
+        hypo_delta = np.nan
+    else:
+        hypo_delta = (hypo_val - ref_hypo_val) / ref_hypo_val if ref_hypo_val != 0 else np.nan
     
     # Calculate sign agreement for all regions
     regions = [r for r in df.index if r != "Global"]
     global_metric = df.loc["Global", metric_col]
     global_hypo = df.loc["Global", hypo_col]
     
-    # Calculate deltas for all regions compared to global
-    metric_deltas = np.array([(df.loc[r, metric_col] - global_metric) / global_metric if global_metric > 0 else 0 for r in regions])
-    hypo_deltas = np.array([(df.loc[r, hypo_col] - global_hypo) / global_hypo if global_hypo > 0 else 0 for r in regions])
+    # Calculate deltas for all regions compared to global with NaN handling
+    metric_deltas = []
+    hypo_deltas = []
+    valid_regions = []
+    for r in regions:
+        m_val = df.loc[r, metric_col]
+        h_val = df.loc[r, hypo_col]
+        if pd.isna(m_val) or pd.isna(h_val) or pd.isna(global_metric) or pd.isna(global_hypo):
+            # Skip region with missing data
+            continue
+        if global_metric == 0 or global_hypo == 0:
+            continue
+        metric_deltas.append((m_val - global_metric) / global_metric)
+        hypo_deltas.append((h_val - global_hypo) / global_hypo)
+        valid_regions.append(r)
+    metric_deltas = np.array(metric_deltas)
+    hypo_deltas = np.array(hypo_deltas)
+    regions = valid_regions  # overwrite with valid regions
     
     # Adjust sign for expected direction
     if expected_direction == 'opposite':
@@ -124,15 +146,26 @@ def sign_based_score_hypothesis(
         hypo_deltas = -hypo_deltas
     
     # Count how many regions have same sign
-    sign_agreements = (np.sign(metric_deltas) == np.sign(hypo_deltas))
-    sign_agreement_score = sign_agreements.sum() / len(regions)
+    if len(metric_deltas) == 0:
+        sign_agreements = np.array([])
+        sign_agreement_score = 0.0
+    else:
+        sign_agreements = (np.sign(metric_deltas) == np.sign(hypo_deltas))
+        sign_agreement_score = sign_agreements.sum() / len(regions)
     
     # CORNER CASE FIX: Check if focal region agrees with hypothesis direction
-    anomalous_idx = regions.index(anomalous_region)
-    focal_region_agrees = sign_agreements[anomalous_idx]
+    if anomalous_region in regions:
+        anomalous_idx = regions.index(anomalous_region)
+        focal_region_agrees = sign_agreements[anomalous_idx]
+    else:
+        # Missing data for focal region – treat as disagreement
+        focal_region_agrees = False
     
     # Calculate binomial p-value (not used in score but included for reference)
-    p_binom = stats.binomtest(sign_agreements.sum(), n=len(regions), p=0.5)
+    if len(regions) == 0:
+        p_binom_pvalue = 1.0
+    else:
+        p_binom_pvalue = stats.binomtest(sign_agreements.sum(), n=len(regions), p=0.5).pvalue
     
     # Calculate explained ratio for the anomalous region using MAD-normalized z-scores
     # Compute robust spreads using MAD (Median Absolute Deviation)
@@ -144,7 +177,10 @@ def sign_based_score_hypothesis(
     z_h = hypo_delta / sigma_h if sigma_h > 1e-6 else 0
     
     # Redefine explained ratio using z-scores (scale-free)
-    explained_ratio = min(abs(z_h) / abs(z_m), 1.0) if abs(z_m) > 1e-6 else 0
+    if np.isnan(z_m) or np.isnan(z_h) or abs(z_m) < 1e-6:
+        explained_ratio = 0.0
+    else:
+        explained_ratio = min(abs(z_h) / abs(z_m), 1.0)
     
     # Enhanced guardrail logic with focal region check
     meets_basic_guardrails = (sign_agreement_score >= 0.5 and 
@@ -153,7 +189,7 @@ def sign_based_score_hypothesis(
     # CORNER CASE: Even if overall sign agreement is good, focal region must agree
     meets_focal_check = focal_region_agrees
     
-    # Combined guardrail check
+    # Combined guardrail check (will also consider missing data later)
     meets_guardrails = meets_basic_guardrails and meets_focal_check
     
     # RANKING FIX: Integrate guardrails into final_score for proper ranking
@@ -178,28 +214,34 @@ def sign_based_score_hypothesis(
                 reasons.append("coincidental moves")
         if not meets_focal_check:
             reasons.append("focal region direction mismatch")
+        if np.isnan(metric_delta) or np.isnan(hypo_delta):
+            reasons.append("missing data")
         failure_reason = ", ".join(reasons)
     
     # Format magnitude based on column name (same as original function)
     is_percent_column = '_pct' in hypo_col or '%' in hypo_col
-    if is_percent_column:
-        magnitude_value = abs(hypo_val - ref_hypo_val) * 100
-        magnitude_unit = 'pp'
+    if pd.isna(hypo_val) or pd.isna(ref_hypo_val):
+        magnitude_str = 'N/A'
     else:
-        magnitude_value = abs(hypo_delta) * 100
-        magnitude_unit = '%'
+        if is_percent_column:
+            magnitude_value = abs(hypo_val - ref_hypo_val) * 100
+            magnitude_unit = 'pp'
+        else:
+            magnitude_value = abs(hypo_delta) * 100
+            magnitude_unit = '%'
+        magnitude_str = f"{magnitude_value:.1f}{magnitude_unit}"
     
     # Results
     return {
         'hypo_val': hypo_val,
         'direction': 'higher' if hypo_delta > 0 else 'lower',
         'ref_hypo_val': ref_hypo_val,
-        'magnitude': f"{magnitude_value:.1f}{magnitude_unit}",
+        'magnitude': magnitude_str,
         'scores': {
             'sign_agreement': sign_agreement_score,
             'explained_ratio': explained_ratio,
             'focal_region_agrees': focal_region_agrees,
-            'p_value': p_binom.pvalue,
+            'p_value': p_binom_pvalue,
             'final_score': final_score,
             'explains': meets_guardrails,
             'failure_reason': failure_reason
@@ -247,7 +289,8 @@ def plot_bars(
     
     # Extract regions and values (excluding Global)
     regions = [r for r in df.index.tolist() if r != "Global"]
-    values = df.loc[regions, col_to_plot].values
+    values_series = df.loc[regions, col_to_plot]
+    values = values_series.values
     
     # Set up bar colors
     bar_colors = [COLORS['default_bar']] * len(regions)
@@ -270,24 +313,37 @@ def plot_bars(
             idx = regions.index(anomalous_region)
             bar_colors[idx] = COLORS['hypo_highlight']
     
+    # Prepare bar heights, handle NaN by setting height 0 and grey color
+    plot_values = []
+    for i, val in enumerate(values):
+        if pd.isna(val):
+            plot_values.append(0.0)
+            bar_colors[i] = '#D3D3D3'  # light grey for missing data
+        else:
+            plot_values.append(val)
+    
     # Plot bars
     x_positions = np.arange(len(regions))
-    bars = ax.bar(x_positions, values, color=bar_colors)
+    bars = ax.bar(x_positions, plot_values, color=bar_colors)
     
     # Set x-ticks with region names
     ax.set_xticks(x_positions)
     ax.set_xticklabels(regions, rotation=0, ha='center', fontsize=FONTS['tick_label']['size'])
     
-    # Add global reference line if 'Global' in the data
+    # Add global reference line if 'Global' in the data and value is not NaN
     if 'Global' in df.index:
         global_val = df.loc['Global', col_to_plot]
-        ax.axhline(global_val, color=COLORS['global_line'], linestyle='--', linewidth=1)
+        if not pd.isna(global_val):
+            ax.axhline(global_val, color=COLORS['global_line'], linestyle='--', linewidth=1)
     
-    # Add values on top of bars
+    # Add values on top of bars or N/A
     for i, val in enumerate(values):
-        display_val = val * 100 if is_percent else val
-        format_str = '{:.1f}%' if is_percent else '{:.1f}'
-        ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
+        if pd.isna(val):
+            ax.text(i, 0, 'N/A', ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
+        else:
+            display_val = val * 100 if is_percent else val
+            format_str = '{:.1f}%' if is_percent else '{:.1f}'
+            ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
     
     # Set y-axis label using display name
     ax.set_ylabel(display_name, fontsize=FONTS['axis_label']['size'])
@@ -298,10 +354,12 @@ def plot_bars(
     
     # Adjust y-axis to only use 80% of vertical space, leaving 20% at top for score components
     y_min, y_max = ax.get_ylim()
+    if y_max == 0:  # All bars zero (likely NaNs)
+        y_max = 1
     y_range = y_max - y_min
     
     # Set new limits that leave 20% at top empty
-    ax.set_ylim(y_min, y_max + (y_range * 0.25))  # Add 25% to the top (which becomes 20% of the new range)
+    ax.set_ylim(y_min, y_max + (y_range * 0.25))
     
     # Add score components for hypothesis plot
     if plot_type == 'hypothesis' and hypo_result and hypo_result['scores']:
@@ -409,11 +467,14 @@ def create_scatter_grid(
 
 def calculate_color_intensity(val: float, global_val: float, all_values: np.ndarray) -> float:
     """Calculate color intensity based on relative deviation across all values."""
-    if val == global_val or global_val == 0:
+    if pd.isna(val) or pd.isna(global_val) or global_val == 0:
         return 0.0
     
     deviation = abs((val - global_val) / global_val)
-    max_deviation = max(abs((v - global_val) / global_val) for v in all_values if global_val != 0)
+    deviations = [abs((v - global_val) / global_val) for v in all_values if not pd.isna(v) and global_val != 0]
+    if not deviations:
+        return 0.0
+    max_deviation = max(deviations)
     
     if max_deviation == 0:
         return 0.0
@@ -503,11 +564,15 @@ def calculate_table_colors(
         for i, region in enumerate(all_regions):
             val = hypo_vals[i]
             
-            if not should_color or val == global_hypo:
+            if not should_color or pd.isna(val) or pd.isna(global_hypo):
                 cell_colors.append('white')
             else:
                 intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
-                is_positive = val > global_hypo
+                # Determine positive/negative coloring based on higher_is_better
+                if higher_is_better:
+                    is_positive = val > global_hypo  # Higher values desirable
+                else:
+                    is_positive = val < global_hypo  # Lower values desirable
                 color = get_color_by_intensity(intensity, is_positive)
                 cell_colors.append(color)
         
