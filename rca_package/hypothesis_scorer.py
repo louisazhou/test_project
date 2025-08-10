@@ -9,6 +9,16 @@ import scipy.stats as stats
 import textwrap
 
 
+def get_non_reference_regions(df: pd.DataFrame, reference_row: str = "Global") -> List[str]:
+    """Get all regions excluding the reference row."""
+    return [r for r in df.index if r != reference_row]
+
+
+def get_all_regions_ordered(df: pd.DataFrame, reference_row: str = "Global") -> List[str]:
+    """Get all regions with reference row first, then others."""
+    non_ref_regions = get_non_reference_regions(df, reference_row)
+    return [reference_row] + non_ref_regions
+
 # Color scheme for visualizations
 COLORS: Dict[str, Union[str, Dict[str, str]]] = {
     'metric_negative': '#e74c3c',     # Red for bad metric anomalies
@@ -82,7 +92,8 @@ class HypothesisResult(TypedDict):
 def sign_based_score_hypothesis(
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
-    expected_direction: str = 'same'
+    expected_direction: str = 'same',
+    reference_row: str = "Global"
 ) -> HypothesisResult:
     """
     Score hypothesis using sign-agreement and explained-ratio metrics,
@@ -112,16 +123,16 @@ def sign_based_score_hypothesis(
     
     # Get hypothesis values for anomalous region
     hypo_val = df.loc[anomalous_region, hypo_col]
-    ref_hypo_val = df.loc["Global", hypo_col]
+    ref_hypo_val = df.loc[reference_row, hypo_col]
     if pd.isna(hypo_val) or pd.isna(ref_hypo_val):
         hypo_delta = np.nan
     else:
         hypo_delta = (hypo_val - ref_hypo_val) / ref_hypo_val if ref_hypo_val != 0 else np.nan
     
     # Calculate sign agreement for all regions
-    regions = [r for r in df.index if r != "Global"]
-    global_metric = df.loc["Global", metric_col]
-    global_hypo = df.loc["Global", hypo_col]
+    regions = get_non_reference_regions(df, reference_row)
+    global_metric = df.loc[reference_row, metric_col]
+    global_hypo = df.loc[reference_row, hypo_col]
     
     # Calculate deltas for all regions compared to global with NaN handling
     metric_deltas = []
@@ -171,14 +182,14 @@ def sign_based_score_hypothesis(
     
     # Calculate explained ratio for the anomalous region using MAD-normalized z-scores
     # Compute robust spreads using MAD (Median Absolute Deviation)
-    sigma_m = np.median(np.abs(metric_deltas - np.median(metric_deltas)))
-    sigma_h = np.median(np.abs(hypo_deltas - np.median(hypo_deltas)))
+    sigma_m = np.std(metric_deltas)  # ddof=0 population std
+    sigma_h = np.std(hypo_deltas)
     
     # Convert focal region deltas to z-scores
     z_m = metric_delta / sigma_m if sigma_m > 1e-6 else 0
     z_h = hypo_delta / sigma_h if sigma_h > 1e-6 else 0
     
-    # Redefine explained ratio using z-scores (scale-free)
+    # Explained-ratio using z-scores (cap at 1)
     if np.isnan(z_m) or np.isnan(z_h) or abs(z_m) < 1e-6:
         explained_ratio = 0.0
     else:
@@ -196,14 +207,11 @@ def sign_based_score_hypothesis(
     
     # RANKING FIX: Integrate guardrails into final_score for proper ranking
     base_score = 0.6 * sign_agreement_score + 0.4 * explained_ratio
-    
-    if meets_guardrails:
-        # Good hypothesis: use full score
-        final_score = base_score
+    penalty_factor = 0.3
+    if not focal_region_agrees:
+        final_score = base_score * penalty_factor  # Only penalise when focal region disagrees
     else:
-        # Failed guardrails: heavily penalize score for proper ranking
-        penalty_factor = 0.3  # Reduce to 30% of base score
-        final_score = base_score * penalty_factor
+        final_score = base_score
     
     # Determine failure reason if it doesn't explain
     failure_reason = ""
@@ -258,7 +266,8 @@ def plot_bars(
     metric_anomaly_info: Dict[str, Any], 
     hypo_result: Optional[HypothesisResult] = None, 
     plot_type: str = 'metric',
-    highlight_region: bool = True
+    highlight_region: bool = True,
+    reference_row: str = "Global"
 ) -> plt.Axes:
     """
     Plot a bar chart for either metric or hypothesis data.
@@ -290,8 +299,8 @@ def plot_bars(
     is_percent = ('pct' in col_to_plot.lower() or '%' in col_to_plot or 'rate' in col_to_plot.lower() or
                  (hypo_result and 'pp' in hypo_result['magnitude']))
     
-    # Extract regions and values (excluding Global)
-    regions = [r for r in df.index.tolist() if r != "Global"]
+    # Extract regions and values (excluding reference row)
+    regions = get_non_reference_regions(df, reference_row)
     values_series = df.loc[regions, col_to_plot]
     values = values_series.values
     
@@ -333,9 +342,9 @@ def plot_bars(
     ax.set_xticks(x_positions)
     ax.set_xticklabels(regions, rotation=0, ha='center', fontsize=FONTS['tick_label']['size'])
     
-    # Add global reference line if 'Global' in the data and value is not NaN
-    if 'Global' in df.index:
-        global_val = df.loc['Global', col_to_plot]
+    # Add reference line if reference row is in the data and value is not NaN
+    if reference_row in df.index:
+        global_val = df.loc[reference_row, col_to_plot]
         if not pd.isna(global_val):
             ax.axhline(global_val, color=COLORS['global_line'], linestyle='--', linewidth=1)
     
@@ -512,6 +521,18 @@ def get_color_by_intensity(intensity: float, is_positive: bool) -> str:
             return '#F44336'  # Strong red
 
 
+def get_text_color_for_low_score(intensity: float, is_positive: bool) -> str:
+    """Get text color for low-score hypothesis rows. Only color high intensity values."""
+    # Only color high intensity values (>= 0.6)
+    if intensity < 0.6:
+        return '#808080'  # Grey for low intensity values
+    
+    if is_positive:
+        return '#2E7D32'  # Dark green for text
+    else:
+        return '#D32F2F'  # Dark red for text
+
+
 def prepare_table_data(
     df: pd.DataFrame,
     ordered_hypos: List[Tuple[str, HypothesisResult]],
@@ -550,38 +571,41 @@ def calculate_table_colors(
     df: pd.DataFrame, 
     ordered_hypos: List[Tuple[str, HypothesisResult]], 
     all_regions: List[str],
-    metric_anomaly_info: Dict[str, Any]
+    metric_anomaly_info: Dict[str, Any],
+    reference_row: str = "Global"
 ) -> List[List[str]]:
-    """Color-code hypothesis table cells based on alignment logic.
+    """Simplified color calculation for hypothesis table background colors.
 
-    Green when the hypothesis value moves toward its "desirable" side.
-    The desirability of being higher or lower depends on:
+    Only applies background coloring for score >= 0.5 rows:
+    - Green when the hypothesis value moves toward its "desirable" side
+    - Red when the hypothesis value moves away from its "desirable" side
+    - White background for score < 0.5 rows (text coloring handled separately)
+    
+    The desirability direction is determined by:
       • metric_higher_is_better (from metric_anomaly_info)
       • expected_direction between metric & hypothesis
     Rule:
        higher_is_better_hypo = metric_higher_is_better XOR (expected_direction == 'opposite')
-    So if higher_is_better_hypo==True, higher-than-global values are green;
-    otherwise lower-than-global values are green. Red represents undesirable side.
     """
     metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
     row_colors: List[List[str]] = []
     
     for h, h_result in ordered_hypos:
         score = h_result['scores']['final_score']
-        explains = h_result['scores']['explains']
-        should_color = score >= 0.5 and explains
+        # Simplified: only color background for high-score rows
+        should_color_background = score >= 0.5
         expected_dir = h_result.get('expected_direction', 'same')
         
         # Determine desirability for hypothesis values
         higher_is_better_hypo = metric_higher_is_better if expected_dir == 'same' else not metric_higher_is_better
         
         hypo_vals = df.loc[all_regions, h].values
-        global_hypo = df.loc["Global", h]
+        global_hypo = df.loc[reference_row, h]
         
         cell_colors: List[str] = []
         for i, region in enumerate(all_regions):
             val = hypo_vals[i]
-            if not should_color or pd.isna(val) or pd.isna(global_hypo):
+            if not should_color_background or pd.isna(val) or pd.isna(global_hypo):
                 cell_colors.append('white')
                 continue
             intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
@@ -661,7 +685,8 @@ def create_hypothesis_delta_table(
     ordered_hypos: List[Tuple[str, HypothesisResult]],
     metric_anomaly_info: Dict[str, Any],
     metric_col: str,
-    fontsize: int = 10
+    fontsize: int = 10,
+    reference_row: str = "Global"
 ) -> plt.Figure:
     """Create a compact table showing metric and hypothesis values for all regions.
     
@@ -670,12 +695,12 @@ def create_hypothesis_delta_table(
     """
     # Extract basic info
     anomalous_region = metric_anomaly_info['anomalous_region']
-    regions = [r for r in df.index if r != "Global"]
-    all_regions = ["Global"] + regions
+    regions = get_non_reference_regions(df, reference_row)
+    all_regions = get_all_regions_ordered(df, reference_row)
     
     # Use helper functions for data processing (separation of concerns)
     table_rows, formatted_row_labels = prepare_table_data(df, ordered_hypos, all_regions)
-    row_colors = calculate_table_colors(df, ordered_hypos, all_regions, metric_anomaly_info)
+    row_colors = calculate_table_colors(df, ordered_hypos, all_regions, metric_anomaly_info, reference_row)
     
     # TIGHT SIZING: Calculate minimal dimensions for maximum space utilization
     table_width, table_height = calculate_tight_table_dimensions(
@@ -711,7 +736,7 @@ def create_hypothesis_delta_table(
     
     # === METRIC TABLE (simplified) ===
     metric_vals = df.loc[all_regions, metric_col].values
-    global_metric = df.loc["Global", metric_col]
+    global_metric = df.loc[reference_row, metric_col]
     is_pct_metric = any(substr in metric_col.lower() for substr in ['pct', '%', 'rate'])
     
     if is_pct_metric:
@@ -791,7 +816,7 @@ def create_hypothesis_delta_table(
                 if estimated_lines > 1:
                     # Dynamically increase cell height for ALL cells in this row
                     factor = estimated_lines * 0.85
-                    for (r2, c2), row_cell in cell_dict.items():
+                    for (r2, _c2), row_cell in cell_dict.items():
                         if r2 == row:
                             current_height = row_cell.get_height()
                             row_cell.set_height(current_height * factor)
@@ -806,19 +831,27 @@ def create_hypothesis_delta_table(
     # Apply colors and styling
     for i, (h, h_result) in enumerate(ordered_hypos):
         score = h_result['scores']['final_score']
-        is_low_score = score < 0.5
         
-        # Apply background colors
+        # Apply background colors (already handles score >= 0.5 vs < 0.5 logic)
         for j, color in enumerate(row_colors[i]):
             hypo_table[(i+1, j)].set_facecolor(color)
+        
+        # For low-score rows, add text coloring
+        if score < 0.5:
+            expected_dir = h_result.get('expected_direction', 'same')
+            metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
+            higher_is_better_hypo = metric_higher_is_better if expected_dir == 'same' else not metric_higher_is_better
+            hypo_vals = df.loc[all_regions, h].values
+            global_hypo = df.loc[reference_row, h]
             
-            # Grey out low score rows
-            if is_low_score:
-                hypo_table[(i+1, j)].set_text_props(color='#808080')
-            
-            # Bold anomalous region
-            if not is_low_score and j < len(all_regions) and all_regions[j] == anomalous_region:
-                hypo_table[(i+1, j)].set_text_props(weight='bold')
+            for j in range(len(all_regions)):  # Only region columns
+                val = hypo_vals[j]
+                if not pd.isna(val) and not pd.isna(global_hypo):
+                    intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
+                    is_positive_delta = val > global_hypo
+                    is_desirable = is_positive_delta if higher_is_better_hypo else not is_positive_delta
+                    text_color = get_text_color_for_low_score(intensity, is_desirable)
+                    hypo_table[(i+1, j)].set_text_props(color=text_color)
     
     # Style headers and row labels
     for (row, col), cell in hypo_table.get_celld().items():
@@ -1012,7 +1045,8 @@ def score_all_hypotheses(
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    expected_directions: Dict[str, str]
+    expected_directions: Dict[str, str],
+    reference_row: str = "Global"
 ) -> Dict[str, HypothesisResult]:
     """
     Score all hypotheses for a given metric using sign-based scoring.
@@ -1023,6 +1057,7 @@ def score_all_hypotheses(
         hypo_cols: List of hypothesis column names
         metric_anomaly_info: Info about the metric anomaly
         expected_directions: Dictionary mapping hypothesis names to their expected directions
+        reference_row: Name of the reference row to use (default: "Global")
     
     Returns:
         Dictionary mapping hypothesis names to their score results
@@ -1040,7 +1075,7 @@ def score_all_hypotheses(
         expected_direction = expected_directions.get(hypo_col, 'same')
         
         # Score the hypothesis
-        hypo_results[hypo_col] = score_func(temp_df, metric_anomaly_info, expected_direction)
+        hypo_results[hypo_col] = score_func(temp_df, metric_anomaly_info, expected_direction, reference_row)
     
     return hypo_results
 
@@ -1191,7 +1226,8 @@ def plot_scatter(
     ax: plt.Axes,
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
-    expected_direction: str = 'same'
+    expected_direction: str = 'same',
+    reference_row: str = "Global"
 ) -> plt.Axes:
     """
     Create a scatter plot showing the relationship between metric and hypothesis values.
@@ -1215,7 +1251,7 @@ def plot_scatter(
     metric_display_name = metric_col
     hypo_display_name = hypo_col
     
-    # Get all regions (including Global)
+    # Get all regions (including reference row)
     regions = df.index.tolist()
     
     # Get anomalous region info
@@ -1234,9 +1270,9 @@ def plot_scatter(
             # Use green/red for anomalous region based on whether it's a good or bad anomaly
             colors.append(COLORS['metric_positive'] if is_good_anomaly else COLORS['metric_negative'])
             sizes.append(100)  # Make anomalous region point larger
-        elif region == 'Global':
+        elif region == reference_row:
             colors.append(COLORS['global_line'])
-            sizes.append(100)  # Make Global point larger
+            sizes.append(100)  # Make reference row point larger
         else:
             colors.append(COLORS['default_bar'])
             sizes.append(70)   # Regular size for other regions
@@ -1510,7 +1546,8 @@ def score_hypotheses_for_metrics(
     regional_df: pd.DataFrame,
     anomaly_map: Dict[str, Dict[str, Any]],
     config: Dict[str, Any],
-    region_col: str = 'region'
+    region_col: str = 'region',
+    reference_row: str = "Global"
 ) -> Dict[str, Any]:
     """
     Score hypotheses for multiple metrics and return results in unified format directly.
@@ -1558,7 +1595,8 @@ def score_hypotheses_for_metrics(
                 metric_col=metric_name,
                 hypo_cols=hypothesis_names,
                 metric_anomaly_info=anomaly_info,
-                expected_directions=expected_directions
+                expected_directions=expected_directions,
+                reference_row=reference_row
             )
             
             if not hypothesis_results:
@@ -1610,7 +1648,7 @@ def score_hypotheses_for_metrics(
                 
             else:
                 # Inconclusive case - no hypothesis meets guardrails, but still show all hypotheses
-                inconclusive_template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the global mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
+                inconclusive_template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the reference mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
                 
                 template_params = {
                     'region': anomaly_info['anomalous_region'],
@@ -1643,7 +1681,7 @@ def score_hypotheses_for_metrics(
             ]
             
             # Create slide data in unified format
-            analysis_type = 'Directional'  # Changed from 'scorer' to 'Directional'
+            analysis_type = 'Directional'  
             unified_results[metric_name] = {
                 'slides': {
                     analysis_type: {
@@ -1675,7 +1713,7 @@ def score_hypotheses_for_metrics(
     return unified_results
 
 
-def main(save_path: str = '.', results_path: Optional[str] = None):
+def main(save_path: str = '.', results_path: Optional[str] = None, reference_row: str = "Global"):
     """
     Test the hypothesis scoring and visualization with multiple hypotheses.
     
@@ -1685,7 +1723,7 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     """
     # Create test data
     np.random.seed(42)
-    regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
+    regions = [reference_row, "North America", "Europe", "Asia", "Latin America"]
     
     # Create test data with multiple metrics and hypotheses (18 hypotheses to test compact view)
     data = {
@@ -1733,7 +1771,7 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
     # Create metric anomaly map using the anomaly detector
     metric_anomaly_map = {}
     for metric_col in metric_cols:
-        anomaly_info = detect_snapshot_anomaly_for_column(df, 'Global', column=metric_col)
+        anomaly_info = detect_snapshot_anomaly_for_column(df, reference_row, column=metric_col)
         if anomaly_info:
             metric_anomaly_map[metric_col] = anomaly_info
     
@@ -1865,8 +1903,8 @@ def main(save_path: str = '.', results_path: Optional[str] = None):
         )
         
         # Use the template with Jinja2 double-brace syntax
-        template = "{{metric_name}} in {{region}} is {{metric_deviation}} {{metric_dir}} than Global mean.\n"\
-                   "Root cause: {{region}} has {{hypo_delta}} {{hypo_dir}} of {{hypo_name}} than the global mean ({{ref_hypo_val}}). "\
+        template = "{{metric_name}} in {{region}} is {{metric_deviation}} {{metric_dir}} than reference mean.\n"\
+                   "Root cause: {{region}} has {{hypo_delta}} {{hypo_dir}} of {{hypo_name}} than the reference mean ({{ref_hypo_val}}). "\
                    "This suggests Account Managers have different interaction volumes, potentially impacting their ability to "\
                    "effectively manage and prioritize CLIs in their portfolio."
         
