@@ -6,6 +6,7 @@ import matplotlib.gridspec as gridspec
 import math
 from jinja2 import Template
 import scipy.stats as stats
+import textwrap
 
 
 # Color scheme for visualizations
@@ -521,7 +522,8 @@ def prepare_table_data(
     for rank, (h, h_result) in enumerate(ordered_hypos, 1):
         # Format hypothesis name
         readable_name = h.replace('_', ' ')
-        formatted_row_labels.append(readable_name)
+        wrapped_name = textwrap.fill(readable_name, width=25)
+        formatted_row_labels.append(wrapped_name)
         
         # Get values for all regions
         hypo_vals = df.loc[all_regions, h].values
@@ -772,12 +774,15 @@ def create_hypothesis_delta_table(
             # Smart height adjustment for row labels (works for both metric and hypothesis names)
             if col == -1 and row > 0:  # Row label cells
                 text_content = cell.get_text().get_text()
-                # Unified wrapping calculation
-                estimated_lines = max(1, len(text_content) // 25 + 1)
+                # Count newlines to determine wrapped lines
+                estimated_lines = text_content.count('\n') + 1
                 if estimated_lines > 1:
-                    # Dynamically increase cell height for longer text
-                    current_height = cell.get_height()
-                    cell.set_height(current_height * estimated_lines * 0.7)
+                    # Dynamically increase cell height for ALL cells in this row
+                    factor = estimated_lines * 0.85
+                    for (r2, c2), row_cell in cell_dict.items():
+                        if r2 == row:
+                            current_height = row_cell.get_height()
+                            row_cell.set_height(current_height * factor)
     
     # Apply smart wrapping to BOTH tables consistently
     apply_smart_wrapping(metric_table, "metric")
@@ -823,15 +828,25 @@ def create_hypothesis_delta_table(
     
     return fig
 
+def _needs_compact_view(
+    hypo_cols: List[str],
+    max_hypos: int = 7,
+    long_name_ref: str = "Avg CIs - Pitched/Committed -> Actioned",
+    long_name_threshold: int = 2
+) -> bool:
+    long_limit = len(long_name_ref)
+    long_count = sum(len(str(h)) > long_limit for h in hypo_cols)
+    """
+    Decide whether to switch to the compact table view instead of bar charts.
 
-
-
-
-
-def _needs_compact_view(num_hypos: int, threshold: int = 7) -> bool:
-    """Check if we need compact view based on number of hypotheses."""
-    return num_hypos > threshold
-
+    Rationale:
+    - Originally, compact view was triggered only when the hypothesis count exceeded `max_hypos`.
+    - We added a second trigger based on *name length* because very long hypothesis names
+      cause y-axis label overlap in bar charts, making them unreadable.
+    - If more than `long_name_threshold` hypothesis names are longer than `long_name_ref`,
+      we switch to compact view to preserve readability.
+    """
+    return (len(hypo_cols) > max_hypos) or (long_count >= long_name_threshold)
 
 def create_multi_hypothesis_plot(
     df: pd.DataFrame,
@@ -861,7 +876,7 @@ def create_multi_hypothesis_plot(
         matplotlib Figure object
     """
     # If too many hypotheses, fall back to compact table summary with underlying numbers
-    if _needs_compact_view(len(hypo_cols)):
+    if _needs_compact_view(hypo_cols):
         print(f"Using compact table view for {len(hypo_cols)} hypotheses (threshold: 7)")
         fig = create_hypothesis_delta_table(
             df=df,
@@ -974,7 +989,7 @@ def create_multi_hypothesis_plot(
                 ax.set_title(f"{title_prefix}: {hypo_name}", fontsize=FONTS['title']['size'])
     
     # Add score formula if included (but not for compact view)
-    if include_score_formula and not _needs_compact_view(len(hypo_cols)):
+    if include_score_formula and not _needs_compact_view(hypo_cols):
         add_score_formula(fig)
     
     return fig
