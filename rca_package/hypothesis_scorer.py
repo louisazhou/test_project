@@ -554,11 +554,16 @@ def calculate_table_colors(
 ) -> List[List[str]]:
     """Color-code hypothesis table cells based on alignment logic.
 
-    Green (positive) when the hypothesis change aligns with what we'd expect to
-    drive the *observed* metric anomaly; red otherwise.
+    Green when the hypothesis value moves toward its "desirable" side.
+    The desirability of being higher or lower depends on:
+      • metric_higher_is_better (from metric_anomaly_info)
+      • expected_direction between metric & hypothesis
+    Rule:
+       higher_is_better_hypo = metric_higher_is_better XOR (expected_direction == 'opposite')
+    So if higher_is_better_hypo==True, higher-than-global values are green;
+    otherwise lower-than-global values are green. Red represents undesirable side.
     """
-    # Determine sign of metric anomaly (+1 higher, -1 lower vs Global)
-    metric_direction_sign = 1 if metric_anomaly_info.get('direction', 'higher') == 'higher' else -1
+    metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
     row_colors: List[List[str]] = []
     
     for h, h_result in ordered_hypos:
@@ -566,6 +571,9 @@ def calculate_table_colors(
         explains = h_result['scores']['explains']
         should_color = score >= 0.5 and explains
         expected_dir = h_result.get('expected_direction', 'same')
+        
+        # Determine desirability for hypothesis values
+        higher_is_better_hypo = metric_higher_is_better if expected_dir == 'same' else not metric_higher_is_better
         
         hypo_vals = df.loc[all_regions, h].values
         global_hypo = df.loc["Global", h]
@@ -576,15 +584,10 @@ def calculate_table_colors(
             if not should_color or pd.isna(val) or pd.isna(global_hypo):
                 cell_colors.append('white')
                 continue
-            delta = val - global_hypo
-            if delta == 0:
-                cell_colors.append('white')
-                continue
-            # Desired sign for hypothesis delta given expected_dir & metric anomaly sign
-            desired_sign = metric_direction_sign if expected_dir == 'same' else -metric_direction_sign
-            is_alignment = np.sign(delta) == desired_sign
             intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
-            color = get_color_by_intensity(intensity, is_alignment)
+            is_positive_delta = val > global_hypo
+            is_desirable = is_positive_delta if higher_is_better_hypo else not is_positive_delta
+            color = get_color_by_intensity(intensity, is_desirable)
             cell_colors.append(color)
         
         # Score & Rank columns remain white
