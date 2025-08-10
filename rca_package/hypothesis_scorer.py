@@ -75,6 +75,7 @@ class HypothesisResult(TypedDict):
     direction: str
     ref_hypo_val: float
     magnitude: str
+    expected_direction: str  # 'same' or 'opposite'
     scores: HypothesisScores
 
 
@@ -238,6 +239,7 @@ def sign_based_score_hypothesis(
         'direction': 'higher' if hypo_delta > 0 else 'lower',
         'ref_hypo_val': ref_hypo_val,
         'magnitude': magnitude_str,
+        'expected_direction': expected_direction,
         'scores': {
             'sign_agreement': sign_agreement_score,
             'explained_ratio': explained_ratio,
@@ -550,35 +552,42 @@ def calculate_table_colors(
     all_regions: List[str],
     metric_anomaly_info: Dict[str, Any]
 ) -> List[List[str]]:
-    """Calculate background colors for table cells based on deviation intensity."""
-    higher_is_better = metric_anomaly_info.get('higher_is_better', True)
-    row_colors = []
+    """Color-code hypothesis table cells based on alignment logic.
+
+    Green (positive) when the hypothesis change aligns with what we'd expect to
+    drive the *observed* metric anomaly; red otherwise.
+    """
+    # Determine sign of metric anomaly (+1 higher, -1 lower vs Global)
+    metric_direction_sign = 1 if metric_anomaly_info.get('direction', 'higher') == 'higher' else -1
+    row_colors: List[List[str]] = []
     
     for h, h_result in ordered_hypos:
         score = h_result['scores']['final_score']
         explains = h_result['scores']['explains']
         should_color = score >= 0.5 and explains
+        expected_dir = h_result.get('expected_direction', 'same')
         
         hypo_vals = df.loc[all_regions, h].values
         global_hypo = df.loc["Global", h]
         
-        cell_colors = []
+        cell_colors: List[str] = []
         for i, region in enumerate(all_regions):
             val = hypo_vals[i]
-            
             if not should_color or pd.isna(val) or pd.isna(global_hypo):
                 cell_colors.append('white')
-            else:
-                intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
-                # Determine positive/negative coloring based on higher_is_better
-                if higher_is_better:
-                    is_positive = val > global_hypo  # Higher values desirable
-                else:
-                    is_positive = val < global_hypo  # Lower values desirable
-                color = get_color_by_intensity(intensity, is_positive)
-                cell_colors.append(color)
+                continue
+            delta = val - global_hypo
+            if delta == 0:
+                cell_colors.append('white')
+                continue
+            # Desired sign for hypothesis delta given expected_dir & metric anomaly sign
+            desired_sign = metric_direction_sign if expected_dir == 'same' else -metric_direction_sign
+            is_alignment = np.sign(delta) == desired_sign
+            intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
+            color = get_color_by_intensity(intensity, is_alignment)
+            cell_colors.append(color)
         
-        # Score and rank columns - no background color
+        # Score & Rank columns remain white
         cell_colors.extend(['white', 'white'])
         row_colors.append(cell_colors)
     
