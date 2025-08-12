@@ -1319,7 +1319,7 @@ def plot_scatter(
         transform=ax.transAxes,
         fontsize=FONTS['annotation']['size'],
         verticalalignment='top',
-        bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7)
+        bbox={'boxstyle': 'round,pad=0.5', 'facecolor': 'white', 'alpha': 0.7}
     )
     
     # Set axis labels using display names
@@ -1522,7 +1522,7 @@ def add_template_text(
         fontsize=fontsize,
         wrap=True,
         transform=fig.transFigure,
-        bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5')
+        bbox={'facecolor': 'white', 'alpha': 0.7, 'boxstyle': 'round,pad=0.5'}
     )
 
 
@@ -1690,7 +1690,7 @@ def score_hypotheses_for_metrics(
         anomaly_info = anomaly_map[metric_name]
         
         # Get best hypothesis info
-        best_hypo_row = metric_results[metric_results['best_hypothesis'] == True]
+        best_hypo_row = metric_results[metric_results['best_hypothesis']]
         is_conclusive = len(best_hypo_row) > 0
         
         if is_conclusive:
@@ -1698,8 +1698,8 @@ def score_hypotheses_for_metrics(
             best_hypo_dict = best_hypo_data.to_dict()  # Convert once
             template = best_hypo_data['template']
             
-            # Generate main template text
-            filled_text = render_template_text(
+            # Generate main template text 
+            main_template_text = render_template_text(
                 template=template,
                 metric_anomaly_info=anomaly_info,
                 metric_col=metric_name,
@@ -1707,14 +1707,20 @@ def score_hypotheses_for_metrics(
                 best_hypo_result=best_hypo_dict
             )
             
-            # Add additional reasons from other high-scoring hypotheses
+            # Extract summary text: only the part after "Root cause:" from template
+            if "Root cause:" in main_template_text:
+                summary_text = main_template_text.split("Root cause:", 1)[1].strip()
+            else: # This shouldn't be triggered if the yaml file is set up correctly but just in case
+                summary_text = f"{best_hypo_data['hypothesis']} is {best_hypo_data['direction']}"
+            
+            # Generate additional reasons from other high-scoring hypotheses
+            additional_reasons = []
             other_good_hypos = metric_results[
                 (metric_results['final_score'] > 0.5) & 
-                (metric_results['best_hypothesis'] == False)
+                (~metric_results['best_hypothesis'])
             ]
             
             if len(other_good_hypos) > 0:
-                additional_reasons = []
                 for idx, (_, row) in enumerate(other_good_hypos.iterrows(), 2):
                     if row['summary_template'] and row['summary_template'] != 'TBA':
                         additional_text = render_template_text(
@@ -1725,12 +1731,12 @@ def score_hypotheses_for_metrics(
                             best_hypo_result=row.to_dict()
                         )
                         additional_reasons.append(f"#{idx}: {additional_text}")
-                
-                if additional_reasons:
-                    filled_text += "\n\nOther possible reasons are: " + ", ".join(additional_reasons)
             
-            # Create simple summary text
-            summary_text = f"{best_hypo_data['hypothesis']} is {best_hypo_data['direction']}"
+            # Create filled_text: complete template + additional reasons
+            if additional_reasons:
+                filled_text = main_template_text + "\n\nOther possible reasons are: " + ", ".join(additional_reasons)
+            else:
+                filled_text = main_template_text
             template_params = create_template_params(
                 metric_anomaly_info=anomaly_info,
                 metric_name=metric_name,
@@ -1957,7 +1963,7 @@ def main(save_path: str = '.', results_path: Optional[str] = None, reference_row
         fig = plt.figure(figsize=(12, 8))
         fig.text(0.5, 0.5, f"{metric_col}\n\nInconclusive - no hypothesis meets guardrails", 
                 ha='center', va='center', fontsize=16,
-                bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.7))
+                bbox={'boxstyle': 'round,pad=1', 'facecolor': 'lightgray', 'alpha': 0.7})
         filename = f"{save_path}/inconclusive_{metric_col}.png"
         fig.savefig(filename, dpi=120, bbox_inches='tight')
         plt.close(fig)
