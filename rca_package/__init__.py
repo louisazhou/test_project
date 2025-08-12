@@ -9,7 +9,6 @@ and slide generation for root cause analysis.
 from .hypothesis_scorer import (
     score_hypotheses_for_metrics,
     score_all_hypotheses,
-    get_ranked_hypotheses,
     create_multi_hypothesis_plot,
     create_scatter_grid
 )
@@ -74,7 +73,6 @@ __all__ = [
     # Core analysis functions
     'score_hypotheses_for_metrics',
     'score_all_hypotheses',
-    'get_ranked_hypotheses',
     'create_multi_hypothesis_plot',
     'create_scatter_grid',
     
