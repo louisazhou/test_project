@@ -19,6 +19,212 @@ def get_all_regions_ordered(df: pd.DataFrame, reference_row: str = "Global") -> 
     non_ref_regions = get_non_reference_regions(df, reference_row)
     return [reference_row] + non_ref_regions
 
+
+def _calculate_region_deltas_and_colors(
+    df: pd.DataFrame,
+    metric_col: str,
+    hypo_col: str,
+    regions: List[str],
+    global_metric: float,
+    global_hypo: float,
+    metric_anomaly_info: Dict[str, Any],
+    expected_direction: str,
+    reference_row: str
+) -> Tuple[np.ndarray, np.ndarray, List[str], Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """Calculate deltas and colors for all regions in one pass."""
+    metric_deltas = []
+    hypo_deltas = []
+    valid_regions = []
+    region_colors = {}
+    region_text_colors = {}
+    region_intensities = []  # Store raw intensities for normalization
+    
+    # Get direction logic once
+    _, higher_is_better_hypo = calculate_hypothesis_direction_logic(metric_anomaly_info, expected_direction)
+    
+    for r in regions:
+        m_val = df.loc[r, metric_col]
+        h_val = df.loc[r, hypo_col]
+        if pd.isna(m_val) or pd.isna(h_val) or pd.isna(global_metric) or pd.isna(global_hypo):
+            # Skip region with missing data
+            continue
+        if global_metric == 0 or global_hypo == 0:
+            continue
+        
+        metric_delta = (m_val - global_metric) / global_metric
+        hypo_delta = (h_val - global_hypo) / global_hypo
+        
+        metric_deltas.append(metric_delta)
+        hypo_deltas.append(hypo_delta)
+        valid_regions.append(r)
+        
+        # Store raw intensity for normalization
+        intensity = abs(hypo_delta)
+        region_intensities.append((r, intensity, h_val > global_hypo))
+    
+    metric_deltas = np.array(metric_deltas)
+    hypo_deltas = np.array(hypo_deltas)
+    regions = valid_regions  # overwrite with valid regions
+    
+    # Calculate hypothesis colors using helper
+    region_colors, region_text_colors = _normalize_and_calculate_colors(
+        region_intensities, higher_is_better_hypo, include_text_colors=True
+    )
+    
+    # Calculate metric colors using same helper
+    metric_intensities = [(r, abs(metric_deltas[i]), metric_deltas[i] > 0) for i, r in enumerate(valid_regions)]
+    higher_is_better_metric = metric_anomaly_info.get('higher_is_better', True)
+    metric_colors = _normalize_and_calculate_colors(
+        metric_intensities, higher_is_better_metric, include_text_colors=False
+    )
+
+    # Add reference row and missing regions
+    all_regions_ordered = get_all_regions_ordered(df, reference_row)
+    for region in all_regions_ordered:
+        if region not in region_colors:
+            region_colors[region] = 'white'
+            region_text_colors[region] = '#808080'
+        if region not in metric_colors:
+            metric_colors[region] = 'white'
+    
+    return metric_deltas, hypo_deltas, regions, region_colors, region_text_colors, metric_colors
+
+
+def _normalize_and_calculate_colors(
+    region_intensities: List[Tuple[str, float, bool]], 
+    higher_is_better: bool,
+    include_text_colors: bool = True
+) -> Dict[str, str]:
+    """Normalize intensities and calculate colors for regions."""
+    colors = {}
+    text_colors = {} if include_text_colors else None
+    
+    max_intensity = max([intensity for _, intensity, _ in region_intensities]) if region_intensities else 1.0
+    
+    for r, raw_intensity, is_positive_delta in region_intensities:
+        normalized_intensity = min(1.0, raw_intensity / max_intensity) if max_intensity > 0 else 0.0
+        is_desirable = is_positive_delta if higher_is_better else not is_positive_delta
+        
+        bg_color, text_color = get_colors_from_intensity(normalized_intensity, is_desirable)
+        colors[r] = bg_color
+        if text_colors is not None:
+            text_colors[r] = text_color
+    
+    return (colors, text_colors) if include_text_colors else colors
+
+
+def get_colors_from_intensity(intensity: float, is_desirable: bool) -> Tuple[str, str]:
+    """Get both background and text colors from intensity and desirability."""
+    # Background color for high-score rows
+    if intensity < 0.05:
+        bg_color = 'white'
+    elif is_desirable:
+        if intensity < 0.3:
+            bg_color = '#F0F8F0'  # Very light green
+        elif intensity < 0.6:
+            bg_color = '#C8E6C9'  # Light green  
+        elif intensity < 0.8:
+            bg_color = '#81C784'  # Medium green
+        else:
+            bg_color = '#4CAF50'  # Strong green
+    else:
+        if intensity < 0.3:
+            bg_color = '#FFF0F0'  # Very light red
+        elif intensity < 0.6:
+            bg_color = '#FFCDD2'  # Light red
+        elif intensity < 0.8:
+            bg_color = '#E57373'  # Medium red
+        else:
+            bg_color = '#F44336'  # Strong red
+    
+    # Text color for low-score rows
+    if intensity < 0.6:
+        text_color = '#808080'  # Grey for low intensity
+    else:
+        text_color = '#2E7D32' if is_desirable else '#D32F2F'
+    
+    return bg_color, text_color
+
+
+def calculate_hypothesis_direction_logic(
+    metric_anomaly_info: Dict[str, Any], 
+    expected_direction: str
+) -> Tuple[bool, bool]:
+    """
+    Calculate the direction logic for hypothesis evaluation.
+    
+    Args:
+        metric_anomaly_info: Anomaly information containing higher_is_better
+        expected_direction: Expected relationship ('same' or 'opposite')
+    
+    Returns:
+        Tuple of (metric_higher_is_better, higher_is_better_hypo)
+    """
+    metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
+    higher_is_better_hypo = metric_higher_is_better if expected_direction == 'same' else not metric_higher_is_better
+    return metric_higher_is_better, higher_is_better_hypo
+
+
+def format_number_for_display(val: float, col_name: str) -> str:
+    """Centralized number formatting for consistent display across the application."""
+    if pd.isna(val):
+        return 'N/A'
+    
+    # Determine if it's a percentage column
+    is_pct = any(substr in col_name.lower() for substr in ['pct', '%', 'rate'])
+    
+    if is_pct:
+        return f"{val*100:.1f}%"
+    elif abs(val) < 1000:
+        return f"{val:.2f}"
+    else:
+        return f"{val:,.0f}"
+
+
+def format_score(score: float) -> str:
+    """Format hypothesis scores consistently."""
+    if pd.isna(score):
+        return 'N/A'
+    return f"{score:.2f}"
+
+
+def create_template_params(
+    metric_anomaly_info: Dict[str, Any],
+    metric_name: str,
+    hypo_name: Optional[str] = None,
+    hypo_result: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Create standardized template parameters for rendering.
+    
+    Args:
+        metric_anomaly_info: Anomaly information
+        metric_name: Name of the metric
+        hypo_name: Name of the hypothesis (optional)
+        hypo_result: Hypothesis result (optional)
+    
+    Returns:
+        Dictionary of template parameters
+    """
+    template_params = {
+        'region': metric_anomaly_info['anomalous_region'],
+        'metric_name': metric_name,
+        'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),
+        'metric_dir': metric_anomaly_info['direction']
+    }
+    
+    if hypo_name and hypo_result:
+        template_params.update({
+            'hypo_name': hypo_name,
+            'hypo_dir': hypo_result['direction'],
+            'hypo_delta': hypo_result['magnitude'],
+            'ref_hypo_val': hypo_result['ref_hypo_val'],
+            'score': hypo_result['final_score'],
+            'explained_ratio': hypo_result['explained_ratio'] * 100
+        })
+    
+    return template_params
+
 # Color scheme for visualizations
 COLORS: Dict[str, Union[str, Dict[str, str]]] = {
     'metric_negative': '#e74c3c',     # Red for bad metric anomalies
@@ -70,31 +276,13 @@ FONTS: Dict[str, Dict[str, Union[int, str]]] = {
     }
 }
 
-class HypothesisScores(TypedDict):
-    sign_agreement: float
-    explained_ratio: float
-    focal_region_agrees: bool
-    p_value: float
-    final_score: float
-    explains: bool
-    failure_reason: str
-
-
-class HypothesisResult(TypedDict):
-    hypo_val: float
-    direction: str
-    ref_hypo_val: float
-    magnitude: str
-    expected_direction: str  # 'same' or 'opposite'
-    scores: HypothesisScores
-
 
 def sign_based_score_hypothesis(
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
     expected_direction: str = 'same',
     reference_row: str = "Global"
-) -> HypothesisResult:
+) -> Dict[str, Any]:
     """
     Score hypothesis using sign-agreement and explained-ratio metrics,
     which is more robust with small sample sizes (4-5 regions).
@@ -114,6 +302,16 @@ def sign_based_score_hypothesis(
     anomalous_region = metric_anomaly_info['anomalous_region']
     metric_val = metric_anomaly_info['metric_val']
     ref_metric_val = metric_anomaly_info['global_val']
+
+    # Calculate deltas and colors for all regions
+    regions = get_non_reference_regions(df, reference_row)
+    global_metric = df.loc[reference_row, metric_col]
+    global_hypo = df.loc[reference_row, hypo_col]
+    
+    metric_deltas, hypo_deltas, regions, region_colors, region_text_colors, metric_colors = _calculate_region_deltas_and_colors(
+        df, metric_col, hypo_col, regions, global_metric, global_hypo, 
+        metric_anomaly_info, expected_direction, reference_row
+    )
     
     # Handle NaNs for focal/global values
     if pd.isna(metric_val) or pd.isna(ref_metric_val):
@@ -128,30 +326,6 @@ def sign_based_score_hypothesis(
         hypo_delta = np.nan
     else:
         hypo_delta = (hypo_val - ref_hypo_val) / ref_hypo_val if ref_hypo_val != 0 else np.nan
-    
-    # Calculate sign agreement for all regions
-    regions = get_non_reference_regions(df, reference_row)
-    global_metric = df.loc[reference_row, metric_col]
-    global_hypo = df.loc[reference_row, hypo_col]
-    
-    # Calculate deltas for all regions compared to global with NaN handling
-    metric_deltas = []
-    hypo_deltas = []
-    valid_regions = []
-    for r in regions:
-        m_val = df.loc[r, metric_col]
-        h_val = df.loc[r, hypo_col]
-        if pd.isna(m_val) or pd.isna(h_val) or pd.isna(global_metric) or pd.isna(global_hypo):
-            # Skip region with missing data
-            continue
-        if global_metric == 0 or global_hypo == 0:
-            continue
-        metric_deltas.append((m_val - global_metric) / global_metric)
-        hypo_deltas.append((h_val - global_hypo) / global_hypo)
-        valid_regions.append(r)
-    metric_deltas = np.array(metric_deltas)
-    hypo_deltas = np.array(hypo_deltas)
-    regions = valid_regions  # overwrite with valid regions
     
     # Adjust sign for expected direction
     if expected_direction == 'opposite':
@@ -228,7 +402,7 @@ def sign_based_score_hypothesis(
             reasons.append("missing data")
         failure_reason = ", ".join(reasons)
     
-    # Format magnitude based on column name (same as original function)
+    # Format magnitude based on column name 
     is_percent_column = '_pct' in hypo_col or '%' in hypo_col
     if pd.isna(hypo_val) or pd.isna(ref_hypo_val):
         magnitude_str = 'N/A'
@@ -256,6 +430,11 @@ def sign_based_score_hypothesis(
             'final_score': final_score,
             'explains': meets_guardrails,
             'failure_reason': failure_reason
+        },
+        'colors': {
+            'background_colors': region_colors,
+            'text_colors': region_text_colors,
+            'metric_colors': metric_colors
         }
     }
 
@@ -264,7 +443,7 @@ def plot_bars(
     ax: plt.Axes, 
     df: pd.DataFrame, 
     metric_anomaly_info: Dict[str, Any], 
-    hypo_result: Optional[HypothesisResult] = None, 
+    hypo_result: Optional[Dict[str, Any]] = None, 
     plot_type: str = 'metric',
     highlight_region: bool = True,
     reference_row: str = "Global"
@@ -353,9 +532,9 @@ def plot_bars(
         if pd.isna(val):
             ax.text(i, 0, 'N/A', ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
         else:
-            display_val = val * 100 if is_percent else val
-            format_str = '{:.1f}%' if is_percent else '{:.1f}'
-            ax.text(i, val, format_str.format(display_val), ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
+            # Use centralized formatting
+            formatted_val = format_number_for_display(val, col_to_plot)
+            ax.text(i, val, formatted_val, ha='center', va='bottom', fontsize=FONTS['tick_label']['size'])
     
     # Set y-axis label using display name
     ax.set_ylabel(display_name, fontsize=FONTS['axis_label']['size'])
@@ -374,14 +553,12 @@ def plot_bars(
     ax.set_ylim(y_min, y_max + (y_range * 0.25))
     
     # Add score components for hypothesis plot
-    if plot_type == 'hypothesis' and hypo_result and hypo_result['scores']:
-        scores = hypo_result['scores']
-        
-        # Always use sign-based scoring
+    if plot_type == 'hypothesis' and hypo_result and 'final_score' in hypo_result:
+        # Handle flattened structure (from DataFrame rows)
         components = [
-            ('final_score', scores['final_score']),
-            ('sign_agreement', scores['sign_agreement']),
-            ('explained_ratio', scores['explained_ratio'])
+            ('final_score', hypo_result['final_score']),
+            ('sign_agreement', hypo_result.get('sign_agreement', 0.0)),
+            ('explained_ratio', hypo_result.get('explained_ratio', 0.0))
         ]
         
         # Calculate positions - place cards near the top of the axes
@@ -476,151 +653,6 @@ def create_scatter_grid(
     
     return fig
 
-
-def calculate_color_intensity(val: float, global_val: float, all_values: np.ndarray) -> float:
-    """Calculate color intensity based on relative deviation across all values."""
-    if pd.isna(val) or pd.isna(global_val) or global_val == 0:
-        return 0.0
-    
-    deviation = abs((val - global_val) / global_val)
-    deviations = [abs((v - global_val) / global_val) for v in all_values if not pd.isna(v) and global_val != 0]
-    if not deviations:
-        return 0.0
-    max_deviation = max(deviations)
-    
-    if max_deviation == 0:
-        return 0.0
-    
-    return min(1.0, deviation / max_deviation)
-
-
-def get_color_by_intensity(intensity: float, is_positive: bool) -> str:
-    """Get color based on intensity level and direction."""
-    if intensity < 0.05:  # Very small deviations
-        return 'white'
-    
-    if is_positive:
-        # Green shades from light to dark
-        if intensity < 0.3:
-            return '#F0F8F0'  # Very light green
-        elif intensity < 0.6:
-            return '#C8E6C9'  # Light green  
-        elif intensity < 0.8:
-            return '#81C784'  # Medium green
-        else:
-            return '#4CAF50'  # Strong green
-    else:
-        # Red shades from light to dark
-        if intensity < 0.3:
-            return '#FFF0F0'  # Very light red
-        elif intensity < 0.6:
-            return '#FFCDD2'  # Light red
-        elif intensity < 0.8:
-            return '#E57373'  # Medium red
-        else:
-            return '#F44336'  # Strong red
-
-
-def get_text_color_for_low_score(intensity: float, is_positive: bool) -> str:
-    """Get text color for low-score hypothesis rows. Only color high intensity values."""
-    # Only color high intensity values (>= 0.6)
-    if intensity < 0.6:
-        return '#808080'  # Grey for low intensity values
-    
-    if is_positive:
-        return '#2E7D32'  # Dark green for text
-    else:
-        return '#D32F2F'  # Dark red for text
-
-
-def prepare_table_data(
-    df: pd.DataFrame,
-    ordered_hypos: List[Tuple[str, HypothesisResult]],
-    all_regions: List[str]
-) -> Tuple[List[List[str]], List[str]]:
-    """Prepare formatted data for hypothesis table display."""
-    rows = []
-    formatted_row_labels = []
-    
-    for rank, (h, h_result) in enumerate(ordered_hypos, 1):
-        # Format hypothesis name
-        readable_name = h.replace('_', ' ')
-        wrapped_name = textwrap.fill(readable_name, width=25)
-        formatted_row_labels.append(wrapped_name)
-        
-        # Get values for all regions
-        hypo_vals = df.loc[all_regions, h].values
-        
-        # Format values based on column type
-        is_pct = any(substr in h.lower() for substr in ['pct', '%', 'rate'])
-        if is_pct:
-            formatted_vals = [f"{val*100:.1f}%" for val in hypo_vals]
-        else:
-            formatted_vals = [f"{val:.2f}" if abs(val) < 1000 else f"{val:,.0f}" for val in hypo_vals]
-        
-        # Add score and rank columns
-        score_val = h_result['scores']['final_score']
-        formatted_vals.extend([f"{score_val:.2f}", str(rank)])
-        
-        rows.append(formatted_vals)
-    
-    return rows, formatted_row_labels
-
-
-def calculate_table_colors(
-    df: pd.DataFrame, 
-    ordered_hypos: List[Tuple[str, HypothesisResult]], 
-    all_regions: List[str],
-    metric_anomaly_info: Dict[str, Any],
-    reference_row: str = "Global"
-) -> List[List[str]]:
-    """Simplified color calculation for hypothesis table background colors.
-
-    Only applies background coloring for score >= 0.5 rows:
-    - Green when the hypothesis value moves toward its "desirable" side
-    - Red when the hypothesis value moves away from its "desirable" side
-    - White background for score < 0.5 rows (text coloring handled separately)
-    
-    The desirability direction is determined by:
-      • metric_higher_is_better (from metric_anomaly_info)
-      • expected_direction between metric & hypothesis
-    Rule:
-       higher_is_better_hypo = metric_higher_is_better XOR (expected_direction == 'opposite')
-    """
-    metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
-    row_colors: List[List[str]] = []
-    
-    for h, h_result in ordered_hypos:
-        score = h_result['scores']['final_score']
-        # Simplified: only color background for high-score rows
-        should_color_background = score >= 0.5
-        expected_dir = h_result.get('expected_direction', 'same')
-        
-        # Determine desirability for hypothesis values
-        higher_is_better_hypo = metric_higher_is_better if expected_dir == 'same' else not metric_higher_is_better
-        
-        hypo_vals = df.loc[all_regions, h].values
-        global_hypo = df.loc[reference_row, h]
-        
-        cell_colors: List[str] = []
-        for i, region in enumerate(all_regions):
-            val = hypo_vals[i]
-            if not should_color_background or pd.isna(val) or pd.isna(global_hypo):
-                cell_colors.append('white')
-                continue
-            intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
-            is_positive_delta = val > global_hypo
-            is_desirable = is_positive_delta if higher_is_better_hypo else not is_positive_delta
-            color = get_color_by_intensity(intensity, is_desirable)
-            cell_colors.append(color)
-        
-        # Score & Rank columns remain white
-        cell_colors.extend(['white', 'white'])
-        row_colors.append(cell_colors)
-    
-    return row_colors
-
-
 def calculate_tight_table_dimensions(
     all_regions: List[str], 
     formatted_row_labels: List[str], 
@@ -682,8 +714,7 @@ def calculate_tight_table_dimensions(
 
 def create_hypothesis_delta_table(
     df: pd.DataFrame,
-    ordered_hypos: List[Tuple[str, HypothesisResult]],
-    metric_anomaly_info: Dict[str, Any],
+    results_df: pd.DataFrame,
     metric_col: str,
     fontsize: int = 10,
     reference_row: str = "Global"
@@ -694,13 +725,26 @@ def create_hypothesis_delta_table(
     with consistent width calculations and smart wrapping applied uniformly.
     """
     # Extract basic info
-    anomalous_region = metric_anomaly_info['anomalous_region']
-    regions = get_non_reference_regions(df, reference_row)
     all_regions = get_all_regions_ordered(df, reference_row)
     
-    # Use helper functions for data processing (separation of concerns)
-    table_rows, formatted_row_labels = prepare_table_data(df, ordered_hypos, all_regions)
-    row_colors = calculate_table_colors(df, ordered_hypos, all_regions, metric_anomaly_info, reference_row)
+    # Extract table data directly from DataFrame (use original metric name for filtering)
+    metric_results = results_df[results_df['metric'] == metric_col].sort_values('rank')
+    
+    # Get wrapped metric name for display (if available)
+    wrapped_metric_name = metric_results.iloc[0]['wrapped_metric'] if len(metric_results) > 0 and 'wrapped_metric' in metric_results.columns else textwrap.fill(metric_col.replace('_', ' '), width=25)
+    
+    table_rows = []
+    formatted_row_labels = []
+    
+    for _, row in metric_results.iterrows():
+        # Use hypothesis name from DataFrame (already wrapped)
+        formatted_row_labels.append(row['hypothesis'])
+        
+        # Build row data: regional values + score + rank
+        formatted_regional_values = row['formatted_regional_values']
+        row_data = [formatted_regional_values[region] for region in all_regions]
+        row_data.extend([row['score'], str(row['rank'])])
+        table_rows.append(row_data)
     
     # TIGHT SIZING: Calculate minimal dimensions for maximum space utilization
     table_width, table_height = calculate_tight_table_dimensions(
@@ -736,18 +780,13 @@ def create_hypothesis_delta_table(
     
     # === METRIC TABLE (simplified) ===
     metric_vals = df.loc[all_regions, metric_col].values
-    global_metric = df.loc[reference_row, metric_col]
-    is_pct_metric = any(substr in metric_col.lower() for substr in ['pct', '%', 'rate'])
-    
-    if is_pct_metric:
-        metric_data = [[f"{val*100:.1f}%" for val in metric_vals]]
-    else:
-        metric_data = [[f"{val:.2f}" if abs(val) < 1000 else f"{val:,.0f}" for val in metric_vals]]
+
+    metric_data = [[format_number_for_display(val, metric_col) for val in metric_vals]]
     
     metric_table = ax1.table(
         cellText=metric_data,
         colLabels=all_regions,
-        rowLabels=[metric_col],
+        rowLabels=[wrapped_metric_name],
         loc='center',
         cellLoc='center'
     )
@@ -762,17 +801,15 @@ def create_hypothesis_delta_table(
     # More compact scaling for better space utilization
     metric_table.scale(1.0, 1.2)  # Reduced vertical scaling
     
-    # Color metric cells using existing color calculation logic
-    for i, region in enumerate(all_regions):
-        val = df.loc[region, metric_col]
-        intensity = calculate_color_intensity(val, global_metric, metric_vals)
-        is_positive = (val > global_metric and metric_anomaly_info.get('higher_is_better', True)) or \
-                     (val < global_metric and not metric_anomaly_info.get('higher_is_better', True))
-        color = get_color_by_intensity(intensity, is_positive)
-        metric_table[(1, i)].set_facecolor(color)
-        
-        if region == anomalous_region:
-            metric_table[(1, i)].set_text_props(weight='bold')
+    # Color metric cells using metric colors from first hypothesis result
+    if len(metric_results) > 0:
+        first_row = metric_results.iloc[0]
+        # Get metric colors from the DataFrame
+        if 'metric_colors' in first_row and isinstance(first_row['metric_colors'], dict):
+            metric_colors = first_row['metric_colors']
+            for i, region in enumerate(all_regions):
+                color = metric_colors.get(region, 'white')
+                metric_table[(1, i)].set_facecolor(color)
     
     # Bold headers
     for i in range(len(all_regions)):
@@ -783,7 +820,7 @@ def create_hypothesis_delta_table(
              fontsize=FONTS['title']['size'], ha='center', va='bottom',
              transform=ax1.transAxes, weight='normal')
     
-    # === HYPOTHESIS TABLE (using prepared data) ===
+    # === HYPOTHESIS TABLE (using data extracted above) ===
     hypo_table = ax2.table(
         cellText=table_rows,
         colLabels=all_regions + ["Score", "Rank"],
@@ -828,38 +865,50 @@ def create_hypothesis_delta_table(
     # More compact scaling for better space utilization
     hypo_table.scale(1.0, 1.1)  # Reduced from 1.3 to 1.1 for tighter layout
     
-    # Apply colors and styling
-    for i, (h, h_result) in enumerate(ordered_hypos):
-        score = h_result['scores']['final_score']
+    # Apply colors and styling using DataFrame data
+    for i, (_, row) in enumerate(metric_results.iterrows()):
+        score = row['final_score']
+        background_colors = row['background_colors']
+        text_colors = row['text_colors']
         
-        # Apply background colors (already handles score >= 0.5 vs < 0.5 logic)
-        for j, color in enumerate(row_colors[i]):
+        # Build row colors: background colors for regions + white for score/rank
+        row_colors = []
+        if score >= 0.5:
+            # Use background colors for high-score rows
+            for region in all_regions:
+                row_colors.append(background_colors.get(region, 'white'))
+        else:
+            # White background for low-score rows
+            row_colors = ['white'] * len(all_regions)
+        
+        # Add white for score and rank columns
+        row_colors.extend(['white', 'white'])
+        
+        # Apply background colors
+        for j, color in enumerate(row_colors):
             hypo_table[(i+1, j)].set_facecolor(color)
         
-        # For low-score rows, add text coloring
+        # For low-score rows: apply text colors from DataFrame (already computed)
         if score < 0.5:
-            expected_dir = h_result.get('expected_direction', 'same')
-            metric_higher_is_better = metric_anomaly_info.get('higher_is_better', True)
-            higher_is_better_hypo = metric_higher_is_better if expected_dir == 'same' else not metric_higher_is_better
-            hypo_vals = df.loc[all_regions, h].values
-            global_hypo = df.loc[reference_row, h]
+            text_colors = row['text_colors']
             
-            for j in range(len(all_regions)):  # Only region columns
-                val = hypo_vals[j]
-                if not pd.isna(val) and not pd.isna(global_hypo):
-                    intensity = calculate_color_intensity(val, global_hypo, hypo_vals)
-                    is_positive_delta = val > global_hypo
-                    is_desirable = is_positive_delta if higher_is_better_hypo else not is_positive_delta
-                    text_color = get_text_color_for_low_score(intensity, is_desirable)
-                    hypo_table[(i+1, j)].set_text_props(color=text_color)
+            # Apply text colors to region columns
+            for j, region in enumerate(all_regions):
+                text_color = text_colors.get(region, '#808080')
+                hypo_table[(i+1, j)].set_text_props(color=text_color)
+            
+            # Gray out Score and Rank columns for low-score rows
+            for j in range(len(all_regions), len(all_regions) + 2):
+                hypo_table[(i+1, j)].set_text_props(color='#808080')
     
     # Style headers and row labels
     for (row, col), cell in hypo_table.get_celld().items():
         if row == 0:  # Headers
             cell.set_text_props(weight='bold')
         elif col == -1 and row > 0:  # Row labels
-            h, h_result = ordered_hypos[row-1]
-            score = h_result['scores']['final_score']
+            # Get score from DataFrame
+            result_row = metric_results.iloc[row-1]
+            score = result_row['final_score']
             is_low_score = score < 0.5
             
             if is_low_score:
@@ -873,32 +922,38 @@ def create_hypothesis_delta_table(
     
     return fig
 
-def _needs_compact_view(
+def get_compact_view_decision(
     hypo_cols: List[str],
     max_hypos: int = 7,
     long_name_ref: str = "Avg CIs - Pitched/Committed -> Actioned",
     long_name_threshold: int = 2
-) -> bool:
+) -> Tuple[bool, str]:
+    """
+    Decide whether to use compact view and get the reason why.
+    
+    Returns:
+        Tuple of (needs_compact_view, reason_string)
+    """
     long_limit = len(long_name_ref)
     long_count = sum(len(str(h)) > long_limit for h in hypo_cols)
-    """
-    Decide whether to switch to the compact table view instead of bar charts.
-
-    Rationale:
-    - Originally, compact view was triggered only when the hypothesis count exceeded `max_hypos`.
-    - We added a second trigger based on *name length* because very long hypothesis names
-      cause y-axis label overlap in bar charts, making them unreadable.
-    - If more than `long_name_threshold` hypothesis names are longer than `long_name_ref`,
-      we switch to compact view to preserve readability.
-    """
-    return (len(hypo_cols) > max_hypos) or (long_count >= long_name_threshold)
+    
+    triggers = []
+    if len(hypo_cols) > max_hypos:
+        triggers.append(f"too many hypotheses ({len(hypo_cols)} > {max_hypos})")
+    if long_count >= long_name_threshold:
+        triggers.append(f"long hypothesis names ({long_count} hypotheses longer than {long_limit} chars)")
+    
+    needs_compact = len(triggers) > 0
+    reason = " and ".join(triggers) if triggers else ""
+    
+    return needs_compact, reason
 
 def create_multi_hypothesis_plot(
     df: pd.DataFrame,
     metric_col: str,
     hypo_cols: List[str],
     metric_anomaly_info: Dict[str, Any],
-    ordered_hypos: List[Tuple[str, HypothesisResult]],
+    ordered_hypos: List[Tuple[str, Dict[str, Any]]],
     figsize: Tuple[int, int] = (18, 10),
     include_score_formula: bool = True,
     is_conclusive: bool = True
@@ -920,13 +975,39 @@ def create_multi_hypothesis_plot(
     Returns:
         matplotlib Figure object
     """
-    # If too many hypotheses, fall back to compact table summary with underlying numbers
-    if _needs_compact_view(hypo_cols):
-        print(f"Using compact table view for {len(hypo_cols)} hypotheses (threshold: 7)")
+    # Check if we need compact view and get the reason
+    needs_compact, compact_reason = get_compact_view_decision(hypo_cols)
+    if needs_compact:
+        print(f"Using compact table view due to {compact_reason} - this avoids text overlap and improves readability")
+        # Create mini results DataFrame for this metric (temporary solution)
+        mini_results = []
+        all_regions = get_all_regions_ordered(df)
+        
+        for rank, (hypo_name, hypo_result) in enumerate(ordered_hypos, 1):
+            # Apply wrapping to both metric and hypothesis names for display
+            wrapped_metric = textwrap.fill(metric_col.replace('_', ' '), width=25)
+            wrapped_hypothesis = textwrap.fill(hypo_name.replace('_', ' '), width=25)
+            
+            mini_results.append({
+                'metric': metric_col,  # Original for filtering/building
+                'wrapped_metric': wrapped_metric,  # Wrapped for display
+                'hypothesis': wrapped_hypothesis,  # Wrapped for display
+                'rank': rank,
+                'score': format_score(hypo_result['final_score']),  # Formatted score
+                'final_score': hypo_result['final_score'],  # Raw score for styling logic
+                'background_colors': hypo_result['background_colors'],
+                'text_colors': hypo_result['text_colors'],
+                'metric_colors': hypo_result.get('metric_colors', {}),  # Add metric colors directly
+                'formatted_regional_values': {
+                    region: format_number_for_display(df.loc[region, hypo_name], hypo_name) 
+                    for region in all_regions
+                }
+            })
+        mini_df = pd.DataFrame(mini_results)
+        
         fig = create_hypothesis_delta_table(
             df=df,
-            ordered_hypos=ordered_hypos,
-            metric_anomaly_info=metric_anomaly_info,
+            results_df=mini_df,
             metric_col=metric_col,
             fontsize=10
         )
@@ -1034,7 +1115,8 @@ def create_multi_hypothesis_plot(
                 ax.set_title(f"{title_prefix}: {hypo_name}", fontsize=FONTS['title']['size'])
     
     # Add score formula if included (but not for compact view)
-    if include_score_formula and not _needs_compact_view(hypo_cols):
+    needs_compact, _ = get_compact_view_decision(hypo_cols)
+    if include_score_formula and not needs_compact:
         add_score_formula(fig)
     
     return fig
@@ -1047,7 +1129,7 @@ def score_all_hypotheses(
     metric_anomaly_info: Dict[str, Any],
     expected_directions: Dict[str, str],
     reference_row: str = "Global"
-) -> Dict[str, HypothesisResult]:
+) -> Dict[str, Dict[str, Any]]:
     """
     Score all hypotheses for a given metric using sign-based scoring.
     
@@ -1085,8 +1167,9 @@ def process_metrics(
     metric_cols: List[str],
     metric_anomaly_map: Dict[str, Dict[str, Any]],
     expected_directions: Dict[str, str],
-    metric_hypothesis_map: Dict[str, List[str]]
-) -> Dict[str, Dict[str, HypothesisResult]]:
+    metric_hypothesis_map: Dict[str, List[str]],
+    reference_row: str = "Global"
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """
     Process multiple metrics and their hypotheses, storing results for each.
     
@@ -1125,102 +1208,14 @@ def process_metrics(
             metric_col, 
             current_hypo_cols, 
             metric_anomaly_info, 
-            expected_directions
+            expected_directions,
+            reference_row
         )
         
         # Store results for this metric
         all_results[metric_col] = hypo_results
     
     return all_results
-
-
-def get_ranked_hypotheses(hypo_results: Dict[str, HypothesisResult]) -> List[Tuple[str, HypothesisResult]]:
-    """
-    Rank hypotheses by their final score in descending order.
-    
-    Args:
-        hypo_results: Dictionary mapping hypothesis names to their score results
-    
-    Returns:
-        List of (hypothesis_name, result) tuples sorted by final score in descending order
-    """
-    # Convert to list of tuples for sorting
-    hypo_list = [(name, result) for name, result in hypo_results.items()]
-    
-    # Sort by final score in descending order
-    hypo_list.sort(key=lambda x: x[1]['scores']['final_score'], reverse=True)
-    
-    return hypo_list
-
-
-def rank_with_guardrail(hypo_results: Dict[str, HypothesisResult]) -> Union[List[Tuple[str, HypothesisResult]], str]:
-    """
-    Apply guardrail filtering before ranking hypotheses.
-    
-    Args:
-        hypo_results: Dictionary mapping hypothesis names to their score results
-    
-    Returns:
-        List of (hypothesis_name, result) tuples sorted by final score, or "Inconclusive" if none pass guardrails
-    """
-    # Apply guardrail filter by checking the 'explains' flag
-    qualified = {h: r for h, r in hypo_results.items() if r['scores']['explains']}
-    
-    if not qualified:
-        return "Inconclusive – no hypothesis meets guardrails"
-    else:
-        return get_ranked_hypotheses(qualified)
-
-
-def save_results_to_dataframe(all_results: Dict[str, Dict[str, HypothesisResult]]) -> pd.DataFrame:
-    """
-    Convert scoring results to a pandas DataFrame for easy analysis and storage.
-    
-    Args:
-        all_results: Dictionary mapping metrics to dictionaries of hypothesis results
-        
-    Returns:
-        DataFrame with metrics, hypotheses, and scores
-    """
-    # Create empty lists to store data
-    records = []
-    
-    # Iterate through all metrics and hypotheses
-    for metric_name, hypo_results in all_results.items():
-        for hypo_name, result in hypo_results.items():
-            # Extract scores
-            scores = result['scores']
-            
-            # Create record with common fields
-            record = {
-                'metric': metric_name,
-                'hypothesis': hypo_name,
-                'final_score': scores['final_score'],
-                'explains': scores['explains'],
-                'failure_reason': scores['failure_reason'],
-                'magnitude': result['magnitude'],
-                'direction': result['direction'],
-                'ref_hypo_val': result['ref_hypo_val'],
-                'hypo_val': result['hypo_val'],
-            }
-              
-            record.update({
-                    'sign_agreement': scores['sign_agreement'],
-                    'explained_ratio': scores['explained_ratio'],
-                    'p_value': scores['p_value']
-                })
-              
-            # Add record to list
-            records.append(record)
-    
-    # Convert records to DataFrame
-    df_results = pd.DataFrame(records)
-    
-    # Sort by metric and final_score (descending)
-    df_results = df_results.sort_values(['metric', 'final_score'], ascending=[True, False])
-    
-    return df_results
-
 
 def plot_scatter(
     ax: plt.Axes,
@@ -1452,7 +1447,7 @@ def render_template_text(
     metric_anomaly_info: Dict[str, Any],
     metric_col: str,
     best_hypo_name: Optional[str] = None,
-    best_hypo_result: Optional[HypothesisResult] = None
+    best_hypo_result: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Render a Jinja2 template with values from the results.
@@ -1467,23 +1462,12 @@ def render_template_text(
     Returns:
         Rendered text string
     """
-    # Prepare template values - only include what's actually in the template
-    context: Dict[str, Any] = {
-        'region': metric_anomaly_info['anomalous_region'],
-        'metric_name': metric_col,
-        'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),  # Use string magnitude directly
-        'metric_dir': metric_anomaly_info['direction'],
-    }
-    
-    if best_hypo_name and best_hypo_result:
-        context.update({
-            'hypo_name': best_hypo_name,
-            'hypo_dir': best_hypo_result['direction'],
-            'hypo_delta': best_hypo_result['magnitude'],
-            'ref_hypo_val': best_hypo_result['ref_hypo_val'],
-            'score': best_hypo_result['scores']['final_score'],
-            'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
-        })
+    context = create_template_params(
+        metric_anomaly_info=metric_anomaly_info,
+        metric_name=metric_col,
+        hypo_name=best_hypo_name,
+        hypo_result=best_hypo_result
+    )
     
     # Fill template with values using Jinja2 Template
     try:
@@ -1502,7 +1486,7 @@ def add_template_text(
     metric_anomaly_info: Dict[str, Any],
     metric_col: str,
     best_hypo_name: Optional[str] = None,
-    best_hypo_result: Optional[HypothesisResult] = None, 
+    best_hypo_result: Optional[Dict[str, Any]] = None, 
     position: Tuple[float, float] = (0.05, 0.85),  # Moved down from 0.97 to 0.85 to reduce spacing
     max_width: float = 0.9,
     fontsize: int = 12
@@ -1542,18 +1526,146 @@ def add_template_text(
     )
 
 
+def create_consolidated_results_dataframe(
+    regional_df: pd.DataFrame,
+    anomaly_map: Dict[str, Dict[str, Any]],
+    config: Dict[str, Any],
+    reference_row: str = "Global"
+) -> pd.DataFrame:
+    """
+    Create a consolidated DataFrame with all hypothesis scoring results.
+    
+    This is the single source of truth for all scoring results with proper
+    ranking, conclusiveness determination, and template information.
+    
+    Returns:
+        DataFrame with columns: metric, hypothesis, final_score, explains, 
+        conclusive, rank, best_hypothesis, template, summary_template, etc.
+    """
+    metrics_config = config.get('metrics', {})
+    
+    # Extract metric columns and create mappings
+    metric_cols = []
+    metric_hypothesis_map = {}
+    expected_directions = {}
+    
+    for metric_name, metric_config in metrics_config.items():
+        if 'hypotheses' not in metric_config:
+            continue
+        if metric_name not in anomaly_map:
+            continue
+            
+        metric_cols.append(metric_name)
+        hypothesis_names = list(metric_config['hypotheses'].keys())
+        metric_hypothesis_map[metric_name] = hypothesis_names
+        
+        # Get expected directions
+        for hypo_name, hypo_config in metric_config['hypotheses'].items():
+            expected_directions[hypo_name] = hypo_config.get('expected_direction', 'same')
+    
+    # Use existing process_metrics function
+    all_results = process_metrics(
+        df=regional_df,
+        metric_cols=metric_cols,
+        metric_anomaly_map=anomaly_map,
+        expected_directions=expected_directions,
+        metric_hypothesis_map=metric_hypothesis_map,
+        reference_row=reference_row
+    )
+    
+    # Create basic results DataFrame 
+    records = []
+    for metric_name, hypo_results in all_results.items():
+        for hypo_name, result in hypo_results.items():
+            scores = result['scores']
+            record = {
+                'metric': metric_name,
+                'hypothesis': hypo_name,
+                'final_score': scores['final_score'],
+                'explains': scores['explains'],
+                'failure_reason': scores['failure_reason'],
+                'magnitude': result['magnitude'],
+                'direction': result['direction'],
+                'ref_hypo_val': result['ref_hypo_val'],
+                'hypo_val': result['hypo_val'],
+                'sign_agreement': scores['sign_agreement'],
+                'explained_ratio': scores['explained_ratio'],
+                'p_value': scores['p_value']
+            }
+            records.append(record)
+    
+    results_df = pd.DataFrame(records)
+    
+    # Add ranking and enhanced information directly
+    enhanced_records = []
+    for metric_name in metric_cols:
+        if metric_name not in all_results:
+            continue
+            
+        hypo_results = all_results[metric_name]
+        metric_config = metrics_config[metric_name]
+        
+        # Sort hypotheses by final score (descending)
+        sorted_hypos = sorted(hypo_results.items(), key=lambda x: x[1]['scores']['final_score'], reverse=True)
+        
+        # Determine conclusiveness (any hypothesis meets guardrails)
+        qualified_hypos = [h for h, r in sorted_hypos if r['scores']['explains']]
+        is_conclusive = len(qualified_hypos) > 0
+        
+        for rank, (hypo_name, hypo_result) in enumerate(sorted_hypos, 1):
+            # Find the base record in results_df
+            base_record = results_df[
+                (results_df['metric'] == metric_name) & 
+                (results_df['hypothesis'] == hypo_name)
+            ].iloc[0].to_dict()
+            
+            # Add enhanced information and formatted columns
+            hypo_config = metric_config['hypotheses'][hypo_name]
+            base_record.update({
+                'rank': rank,
+                'conclusive': is_conclusive,
+                'best_hypothesis': is_conclusive and rank == 1,
+                'template': hypo_config.get('template', ''),
+                'summary_template': hypo_config.get('summary_template', ''),
+                'technical_name': hypo_config.get('technical_name', hypo_name),
+                'expected_direction': hypo_config.get('expected_direction', 'same'),
+                'background_colors': hypo_result.get('colors', {}).get('background_colors', {}),
+                'text_colors': hypo_result.get('colors', {}).get('text_colors', {}),
+                'metric_colors': hypo_result.get('colors', {}).get('metric_colors', {}),
+                # Add formatted display columns
+                'formatted_score': format_score(base_record['final_score']),
+                'formatted_rank': str(rank),
+                'formatted_hypo_val': format_number_for_display(base_record['hypo_val'], hypo_name),
+                'formatted_ref_hypo_val': format_number_for_display(base_record['ref_hypo_val'], hypo_name),
+                # Add formatted regional values
+                'formatted_regional_values': {
+                    region: format_number_for_display(regional_df.loc[region, hypo_name], hypo_name) 
+                    for region in get_all_regions_ordered(regional_df, reference_row)
+                }
+            })
+            
+            enhanced_records.append(base_record)
+    
+    # Create enhanced DataFrame
+    enhanced_df = pd.DataFrame(enhanced_records)
+    
+    # Sort by metric, then by rank
+    enhanced_df = enhanced_df.sort_values(['metric', 'rank']).reset_index(drop=True)
+    
+    return enhanced_df
+
+
 def score_hypotheses_for_metrics(
     regional_df: pd.DataFrame,
     anomaly_map: Dict[str, Dict[str, Any]],
     config: Dict[str, Any],
-    region_col: str = 'region',
     reference_row: str = "Global"
 ) -> Dict[str, Any]:
     """
     Score hypotheses for multiple metrics and return results in unified format directly.
     
     Args:
-        regional_df: DataFrame with regional data
+        regional_df: DataFrame with regional data, indexed by region
         anomaly_map: Dictionary mapping metric names to anomaly information
         config: Full configuration dictionary
         region_col: Name of the region column
@@ -1561,154 +1673,115 @@ def score_hypotheses_for_metrics(
     Returns:
         Dictionary in unified format: {metric_name: {'slides': {'Directional': slide_data}}}
     """
-    metrics_config = config.get('metrics', {})
+    # Create consolidated results DataFrame - single source of truth
+    results_df = create_consolidated_results_dataframe(
+        regional_df=regional_df,
+        anomaly_map=anomaly_map,
+        config=config,
+        reference_row=reference_row
+    )
+    
+    # Convert to the unified format expected by downstream systems
     unified_results = {}
     
-    for metric_name, metric_config in metrics_config.items():
-        # Skip metrics without hypotheses
-        if 'hypotheses' not in metric_config:
-            continue
+    # Process each metric using the consolidated DataFrame
+    for metric_name in results_df['metric'].unique():
+        metric_results = results_df[results_df['metric'] == metric_name]
+        anomaly_info = anomaly_map[metric_name]
+        
+        # Get best hypothesis info
+        best_hypo_row = metric_results[metric_results['best_hypothesis'] == True]
+        is_conclusive = len(best_hypo_row) > 0
+        
+        if is_conclusive:
+            best_hypo_data = best_hypo_row.iloc[0]
+            best_hypo_dict = best_hypo_data.to_dict()  # Convert once
+            template = best_hypo_data['template']
             
-        # Skip metrics not in anomaly map
-        if metric_name not in anomaly_map:
-            continue
-            
-        try:
-            # Get anomaly information
-            anomaly_info = anomaly_map[metric_name]
-            anomalous_region = anomaly_info.get('anomalous_region')
-            
-            if not anomalous_region:
-                continue
-            
-            # Get hypotheses for this metric
-            hypothesis_names = list(metric_config['hypotheses'].keys())
-            
-            # Get expected directions from config
-            expected_directions = {}
-            for hypo_name, hypo_config in metric_config['hypotheses'].items():
-                expected_directions[hypo_name] = hypo_config.get('expected_direction', 'same')
-            
-            # Score all hypotheses using existing function
-            hypothesis_results = score_all_hypotheses(
-                df=regional_df,
-                metric_col=metric_name,
-                hypo_cols=hypothesis_names,
+            # Generate main template text
+            filled_text = render_template_text(
+                template=template,
                 metric_anomaly_info=anomaly_info,
-                expected_directions=expected_directions,
-                reference_row=reference_row
+                metric_col=metric_name,
+                best_hypo_name=best_hypo_data['hypothesis'],
+                best_hypo_result=best_hypo_dict
             )
             
-            if not hypothesis_results:
-                continue
-            
-            # Get all hypotheses ranked by score (regardless of guardrail)
-            all_ranked_hypotheses = get_ranked_hypotheses(hypothesis_results)
-            
-            # Check if any hypothesis meets guardrail criteria
-            qualified_hypotheses = rank_with_guardrail(hypothesis_results)
-            is_conclusive = not isinstance(qualified_hypotheses, str)
-            
-            if is_conclusive:
-                # Conclusive case - we have qualified hypotheses
-                best_hypo_name, best_hypo_result = qualified_hypotheses[0]
-                template = metric_config['hypotheses'][best_hypo_name].get('template', '')
-                # summary_template = metric_config['hypotheses'][best_hypo_name].get('summary_template', '')
-                
-                # Prepare template parameters for SlideContent rendering (only template variables!)
-                template_params = {
-                    'region': anomaly_info['anomalous_region'],
-                    'metric_name': metric_name,
-                    'metric_deviation': anomaly_info.get('magnitude', '0%'),
-                    'metric_dir': anomaly_info['direction'],
-                    'hypo_name': best_hypo_name,
-                    'hypo_dir': best_hypo_result['direction'],
-                    'hypo_delta': best_hypo_result['magnitude'],
-                    'ref_hypo_val': best_hypo_result['ref_hypo_val'],
-                    'score': best_hypo_result['scores']['final_score'],
-                    'explained_ratio': best_hypo_result['scores']['explained_ratio'] * 100
-                }
-                
-                # Generate summary text from template
-                filled_text = render_template_text(
-                    template=template,
-                    metric_anomaly_info=anomaly_info,
-                    metric_col=metric_name,
-                    best_hypo_name=best_hypo_name,
-                    best_hypo_result=best_hypo_result
-                )
-                
-                # Extract root cause portion for summary
-                if "Root cause:" in filled_text:
-                    summary_text = filled_text.split("Root cause:")[1].strip()
-                else:
-                    summary_text = f"{best_hypo_name} is {best_hypo_result['direction']}"
-                
-                slide_title = f"{metric_name} - Root Cause"
-                
-            else:
-                # Inconclusive case - no hypothesis meets guardrails, but still show all hypotheses
-                inconclusive_template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the reference mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
-                
-                template_params = {
-                    'region': anomaly_info['anomalous_region'],
-                    'metric_name': metric_name,
-                    'metric_deviation': anomaly_info.get('magnitude', '0%'),
-                    'metric_dir': anomaly_info['direction']
-                }
-                
-                summary_text = f"Inconclusive - no hypothesis meets minimum evidence thresholds."
-                template = inconclusive_template
-                slide_title = f"{metric_name} - Inconclusive to determine root cause"
-                # Set these to None since no hypothesis qualifies as "best"
-                best_hypo_name = None
-                best_hypo_result = None
-            
-            # Store functions directly in figure_generators (much simpler!)
-            figure_generators = [
-                {
-                    "function": create_multi_hypothesis_plot,
-                    "title_suffix": "",
-                    "params": {
-                        'df': regional_df,
-                        'metric_col': metric_name,
-                        'hypo_cols': hypothesis_names,
-                        'metric_anomaly_info': anomaly_info,
-                        'ordered_hypos': all_ranked_hypotheses,  # Always show all hypotheses ranked by score
-                        'is_conclusive': is_conclusive
-                    }
-                }
+            # Add additional reasons from other high-scoring hypotheses
+            other_good_hypos = metric_results[
+                (metric_results['final_score'] > 0.5) & 
+                (metric_results['best_hypothesis'] == False)
             ]
             
-            # Create slide data in unified format
-            analysis_type = 'Directional'  
-            unified_results[metric_name] = {
-                'slides': {
-                    analysis_type: {
-                        'summary': {
-                            'summary_text': summary_text
-                        },
-                        'slide_info': {
-                            'title': f"{metric_name} - Root Cause",
-                            'template_text': template,
-                            'template_params': template_params,
-                            'figure_generators': figure_generators,
-                            'dfs': {},
-                            'layout_type': "text_figure",
-                            'total_hypotheses': len(hypothesis_names)  # Add count of hypotheses
-                        }
-                    }
-                },
-                'payload': {
-                    'best_hypothesis': best_hypo_result,
-                    'all_results': hypothesis_results,
-                    'total_hypotheses': len(hypothesis_names)  # Add to payload as well
-                },
-            }
+            if len(other_good_hypos) > 0:
+                additional_reasons = []
+                for idx, (_, row) in enumerate(other_good_hypos.iterrows(), 2):
+                    if row['summary_template'] and row['summary_template'] != 'TBA':
+                        additional_text = render_template_text(
+                            template=row['summary_template'],
+                            metric_anomaly_info=anomaly_info,
+                            metric_col=metric_name,
+                            best_hypo_name=row['hypothesis'],
+                            best_hypo_result=row.to_dict()
+                        )
+                        additional_reasons.append(f"#{idx}: {additional_text}")
+                
+                if additional_reasons:
+                    filled_text += "\n\nOther possible reasons are: " + ", ".join(additional_reasons)
             
-        except Exception as e:
-            print(f"Error processing metric '{metric_name}': {e}")
-            continue
+            # Create simple summary text
+            summary_text = f"{best_hypo_data['hypothesis']} is {best_hypo_data['direction']}"
+            template_params = create_template_params(
+                metric_anomaly_info=anomaly_info,
+                metric_name=metric_name,
+                hypo_name=best_hypo_data['hypothesis'],
+                hypo_result=best_hypo_dict
+            )
+        else:
+            template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the reference mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
+            filled_text = render_template_text(template, anomaly_info, metric_name)
+            summary_text = "Inconclusive - no hypothesis meets minimum evidence thresholds."
+            template_params = create_template_params(metric_anomaly_info=anomaly_info, metric_name=metric_name)
+        
+        # Create figure generators using DataFrame data
+        hypothesis_names = metric_results['hypothesis'].tolist()
+        ordered_hypos = [(row['hypothesis'], row.to_dict()) for _, row in metric_results.iterrows()]
+        
+        figure_generators = [{
+            "function": create_multi_hypothesis_plot,
+            "title_suffix": "",
+            "params": {
+                'df': regional_df,
+                'metric_col': metric_name,
+                'hypo_cols': hypothesis_names,
+                'metric_anomaly_info': anomaly_info,
+                'ordered_hypos': ordered_hypos,
+                'is_conclusive': is_conclusive
+            }
+        }]
+        
+        # Store in unified format
+        unified_results[metric_name] = {
+            'slides': {
+                'Directional': {
+                    'summary': {'summary_text': summary_text},
+                    'slide_info': {
+                        'title': f"{metric_name} - Root Cause",
+                        'template_text': filled_text,
+                        'template_params': template_params,
+                        'figure_generators': figure_generators,
+                        'dfs': {},
+                        'layout_type': "text_figure",
+                        'total_hypotheses': len(hypothesis_names)
+                    }
+                }
+            },
+            'payload': {
+                'best_hypothesis': best_hypo_data.to_dict() if is_conclusive else None,
+                'all_results': metric_results.to_dict('records'),
+                'total_hypotheses': len(hypothesis_names)
+            }
+        }
     
     return unified_results
 
@@ -1835,21 +1908,19 @@ def main(save_path: str = '.', results_path: Optional[str] = None, reference_row
     
     # 3. Demonstrate processing of multiple metrics
     print("\n===== MULTIPLE METRICS PROCESSING =====")
-    # Process for all metrics using sign-based scoring
-    all_results = process_metrics(
-        df=df,
-        metric_cols=metric_cols,
-        metric_anomaly_map=metric_anomaly_map,
-        expected_directions=expected_directions,
-        metric_hypothesis_map={
-            'conversion_rate_pct': hypo_cols,
-            'avg_order_value': hypo_cols,
-            'customer_satisfaction': hypo_cols
+
+    
+    # Create simple config for testing
+    config = {
+        'metrics': {
+            'conversion_rate_pct': {'hypotheses': {h: {'expected_direction': expected_directions[h]} for h in hypo_cols}},
+            'avg_order_value': {'hypotheses': {h: {'expected_direction': expected_directions[h]} for h in hypo_cols}},
+            'customer_satisfaction': {'hypotheses': {h: {'expected_direction': expected_directions[h]} for h in hypo_cols}}
         }
-    )
+    }
     
     # Save to DataFrame for analysis
-    df_results = save_results_to_dataframe(all_results)
+    df_results = create_consolidated_results_dataframe(df, metric_anomaly_map, config)
     print("\nResults DataFrame Preview:")
     print(df_results[['metric', 'hypothesis', 'final_score', 'magnitude', 'direction', 'explains']].head(10))
     
@@ -1858,29 +1929,33 @@ def main(save_path: str = '.', results_path: Optional[str] = None, reference_row
         df_results.to_csv(results_path, index=False)
         print(f"Saved results to {results_path}")
     
-    # Display top hypothesis for each metric
+    # Display top hypothesis for each metric using DataFrame
     print("\nTop Hypothesis for Each Metric:")
     for metric_col in metric_cols:
-        hypo_results = all_results[metric_col]
-        ranked_hypos = rank_with_guardrail(hypo_results)
-        if isinstance(ranked_hypos, str):
-            print(f"  {metric_col}: {ranked_hypos}")
-        else:
-            best_hypo_name, best_hypo_result = ranked_hypos[0]
-            score = best_hypo_result['scores']['final_score']
-            print(f"  {metric_col}: {best_hypo_name} (Score: {score:.2f})")
+        metric_data = df_results[df_results['metric'] == metric_col]
+        if len(metric_data) > 0:
+            best_hypo = metric_data.iloc[0]  # Already sorted by rank
+            if best_hypo['explains']:
+                print(f"  {metric_col}: {best_hypo['hypothesis']} (Score: {format_score(best_hypo['final_score'])})")
+            else:
+                print(f"  {metric_col}: Inconclusive - no hypothesis meets guardrails")
     
-    # 4. Create visualization using pre-sorted results
+    # 4. Create visualization using DataFrame results
     print("\n===== VISUALIZATION WITH PRE-SORTED RESULTS =====")
     metric_col = 'conversion_rate_pct'
-    hypo_results = all_results[metric_col]
-    ranked_hypos = rank_with_guardrail(hypo_results)
+    metric_data = df_results[df_results['metric'] == metric_col]
+    if len(metric_data) == 0:
+        print(f"No data found for {metric_col}")
+        return
     
-    if isinstance(ranked_hypos, str):
+    conclusive_hypos = metric_data[metric_data['explains'] == True]
+    is_conclusive_main = len(conclusive_hypos) > 0
+    
+    if not is_conclusive_main:
         # Handle inconclusive case
-        print(f"Cannot create visualization for {metric_col}: {ranked_hypos}")
+        print(f"Cannot create visualization for {metric_col}: Inconclusive")
         fig = plt.figure(figsize=(12, 8))
-        fig.text(0.5, 0.5, f"{metric_col}\n\n{ranked_hypos}", 
+        fig.text(0.5, 0.5, f"{metric_col}\n\nInconclusive - no hypothesis meets guardrails", 
                 ha='center', va='center', fontsize=16,
                 bbox=dict(boxstyle='round,pad=1', facecolor='lightgray', alpha=0.7))
         filename = f"{save_path}/inconclusive_{metric_col}.png"
@@ -1889,15 +1964,15 @@ def main(save_path: str = '.', results_path: Optional[str] = None, reference_row
         print(f"Created inconclusive visualization: {filename}")
     else:
         # Create visualization with qualified hypotheses
-        all_ranked = get_ranked_hypotheses(hypo_results)
-        is_conclusive_main = not isinstance(ranked_hypos, str)
+        # Create ordered_hypos from DataFrame
+        ordered_hypos = [(row['hypothesis'], row.to_dict()) for _, row in metric_data.iterrows()]
         
         fig = create_multi_hypothesis_plot(
             df=df,
             metric_col=metric_col,
             hypo_cols=hypo_cols,
             metric_anomaly_info=metric_anomaly_map[metric_col],
-            ordered_hypos=all_ranked,  # Always show all hypotheses
+            ordered_hypos=ordered_hypos,  # Always show all hypotheses
             include_score_formula=True,
             is_conclusive=is_conclusive_main
         )
@@ -1909,7 +1984,7 @@ def main(save_path: str = '.', results_path: Optional[str] = None, reference_row
                    "effectively manage and prioritize CLIs in their portfolio."
         
         # Add template text and score formula
-        best_hypo_name, best_hypo_result = ranked_hypos[0]
+        best_hypo_name, best_hypo_result = ordered_hypos[0]
         add_template_text(
             fig, 
             template, 
