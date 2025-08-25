@@ -69,7 +69,7 @@ MAX_TABLE_HEIGHT = 4.0       # Maximum table height in inches
 
 # Layout validation constants
 VALID_LAYOUT_TYPES = {
-    'auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'figure'
+    'auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'text_tables_then_figure', 'figure'
 }
 
 class SlideContent:
@@ -389,17 +389,19 @@ class SlideLayouts:
                 # Enhanced percentage detection - check column name patterns and value ranges
                 col_name_lower = str(col_name).lower()
                 
-                # Direct text indicators
-                name_indicates_percent = any(x in col_name_lower for x in [
-                    '_pct', '%', 'pct', 'percentage', 'rate', 'ratio', 'conversion'
-                ])
+                # Smart percentage detection: Only apply auto-formatting to decimal values (0-1) 
+                # that clearly need conversion to percentage display
+                # Skip auto-formatting for already-formatted data or percentage points
+                should_auto_format_percent = (
+                    isinstance(value, (int, float)) and 
+                    0 <= value <= 1 and 
+                    value != 0 and
+                    '(pp)' not in col_name_lower and  # Not percentage points
+                    'δ' not in col_name_lower and     # Not deltas 
+                    'impact' not in col_name_lower    # Not impact columns
+                )
                 
-                # Value-based detection for likely percentages (values between 0-1)
-                value_indicates_percent = (isinstance(value, (int, float)) and 
-                                         0 <= value <= 1 and value != 0)
-                
-                # Combine both checks
-                is_percent = name_indicates_percent or value_indicates_percent
+                is_percent = should_auto_format_percent
                 cell.text = self._format_cell_value(value, is_percent)
                 
                 # Apply styling
@@ -466,7 +468,45 @@ class SlideLayouts:
         
         return table
     
-    def _add_figure(self, slide, figure_path: str, left: float, top: float, width: Optional[float] = None, height: Optional[float] = None, min_size: Optional[Dict[str, float]] = None):
+    def _add_caption(self, slide, caption: str, left: float, top: float, width: float, font_size: int = 10):
+        """
+        Add figure caption positioned below a figure.
+        
+        Args:
+            slide: PowerPoint slide object
+            caption: Caption text to display
+            left, top: Position coordinates in inches
+            width: Width of caption text box in inches
+            font_size: Font size for caption text
+        """
+        if not caption.strip():
+            return None
+            
+        # Estimate caption height (usually 1-2 lines)
+        caption_height = max(0.3, len(caption) / 100 * 0.15)  # Rough estimate
+        
+        caption_box = slide.shapes.add_textbox(
+            Inches(left), 
+            Inches(top), 
+            Inches(width),
+            Inches(caption_height)
+        )
+        
+        caption_frame = caption_box.text_frame
+        caption_frame.word_wrap = True
+        caption_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        
+        # Add caption text with italics
+        p = caption_frame.paragraphs[0]
+        p.text = caption
+        p.font.size = Pt(font_size)
+        p.font.italic = True
+        p.font.color.rgb = RGBColor(100, 100, 100)  # Gray color
+        p.alignment = PP_ALIGN.CENTER
+        
+        return caption_box
+    
+    def _add_figure(self, slide, figure_path: str, left: float, top: float, width: Optional[float] = None, height: Optional[float] = None, min_size: Optional[Dict[str, float]] = None, caption: Optional[str] = None):
         """
         Add figure to slide while preserving aspect ratio.
         Fits figure optimally within the specified width/height constraints.
@@ -477,6 +517,7 @@ class SlideLayouts:
             left, top: Position coordinates in inches
             width, height: Optional size constraints in inches
             min_size: Optional dict with 'width' and 'height' minimum sizes in inches
+            caption: Optional caption text to display below figure
         """
         if figure_path and os.path.exists(figure_path):
             # Get original image dimensions
@@ -536,6 +577,23 @@ class SlideLayouts:
                     final_height = max(min(6.0, 8.0 / aspect_ratio), min_height)  # Max height 6 inches
                     final_width = max(final_height * aspect_ratio, min_width)
             
+            # Reserve space for caption if present
+            caption_height = 0.0
+            if caption and caption.strip():
+                caption_height = max(0.3, len(caption) / 100 * 0.15) + 0.05  # Caption height + small gap
+                
+                # Adjust available height for figure if we have height constraint
+                if height is not None:
+                    available_height = height - caption_height
+                    if available_height > 0:
+                        # Recalculate figure dimensions with reduced height
+                        height_from_width = final_width / aspect_ratio
+                        if height_from_width > available_height:
+                            final_height = available_height
+                            final_width = available_height * aspect_ratio
+                        else:
+                            final_height = height_from_width
+            
             # Add the figure with calculated dimensions
             slide.shapes.add_picture(
                 figure_path, 
@@ -544,6 +602,17 @@ class SlideLayouts:
                 width=Inches(final_width),
                 height=Inches(final_height)
             )
+            
+            # Add caption below the figure
+            if caption and caption.strip():
+                caption_top = top + final_height + 0.05  # Small gap between figure and caption
+                self._add_caption(
+                    slide=slide,
+                    caption=caption,
+                    left=left,
+                    top=caption_top,
+                    width=final_width
+                )
         else:
             # Add placeholder text when no figure is available
             self._add_text(slide, f"Figure not available", left, top, 4.0, 1.0)
@@ -646,6 +715,17 @@ class SlideLayouts:
                 layout_type = 'figure'
             else:
                 layout_type = 'text'  # Default fallback
+        
+        # Handle special two-slide layout first
+        if layout_type == 'text_tables_then_figure':
+            self._create_text_tables_then_figure_slides(
+                content=content,
+                text_chunks=text_chunks,
+                table_positions=table_positions,
+                figure_generators=figure_generators,
+                highlight_cells=highlight_cells
+            )
+            return
         
         # Handle multiple figures from plotting functions that create figures in for-loops
         if len(figure_generators) > 1:
@@ -797,6 +877,9 @@ class SlideLayouts:
                     slide_text_chunks = text_chunks if idx == 0 else []
                     slide_table_positions = table_positions if idx == 0 else []
                     
+                    # Extract caption for proper handling (don't add to text chunks)
+                    caption = fig_generator.get('caption', '')
+                    
                     # Respect figure size - set minimum dimensions to prevent over-shrinking
                     min_figure_size = {'width': 4.0, 'height': 3.0}  # Minimum size in inches
                     
@@ -807,7 +890,8 @@ class SlideLayouts:
                         figure_path=figure_path,
                         layout_type=layout_type,
                         highlight_cells=highlight_cells,
-                        min_figure_size=min_figure_size
+                        min_figure_size=min_figure_size,
+                        figure_caption=caption if idx == 0 else None  # Only add caption to first slide
                     )
                     
                     # Clean up
@@ -929,6 +1013,9 @@ class SlideLayouts:
                         slide_text_chunks = text_chunks if i == 0 and fig_idx == 0 else []
                         slide_table_positions = table_positions if i == 0 and fig_idx == 0 else []
                         
+                        # Extract caption for proper handling (don't add to text chunks)
+                        caption = fig_generator.get('caption', '')
+                        
                         # Create temp file
                         temp_dir = tempfile.gettempdir()
                         temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_{i}_{fig_idx}.png"
@@ -953,7 +1040,8 @@ class SlideLayouts:
                             figure_path=generated_figure_path,
                             layout_type=layout_type if slide_table_positions else ('text_figure' if slide_text_chunks else 'figure'),
                             highlight_cells=highlight_cells,
-                            min_figure_size=min_figure_size
+                            min_figure_size=min_figure_size,
+                            figure_caption=caption if i == 0 and fig_idx == 0 else None  # Only add caption to first slide
                         )
                         
                         # Clean up
@@ -1104,7 +1192,8 @@ class SlideLayouts:
                                             table_positions: List[Tuple[str, pd.DataFrame]], 
                                             figure_path: Optional[str], layout_type: str, 
                                             highlight_cells: Optional[Dict],
-                                            min_figure_size: Optional[Dict[str, float]] = None):
+                                            min_figure_size: Optional[Dict[str, float]] = None,
+                                            figure_caption: Optional[str] = None):
         """Create slide with structured content positioning using helper functions."""
         # Validate layout type
         layout_type = self._validate_layout_type(layout_type)
@@ -1156,7 +1245,7 @@ class SlideLayouts:
                 self._add_content_block(
                     slide=slide,
                     content_type='figure',
-                    content_data={'figure_path': figure_path, 'min_size': min_figure_size},
+                    content_data={'figure_path': figure_path, 'min_size': min_figure_size, 'caption': figure_caption},
                     layout_info=layouts['figure']
                 )
                 
@@ -1170,7 +1259,7 @@ class SlideLayouts:
             self._add_content_block(
                 slide=slide,
                 content_type='figure',
-                content_data={'figure_path': figure_path, 'min_size': min_figure_size},
+                content_data={'figure_path': figure_path, 'min_size': min_figure_size, 'caption': figure_caption},
                 layout_info=figure_layout
             )
             
@@ -1223,11 +1312,104 @@ class SlideLayouts:
                 self._add_content_block(
                     slide=slide,
                     content_type='figure',
-                    content_data={'figure_path': figure_path, 'min_size': min_figure_size},
+                    content_data={'figure_path': figure_path, 'min_size': min_figure_size, 'caption': figure_caption},
                     layout_info=layouts['figure']
                 )
         
         return slide
+    
+    def _create_text_tables_then_figure_slides(self, content: SlideContent, text_chunks: List[str],
+                                              table_positions: List[Tuple[str, pd.DataFrame]],
+                                              figure_generators: List[Dict],
+                                              highlight_cells: Optional[Dict]):
+        """Create two slides: first with text+tables, second with figure+caption."""
+        
+        # Slide 1: Text + Tables (full width)
+        self._create_slide_with_structured_content(
+            title=content.title,
+            text_chunks=text_chunks,
+            table_positions=table_positions,
+            figure_path=None,
+            layout_type='text_tables',
+            highlight_cells=highlight_cells
+        )
+        
+        # Slide 2: Figure + Caption (if we have figures)
+        if figure_generators:
+            for i, fig_generator in enumerate(figure_generators):
+                fig_params = fig_generator.get('params', {})
+                generator_func = fig_generator.get('function')
+                
+                if generator_func:
+                    try:
+                        plt.close('all')  # Close any existing figures
+                        
+                        result = generator_func(**fig_params)
+                        
+                        # Handle different return types from generator functions
+                        figures_to_save = []
+                        if isinstance(result, plt.Figure):
+                            figures_to_save.append(result)
+                        elif hasattr(result, '__iter__') and not isinstance(result, str):
+                            # Handle case where function returns multiple figures
+                            for item in result:
+                                if isinstance(item, plt.Figure):
+                                    figures_to_save.append(item)
+                        
+                        # If no figures were returned directly, check all open figures
+                        if not figures_to_save:
+                            figures_to_save = [plt.figure(num) for num in plt.get_fignums()]
+                        
+                        # Create slides for each figure
+                        for fig_idx, fig in enumerate(figures_to_save):
+                            # Create temp file
+                            temp_dir = tempfile.gettempdir()
+                            temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_{i}_{fig_idx}.png"
+                            figure_path = os.path.join(temp_dir, temp_filename)
+                            
+                            fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                            
+                            if content.show_figures:
+                                plt.figure(fig.number)
+                                plt.show()
+                            
+                            plt.close(fig)
+                            
+                            # Create slide title for figure slide
+                            if fig_generator.get('title_suffix'):
+                                slide_title = f"{content.title} - {fig_generator['title_suffix']}"
+                            else:
+                                slide_title = f"{content.title} - Chart"
+                            
+                            # Extract caption
+                            caption = fig_generator.get('caption', '')
+                            
+                            # Create figure slide (no text, no tables)
+                            self._create_slide_with_structured_content(
+                                title=slide_title,
+                                text_chunks=[],
+                                table_positions=[],
+                                figure_path=figure_path,
+                                layout_type='figure',
+                                highlight_cells=highlight_cells,
+                                figure_caption=caption
+                            )
+                            
+                            # Clean up
+                            if os.path.exists(figure_path):
+                                os.unlink(figure_path)
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to generate figure: {e}")
+                        # Create a placeholder slide if figure generation fails
+                        self._create_slide_with_structured_content(
+                            title=f"{content.title} - Chart",
+                            text_chunks=["Figure generation failed."],
+                            table_positions=[],
+                            figure_path=None,
+                            layout_type='text',
+                            highlight_cells=highlight_cells
+                        )
     
     def _create_slide_with_truncated_content(self, content: SlideContent, text_chunks: List[str],
                                            table_positions: List[Tuple[str, pd.DataFrame]],
@@ -1586,6 +1768,7 @@ class SlideLayouts:
         elif content_type == 'figure':
             figure_path = content_data.get('figure_path')
             min_size = content_data.get('min_size')
+            caption = content_data.get('caption')
             if figure_path:
                 self._add_figure(
                     slide=slide,
@@ -1594,7 +1777,8 @@ class SlideLayouts:
                     top=layout_info['top'],
                     width=layout_info.get('width'),
                     height=layout_info.get('height'),
-                    min_size=min_size
+                    min_size=min_size,
+                    caption=caption
                 )
     
     def _combine_text_chunks(self, text_chunks: List[str]) -> str:
@@ -1732,7 +1916,7 @@ def dual_output(console: bool = True, slide: bool = True,
         console: Whether to display console output
         slide: Whether to add to slide presentation
         slide_builder: SlideLayouts instance to add slides to
-        layout_type: Layout type for slides ('auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'figure')
+        layout_type: Layout type for slides ('auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'text_tables_then_figure', 'figure')
         show_figures: Whether to display matplotlib figures
     """
     def decorator(func):
