@@ -5,7 +5,7 @@ Focused testing of key scenarios with minimal repetition.
 Tests the main functions as documented in the module docstring:
 - run_oaxaca_analysis() 
 - result.get_summary_stats()
-- result.generate_executive_report()
+- result.present_executive_pack_for_slides()
 
 Usage:
     python test_oaxaca.py
@@ -33,25 +33,18 @@ spec.loader.exec_module(oaxaca_module)
 
 run_oaxaca_analysis = oaxaca_module.run_oaxaca_analysis
 
-# Import visualization module
-viz_module_path = os.path.join(project_root, "rca_package", "viz_oaxaca.py")
-viz_spec = importlib.util.spec_from_file_location("viz_oaxaca", viz_module_path)
-viz_module = importlib.util.module_from_spec(viz_spec)
-viz_spec.loader.exec_module(viz_module)
-
-show_storyboard = viz_module.show_storyboard
-show_comprehensive_analysis = viz_module.show_comprehensive_analysis
-plot_waterfall = viz_module.plot_waterfall
+# Visualization functions are now in oaxaca_blinder module
+# No separate viz module needed
 
 class OaxacaTestSuite:
     """Focused, assertive tests for Oaxaca-Blinder analysis & detectors."""
-
+    
     def __init__(self):
         logging.basicConfig(level=logging.CRITICAL)
         self.test_config = {
             "simpson_portfolio": True,
             "simpson_only_X": True,
-            "performance_driven": True,
+            "performance_driven": True, 
             "composition_driven": True,
             "true_cancellation": True,
             "multi_axis_parent_child": True,
@@ -101,9 +94,9 @@ class OaxacaTestSuite:
                 print("⚠️ Simpson:", sd["paradox_regions"])
             if sd["cancellation_regions"]:
                 print("🔄 Cancellation:", sd["cancellation_regions"])
-        print(f"\n💼 EXECUTIVE REPORT - {focus_region}:")
-        rep = res.generate_executive_report(focus_region)
-        print(rep["narrative_text"] if "narrative_text" in rep else rep)
+        print(f"\n💼 EXECUTIVE SUMMARY - {focus_region}:")
+        decision = res.narrative_decisions[focus_region]
+        print(decision.narrative_text)
         return res
 
     # ---------- tests
@@ -133,9 +126,9 @@ class OaxacaTestSuite:
             {"region":"Y","product":"B","wins":20, "total":100},   # 20%
         ])
         res = self._run(df, "X", category_columns=["product"])
-        print(f"\n💼 EXECUTIVE REPORT - Y:")
-        rep_y = res.generate_executive_report("Y")
-        print(rep_y["narrative_text"] if "narrative_text" in rep_y else rep_y)
+        print(f"\n💼 EXECUTIVE SUMMARY - Y:")
+        decision_y = res.narrative_decisions["Y"]
+        print(decision_y.narrative_text)
         
         # With default "under_only" policy, only X should flag (underperforms but segments are better)
         # Y has opposite pattern (outperforms but segments are worse) so shouldn't flag under "under_only"
@@ -157,7 +150,7 @@ class OaxacaTestSuite:
         """
         print("\n📊 TEST: Simpson (only X flags)")
         print("-" * 40)
-
+        
         df = pd.DataFrame([
             # X: worse overall (27%) but better within each segment (+5pp)
             {"region": "X", "product": "A", "vertical": "High", "wins": 45,  "total": 100},   # 45%
@@ -315,7 +308,7 @@ class OaxacaTestSuite:
         """Test automatic slice selection to find best cut."""
         print("\n📊 TEST: Auto Slice Selection")
         print("-" * 40)
-
+        
         # Create data with multiple dimensions
         df = pd.DataFrame([
             # Region with clear product-level differences
@@ -361,10 +354,10 @@ class OaxacaTestSuite:
         print(f"Score: {best.score:.3f}")
         print(f"Score breakdown: {best.score_breakdown}")
         
-        # Show the executive report for the winning cut
-        report = best.analysis_result.generate_executive_report(best.focus_region)
-        print(f"\n💼 EXECUTIVE REPORT:")
-        print(report["narrative_text"])
+        # Show the executive summary for the winning cut
+        decision = best.analysis_result.narrative_decisions[best.focus_region]
+        print(f"\n💼 EXECUTIVE SUMMARY:")
+        print(decision.narrative_text)
         
         # Show top segments
         print(f"\n📋 TOP SEGMENTS:")
@@ -456,34 +449,38 @@ class OaxacaTestSuite:
         # %% Cell 4: Executive Storyboards - Performance-driven case
         print("\n🎯 PERFORMANCE-DRIVEN STORYBOARD:")
         print("=" * 50)
-        show_storyboard(perf_result, "UNDERPERFORM", max_charts=2)
+        slide_spec, payload = perf_result.present_executive_pack_for_slides("UNDERPERFORM", max_charts=2)
+        print(f"📊 Summary: {slide_spec['summary']['summary_text']}")
+        print(f"📈 Charts: {len(slide_spec['slide_info']['figure_generators'])}")
         
         # %% Cell 5: Executive Storyboards - Simpson's Paradox case  
         print("\n🔀 SIMPSON'S PARADOX STORYBOARD:")
         print("=" * 50)
         if simpson_result.paradox_report.paradox_detected:
-            show_storyboard(simpson_result, "SIMPSON", max_charts=2)
+            slide_spec, payload = simpson_result.present_executive_pack_for_slides("SIMPSON", max_charts=2)
+            print(f"📊 Summary: {slide_spec['summary']['summary_text']}")
+            print(f"📈 Charts: {len(slide_spec['slide_info']['figure_generators'])}")
         else:
             print("Note: Simpson's paradox not detected in this test scenario")
             
         # %% Cell 6: Executive Storyboards - Composition-driven case
         print("\n📊 COMPOSITION-DRIVEN STORYBOARD:")
         print("=" * 50)
-        show_storyboard(comp_result, "BAD_MIX", max_charts=2)
+        slide_spec, payload = comp_result.present_executive_pack_for_slides("BAD_MIX", max_charts=2)
+        print(f"📊 Summary: {slide_spec['summary']['summary_text']}")
+        print(f"📈 Charts: {len(slide_spec['slide_info']['figure_generators'])}")
         
         # %% Cell 7: Individual Chart Testing
         print("\n📈 INDIVIDUAL CHART TESTING:")
         print("=" * 50)
         
-        print("Testing waterfall chart...")
-        fig1, ax1 = plot_waterfall(perf_result, "UNDERPERFORM")
-        print(f"✅ Waterfall chart created: {type(fig1)}")
-        plt.close(fig1)
+        print("Testing rates and mix panel...")
+        fig1 = oaxaca_module.plot_rates_and_mix_panel(perf_result, "UNDERPERFORM")
+        print(f"✅ Rates and mix panel created: {type(fig1)}")
+        plt.close('all')  # Close all figures instead of specific figure
         
-        print("Testing contribution chart...")
-        fig2, ax2 = viz_module.plot_contributions_by_category(perf_result, "UNDERPERFORM")
-        print(f"✅ Contributions chart created: {type(fig2)}")
-        plt.close(fig2)
+        print("Note: plot_top_drivers_barh removed - redundant with table data")
+        print("✅ Simplified visualization approach - only essential charts")
         
         # %% Cell 8: Multi-region Analysis 
         print("\n🌍 MULTI-REGION COMPARISON:")
@@ -504,7 +501,7 @@ class OaxacaTestSuite:
         multi_result = run_oaxaca_analysis(
             df=multi_df,
             region_column="region",
-            numerator_column="wins", 
+            numerator_column="wins",
             denominator_column="total",
             category_columns=["product"]
         )
@@ -548,7 +545,9 @@ class OaxacaTestSuite:
         
         # Show storyboard for the winning analysis
         print(f"\n📊 Storyboard for best cut {best_slice.best_categories}:")
-        show_storyboard(best_slice.analysis_result, "COMPLEX", max_charts=1)
+        slide_spec, payload = best_slice.analysis_result.present_executive_pack_for_slides("COMPLEX", max_charts=1)
+        print(f"📊 Summary: {slide_spec['summary']['summary_text']}")
+        print(f"📈 Charts: {len(slide_spec['slide_info']['figure_generators'])}")
         
         print("\n✅ Visualization storyboard test completed!")
 

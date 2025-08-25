@@ -1,0 +1,30 @@
+# Oaxaca-Blinder Decomposition Analysis Configuration
+# This file contains the configuration for Oaxaca-Blinder decomposition metrics and candidate cuts
+
+# =================== CONFIGURATION GUIDE ===================
+# metrics:
+#   <metric_display_name>:           # Human-readable name of the metric (used internally)
+#     technical_name: <tech_name>    # Technical column name in the DataFrame
+#     region_column: <column_name>   # Column containing region information
+#     numerator_column: <column_name># Column containing the numerator (e.g., conversions)
+#     denominator_column: <column_name># Column containing the denominator (e.g., visits)
+#     candidate_cuts:                # List of candidate category combinations to test
+#       - [<category1>]              # Single category cut
+#       - [<category1>, <category2>] # Multi-category cut
+#     max_charts: <number>           # Maximum number of charts to generate (default: 2)
+#     alternatives: <number>         # Number of alternative cuts to show (default: 1)
+# Note: Templates are not used - narrative text is generated automatically by the analysis engine
+# ============================================================
+
+metrics:
+  "Conversion Rate":
+    technical_name: "conversion_rate_pct"
+    region_column: "region"
+    numerator_column: "conversions"
+    denominator_column: "visits"
+    candidate_cuts:
+      - ["product"]
+      - ["vertical"] 
+      - ["product", "vertical"]
+    max_charts: 2
+    alternatives: 1

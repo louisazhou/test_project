@@ -80,9 +80,10 @@ np.random.seed(42)
 regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
 
 # Create test data with technical names as column headers (realistic scenario)
+# Note: conversion_rate_pct will be replaced by Oaxaca-Blinder synthetic data
 data = {
     # Metrics (using technical names from config)
-    'conversion_rate_pct': np.array([0.12, 0.08, 0.11, 0.13, 0.10]),
+    'conversion_rate_pct': np.array([0.114, 0.084, 0.114, 0.149, 0.102]),  # From Oaxaca synthetic data
     'avg_order_value': np.array([75.0, 65.0, 80.0, 85.0, 72.0]),
     'customer_satisfaction': np.array([4.2, 3.8, 4.3, 4.5, 4.0]),
     'revenue': np.array([1000000, 650000, 950000, 1100000, 850000]),
@@ -276,6 +277,38 @@ try:
     process_analysis_results(results, unified_results)
 except Exception as e:
     print(f"⚠️  Depth analysis skipped: {e}")
+
+# Process Oaxaca-Blinder analysis
+try:
+    print("🔄 Processing Oaxaca-Blinder decomposition analysis...")
+    from rca_package.oaxaca_blinder import analyze_oaxaca_metrics, create_oaxaca_synthetic_data
+    
+    # For demonstration, generate synthetic data for Conversion Rate if anomaly detected
+    oaxaca_config = load_config('configs/config_oaxaca.yaml')
+    if 'Conversion Rate' in metric_anomaly_map:
+        anomaly = metric_anomaly_map['Conversion Rate']
+        target_region = anomaly['anomalous_region']
+        target_gap_pp = (anomaly['metric_val'] - anomaly['global_val']) * 100
+        
+        print(f"   🎯 Generating synthetic data for {target_region} with {target_gap_pp:+.1f}pp gap")
+        conversion_data = create_oaxaca_synthetic_data(
+            target_region=target_region, 
+            target_gap_pp=target_gap_pp
+        )
+        
+        results = analyze_oaxaca_metrics(
+            config=oaxaca_config,
+            metric_anomaly_map=metric_anomaly_map,
+            data_df=conversion_data
+        )
+        process_analysis_results(results, unified_results)
+    else:
+        print("   ℹ️  No conversion rate anomaly detected - skipping Oaxaca-Blinder")
+    
+except Exception as e:
+    print(f"⚠️  Oaxaca-Blinder analysis skipped: {e}")
+    import traceback
+    traceback.print_exc()
 
 # Calculate total hypotheses per metric once
 for metric_name in unified_results:

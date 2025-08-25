@@ -1,35 +1,71 @@
 # pyre-ignore-all-errors
 """
-Clean Oaxaca-Blinder Decomposition Analysis
+Oaxaca-Blinder Decomposition Analysis Engine
 
-A well-structured implementation of Oaxaca-Blinder decomposition with:
-- Clean separation of mathematical core, business logic, and edge case detection
-- Comprehensive Simpson's paradox detection
-- Multiple baseline methods
-- Business narrative generation
-- Mathematical validation
+Four-layer architecture with single source of truth for all analytics.
 
-Usage:
-    from rca_package.oaxaca_blinder_clean import run_oaxaca_analysis
+Core Architecture:
+    1. Math (OaxacaCore): Pure Oaxaca-Blinder decomposition with validation  
+    2. Detection (EdgeCaseDetector): Simpson's Paradox and mathematical cancellation
+    3. Narrative (NarrativeTemplateEngine): Text composition and evidence tables (computed once)
+    4. Presentation (present_executive_pack_for_slides): Assembly only - no analytics
+
+Key Driver Functions:
+    run_oaxaca_analysis() - Core analysis engine (numeric results)
+    auto_find_best_slice() - Smart dimensional cut selection
     
-    # Clean interface
+    AnalysisResult.present_executive_pack_for_slides() - Single slide factory returning (slide_spec, payload)
+    build_oaxaca_exec_pack() - Unified driver for AUTO/FIXED modes with alternatives
+
+Usage Examples:
+
+    # Standard analysis (numeric by default)
+    from rca_package.oaxaca_blinder import run_oaxaca_analysis
     result = run_oaxaca_analysis(
-        df=df,
-        region_column="territory",
-        numerator_column="wins", 
-        denominator_column="opportunities",
-        category_columns=["product"],
-        subcategory_columns=["vertical"]
+        df=data, region_column="region", category_columns=["product"],
+        numerator_column="wins", denominator_column="total"
+    )
+    summary = result.get_summary_stats()  # numeric
+    summary_display = result.get_summary_stats(format_for_display=True)
+    
+    # Generate slide-ready bundle from existing analysis (returns tuple)
+    slide_spec, payload = result.present_executive_pack_for_slides(
+        region="WEST", max_charts=2, charts=["rates_and_mix", "top_drivers"]
     )
     
-    # Use methods on the result
-    narrative = result.get_narrative_for_region("US")
-    summary = result.get_summary_stats()
-    executive_report = result.generate_executive_report("US")
+    # Unified driver for AUTO mode (finds best cut + alternatives)
+    from rca_package.oaxaca_blinder import build_oaxaca_exec_pack
+    pack = build_oaxaca_exec_pack(
+        df=data, 
+        candidate_cuts=[["product"], ["channel"]],
+        focus_region="WEST",  # or None for portfolio mode
+        alternatives=1        # include 1 alternative cut
+    )
+    
+    # FIXED mode for specific cut
+    pack = build_oaxaca_exec_pack(
+        df=data,
+        fixed_cut=["product"],
+        fixed_region="WEST"
+    )
+    
+    # Extract slide components from unified API
+    for slide in pack["slides"]:
+        summary_text = slide["summary"]["summary_text"]
+        slide_info = slide["slide_info"]
+        for spec in slide_info["figure_generators"]:
+            fig, ax = spec["function"](**spec["params"])
+            caption = spec["caption"]
+
+Architecture:
+    - Core produces numeric DataFrames only (no display strings/emojis)
+    - Display formatting via slide drivers or format_for_display=True
+    - Visualization registry in separate viz_oaxaca.py module
+    - Clean separation: math → business logic → presentation
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Union, Iterable
+from typing import Dict, List, Optional, Tuple, Union, Iterable, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
 import ast 
@@ -37,6 +73,33 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# ---- UTILITY FUNCTIONS ----
+
+def as_tuple(category) -> tuple:
+    """Robustly coerce category (tuple, stringified tuple, scalar) to a tuple."""
+    if isinstance(category, tuple):
+        return category
+    s = str(category)
+    if s.startswith("("):
+        try:
+            t = ast.literal_eval(s)
+            if isinstance(t, (list, tuple)):
+                return tuple(t)
+        except Exception:
+            pass
+    return (s,)
+
+def pretty_category(category) -> str:
+    """Consistent display name for any category."""
+    t = as_tuple(category)
+    return " → ".join(str(x) for x in t)
+
+def gap_direction_from(x: float, thresholds: 'AnalysisThresholds') -> 'PerformanceDirection':
+    """Determine performance direction from gap value using thresholds."""
+    if abs(x) < thresholds.near_zero_gap:
+        return PerformanceDirection.IN_LINE
+    return PerformanceDirection.OUTPERFORMS if x > 0 else PerformanceDirection.UNDERPERFORMS
 
 # =============================================================================
 # CORE CONSTANTS AND TYPES
@@ -51,7 +114,7 @@ class BusinessConclusion(Enum):
     PERFORMANCE_DRIVEN = "performance_driven"      # Pure execution differences
     COMPOSITION_DRIVEN = "composition_driven"      # Pure allocation differences  
     SIMPSON_PARADOX = "simpson_paradox"            # Segment performance contradicts aggregate
-    MATHEMATICAL_CANCELLATION = "cancellation"     # Effects cancel out to zero
+
     NO_SIGNIFICANT_GAP = "no_gap"                  # Performs in line with baseline
 
 class PerformanceDirection(Enum):
@@ -74,7 +137,7 @@ class AnalysisThresholds:
     near_zero_gap: float = 0.005         # 0.5pp - essentially no gap
     
     # Execution difference thresholds
-    significant_rate_diff: float = 0.01  # 1pp rate difference
+
     minor_rate_diff: float = 0.005       # 0.5pp rate difference
     
     # Narrative thresholds
@@ -82,7 +145,6 @@ class AnalysisThresholds:
     cumulative_contribution_threshold: float = 0.6  # 60% - for ranking top contributors
     
     # PERCENT-POINT thresholds (explicitly in pp)
-    significant_allocation_diff_pp: float = 10.0  # 10pp - significant allocation difference
     meaningful_allocation_diff_pp: float = 5.0   # 5pp - meaningful allocation difference
     
     # Mathematical validation
@@ -116,6 +178,10 @@ class NarrativeDecision:
     
     # Metadata
     baseline_type: str
+    
+    # Evidence bundle (single source of truth)
+    evidence_tables: Dict[str, pd.DataFrame]   # {"rates_mix": df, "top_drivers": df, "contradiction": df}
+    contradiction_segments: List[str]          # ranked labels used by "despite …"
 
 @dataclass
 class ParadoxReport:
@@ -150,7 +216,7 @@ class AnalysisResult:
     # Internal state (baseline_type passed from orchestrator)
     baseline_type: str
       
-    def get_summary_stats(self) -> Dict:
+    def get_summary_stats(self, format_for_display: bool = False) -> Dict:
         """
         Get organized original DataFrames for portfolio analysis.
         
@@ -161,7 +227,6 @@ class AnalysisResult:
             Dict containing:
             - regional_performance_summary: Regional gaps ranked by performance
             - top_category_contributors: Biggest drivers across all regions
-            - narrative_decisions_summary: Root cause classifications by region
             - paradox_regions: Regions with Simpson's paradox detected
             - cancellation_regions: Regions with mathematical cancellation
         """
@@ -170,55 +235,43 @@ class AnalysisResult:
         if len(self.regional_gaps) == 0:
             return {"error": "No regional data available for analysis"}
         
-        # 1. Regional Performance Summary - ranked by net gap with root cause info merged
-        regional_summary = self.regional_gaps[['region', 'total_net_gap', 'total_performance_gap', 'total_construct_gap']].copy()
-        
-        # Convert to percentage points for readability
-        regional_summary['total_net_gap_pp'] = (regional_summary['total_net_gap'] * 100).round(1).astype(str) + 'pp'
-        regional_summary['total_performance_gap_pp'] = (regional_summary['total_performance_gap'] * 100).round(1).astype(str) + 'pp'
-        regional_summary['total_construct_gap_pp'] = (regional_summary['total_construct_gap'] * 100).round(1).astype(str) + 'pp'
-        
-        # Add root cause information
+        regional_summary = self.regional_gaps[['region','total_net_gap','total_performance_gap','total_construct_gap']].copy()
+
+        # merge root causes (no strings yet)
         for region in regional_summary['region']:
             if region in self.narrative_decisions:
-                decision = self.narrative_decisions[region]
-                regional_summary.loc[regional_summary['region'] == region, 'root_cause'] = decision.root_cause_type.value
-                regional_summary.loc[regional_summary['region'] == region, 'performance_direction'] = decision.performance_direction.value
-        
-        # Sort by magnitude (use original numeric values for sorting)
+                dec = self.narrative_decisions[region]
+                regional_summary.loc[regional_summary['region'] == region, 'root_cause'] = dec.root_cause_type.value
+                regional_summary.loc[regional_summary['region'] == region, 'performance_direction'] = dec.performance_direction.value
         regional_summary = regional_summary.sort_values('total_net_gap', ascending=False)
         
-        # Keep only formatted columns for display
-        regional_summary = regional_summary[['region', 'total_net_gap_pp', 'total_performance_gap_pp', 'total_construct_gap_pp', 'root_cause', 'performance_direction']]
-        
-        # 2. Top Category Contributors - biggest absolute drivers across portfolio
-        category_contributors = self.decomposition_df[['region', 'category', 'net_gap', 'construct_gap_contribution', 'performance_gap_contribution']].copy()
-        
-        # Convert to percentage points for readability
-        category_contributors['net_gap_pp'] = (category_contributors['net_gap'] * 100).round(1).astype(str) + 'pp'
-        category_contributors['construct_gap_pp'] = (category_contributors['construct_gap_contribution'] * 100).round(1).astype(str) + 'pp'
-        category_contributors['performance_gap_pp'] = (category_contributors['performance_gap_contribution'] * 100).round(1).astype(str) + 'pp'
-        
-        category_contributors['abs_gap'] = category_contributors['net_gap'].abs()
-        top_contributors = category_contributors.nlargest(15, 'abs_gap')
-        
-        # Keep only formatted columns for display
-        top_contributors = top_contributors[['region', 'category', 'net_gap_pp', 'construct_gap_pp', 'performance_gap_pp']]
-        
-        # 4. Edge Case Regions
-        paradox_regions = self.paradox_report.affected_regions if self.paradox_report.paradox_detected else []
-        cancellation_regions = self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
-        
+        # top contributors (numeric)
+        top_contributors = self.decomposition_df[['region','category','net_gap','construct_gap_contribution','performance_gap_contribution','abs_gap']].copy()
+        top_contributors = top_contributors.nlargest(15, 'abs_gap')
+
+        if format_for_display:
+            base_cols = ['region','region_overall_rate','baseline_overall_rate']
+            rs = regional_summary.merge(self.regional_gaps[base_cols], on='region', how='left')
+            rs = format_regional_gaps_for_display(rs)
+            tc = top_contributors.copy()
+            tc['net_gap_pp'] = (tc['net_gap']*100).round(1).astype(str)+'pp'
+            tc['construct_gap_pp'] = (tc['construct_gap_contribution']*100).round(1).astype(str)+'pp'
+            tc['performance_gap_pp'] = (tc['performance_gap_contribution']*100).round(1).astype(str)+'pp'
+            tc = tc[['region','category','net_gap_pp','construct_gap_pp','performance_gap_pp']]
+            return {
+                "regional_performance_summary": rs[['region','total_net_gap_pp','total_performance_gap_pp','total_construct_gap_pp','root_cause','performance_direction']],
+                "top_category_contributors": tc,
+                "paradox_regions": self.paradox_report.affected_regions if self.paradox_report.paradox_detected else [],
+                "cancellation_regions": self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
+            }
+
+        # raw numeric by default
         return {
-            "regional_performance_summary": regional_summary,
-            "top_category_contributors": top_contributors, 
-            "paradox_regions": paradox_regions,
-            "cancellation_regions": cancellation_regions
+            "regional_performance_summary": regional_summary.reset_index(drop=True),
+            "top_category_contributors": top_contributors[['region','category','net_gap','construct_gap_contribution','performance_gap_contribution']].reset_index(drop=True),
+            "paradox_regions": self.paradox_report.affected_regions if self.paradox_report.paradox_detected else [],
+            "cancellation_regions": self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
         }
-    
-
-    
-
     
     def get_narrative_for_region(self, region: str) -> NarrativeDecision:
         """
@@ -247,42 +300,125 @@ class AnalysisResult:
         logger.info(f"🎯 FOUND: {decision.root_cause_type.value} analysis for {region}")
         return decision
     
-    def generate_executive_report(self, region: str) -> Dict:
+    def present_executive_pack_for_slides(
+        self,
+        region: str,
+        *,
+        max_charts: int = 2,
+        charts: Optional[List[str]] = None,   # explicit chart keys from viz.VIZ_REGISTRY
+        table_rows: int = 10,
+        custom_title: Optional[str] = None  # Allow custom title override
+    ) -> Tuple[Dict, Dict]:
         """
-        Generate executive report data for a specific region.
-        
-        Returns structured data instead of formatted text, following the same
-        pattern as get_summary_stats().
-        
-        Args:
-            region: Region identifier for report generation
-            
-        Returns:
-            Dict containing:
-            - narrative_text: Root cause narrative
-            - supporting_evidence: Evidence table DataFrame  
-            - analysis_summary: Key metrics and classifications
+        Slide-friendly bundle for a single region.
+        - No files saved; we return function+params specs (callables) and DFs.
+        - 'charts' lets the caller force which exhibits to render (order respected).
+          Valid names: rates_and_mix, driver_matrix, top_drivers
+        - If 'charts' is None, we auto-pick based on root cause.
         """
-        logger.info(f"🎯 GENERATING EXECUTIVE REPORT DATA for {region}")
+        # 1) One-liner summary for the summary page
+        decision = self.narrative_decisions[region]
+        summary_text = decision.narrative_text
+
+        # 2) Get shares from key_metrics (computed once in narrative engine)
+        gap_pp   = float(decision.key_metrics["total_gap"]) * 100
+        reg_pp   = float(self.regional_gaps[self.regional_gaps["region"] == region].iloc[0]["region_overall_rate"]) * 100
+        base_pp  = float(self.regional_gaps[self.regional_gaps["region"] == region].iloc[0]["baseline_overall_rate"]) * 100
         
-        # Get pre-computed narrative decision (contains everything we need)
-        if region not in self.narrative_decisions:
-            return {"error": f"No narrative decision available for region {region}"}
+        # Use pre-computed shares from key_metrics or calculate simple ones
+        mix_abs = abs(float(decision.key_metrics["construct_gap"]))
+        exe_abs = abs(float(decision.key_metrics["performance_gap"]))
+        total_abs = mix_abs + exe_abs
+        shares = {"mix_share": mix_abs/total_abs if total_abs > 0 else 0.5, 
+                  "exe_share": exe_abs/total_abs if total_abs > 0 else 0.5}
+
+        # 3) Supporting evidence table (top rows)
+        root = getattr(decision.root_cause_type, "value", str(decision.root_cause_type))
+        evidence_df = decision.supporting_table_df.head(table_rows).copy()
+        tables = decision.evidence_tables
+
+        # 3.1) Build richer template text that includes table markers
+        top_drivers_text = ", ".join(
+            f"{category} ({r['Net (pp)']:+.1f}pp)"
+            for category, r in tables["top_drivers_table"].head(3).iterrows()
+        )
+        despite_text = ("Despite " + " and ".join(decision.contradiction_segments[:2]) + "."
+                       if decision.contradiction_segments else "")
         
-        narrative_decision = self.narrative_decisions[region]
-        
-        # Return structured data for downstream formatting
-        return {
-            "narrative_text": narrative_decision.narrative_text,
-            "supporting_evidence": narrative_decision.supporting_table_df,
+        template_text = f"""{decision.narrative_text}
+
+Top drivers: {top_drivers_text}. {despite_text}
+
+## Detailed Analysis
+
+{{{{ rates_mix_table }}}}
+
+## Impact Breakdown  
+
+{{{{ top_drivers_table }}}}""".strip()
+
+        # 4) Decide which charts to show (driver logic lives here)
+        chart_names: List[str]
+        if charts is not None:
+            chart_names = charts
+        else:
+            # All cases now default to the single useful chart
+            chart_names = ["rates_and_mix"]
+
+        # 5) Convert chart names → figure_generators spec
+        chart_registry = {
+            "rates_and_mix": plot_rates_and_mix_panel,
+        }
+        figure_generators = []
+        for name in chart_names[:max_charts]:
+            if name not in chart_registry: 
+                continue
+            fn = chart_registry[name]
+            cap = {
+                # Decision-grade visualizations only
+                "rates_and_mix":    f"Left: Success rates comparison. Right: Exposure mix comparison. Leaders can verify narrative claims instantly.",
+            }.get(name, "")
+            figure_generators.append({
+                "function": fn,
+                "params": {"result": self, "region": region},
+                "caption": cap
+            })
+
+        # 6) Assemble the single slide spec
+        slide_spec = {
+            "summary": {"summary_text": summary_text},
+            "slide_info": {
+                "title": custom_title or f"{region}",
+                "template_text": template_text,
+                "template_params": {
+                    "region": region,
+                    "gap_pp": f"{gap_pp:+.1f}pp",
+                    "region_rate_pp": f"{reg_pp:.1f}pp",
+                    "baseline_rate_pp": f"{base_pp:.1f}pp",
+                    "mix_share": shares["mix_share"],
+                    "exe_share": shares["exe_share"],
+                },
+                "figure_generators": figure_generators,
+                "dfs": {"supporting_evidence": evidence_df, **tables},
+                "layout_type": "text_tables_then_figure",
+                "total_hypotheses": 1,  # Each Oaxaca slide represents one hypothesis
+            },
+        }
+
+        # Minimal, non-duplicated payload (one source of truth)
+        payload = {
             "analysis_summary": {
                 "region": region,
-                "gap_magnitude_pp": f"{narrative_decision.key_metrics['gap_magnitude']*100:.1f}pp",
-                "root_cause": narrative_decision.root_cause_type.value,
-                "performance_direction": narrative_decision.performance_direction.value,
-                "gap_significance": narrative_decision.gap_significance.value
-            }
+                "root_cause": root,
+                "gap_pp": gap_pp,
+            },
+            "paradox_regions": self.paradox_report.affected_regions
+                if getattr(self.paradox_report, "paradox_detected", False) else [],
+            "cancellation_regions": self.cancellation_report.affected_regions
+                if getattr(self.cancellation_report, "cancellation_detected", False) else [],
         }
+
+        return slide_spec, payload
 
 # =============================================================================
 # CORE MATHEMATICAL ENGINE
@@ -430,6 +566,11 @@ class NarrativeTemplateEngine:
         # Step 4: Create supporting table
         supporting_table = self._create_template_table(region, decomposition_df, business_conclusion)
         
+        # Build evidence tables centrally (single source of truth)
+        rows = decomposition_df[decomposition_df["region"] == region]
+        direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
+        tables, segs = self._build_evidence_tables(rows, direction)
+        
         return NarrativeDecision(
             root_cause_type=business_conclusion,
             performance_direction=performance_direction,
@@ -442,7 +583,9 @@ class NarrativeTemplateEngine:
                 "construct_gap": total_construct_gap,  # Already in decimal form
                 "performance_gap": total_performance_gap,  # Already in decimal form
             },
-            baseline_type=baseline_type
+            baseline_type=baseline_type,
+            evidence_tables=tables,
+            contradiction_segments=segs
         )
     
     def _generate_template_text(
@@ -464,9 +607,7 @@ class NarrativeTemplateEngine:
         direction_text = direction.value
         
         # Template selection based on BusinessConclusion
-        if conclusion == BusinessConclusion.MATHEMATICAL_CANCELLATION:
-            return self._cancellation_template(region, decomposition_df, regional_gaps, baseline_name)
-        elif conclusion == BusinessConclusion.SIMPSON_PARADOX:
+        if conclusion == BusinessConclusion.SIMPSON_PARADOX:
             return self._paradox_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
         elif conclusion == BusinessConclusion.COMPOSITION_DRIVEN:
             return self._composition_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
@@ -481,12 +622,8 @@ class NarrativeTemplateEngine:
         # Get region data from enriched DataFrame
         region_data = decomposition_df[decomposition_df["region"] == region]
         
-        if conclusion == BusinessConclusion.MATHEMATICAL_CANCELLATION:
-            return self._create_cancellation_table(region_data)
-        elif conclusion == BusinessConclusion.SIMPSON_PARADOX:
-            return self._create_paradox_table(region_data)
-        else:
-            return self._create_standard_table(region_data)
+        # All cases use the same standard table format
+        return self._create_standard_table(region_data)
     
     # Template methods for different narrative types
     def _get_baseline_name(self, baseline_type: str) -> str:
@@ -498,12 +635,7 @@ class NarrativeTemplateEngine:
             'previous_period': 'previous period'
         }
         return baseline_names.get(baseline_type, baseline_type)
-    
-    def _cancellation_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str) -> str:
-        """Template for mathematical cancellation narrative."""
-        return (f"{region} performs in line with {baseline_name} baseline "
-                f"due to mathematical cancellation where individual category effects "
-                f"offset each other at the aggregate level.")
+
     
     def _paradox_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
         """Template for Simpson's paradox narrative following gold standard pattern."""
@@ -512,49 +644,21 @@ class NarrativeTemplateEngine:
         actual_region_rate = region_totals["region_overall_rate"]
         actual_baseline_rate = region_totals["baseline_overall_rate"]
         
-        # Identify segments where region outperforms vs underperforms
-        outperform_segments = []
-        allocation_issues = []
+        # Use centralized contradiction logic
+        region_rows = decomposition_df[decomposition_df["region"] == region]
+        direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
+        contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
         
-        # Work directly with numeric data from category breakdown
-        region_data = decomposition_df[decomposition_df["region"] == region]
-        for _, row in region_data.iterrows():
-            category_name = row.get(
-                'category_clean',
-                self._clean_category_display_name(row.get('category'))
-            )
-            # Use pre-enriched columns instead of manual calculation
-            region_rate_pct = row['region_rate_pct']
-            baseline_rate_pct = row['rest_rate_pct']
-            region_mix_display = row['region_mix_display']
-            baseline_mix_display = row['rest_mix_display']
-            
-            # Track segment performance for "despite" clause (use raw values for comparison)
-            if row['region_rate'] > row['rest_rate']:
-                outperform_segments.append(f"{category_name} ({region_rate_pct} vs {baseline_rate_pct})")
-            
-            # Track allocation issues for "due to" clause (use raw values for calculation)
-            mix_diff_pp = (row['region_mix_pct'] - row['rest_mix_pct']) * 100  # Convert to percentage points
-            if abs(mix_diff_pp) >= self.thresholds.significant_allocation_diff_pp:
-                if mix_diff_pp > 0:
-                    allocation_issues.append(f"over-concentration in {category_name} ({region_mix_display} vs {baseline_mix_display} baseline)")
-                else:
-                    allocation_issues.append(f"under-concentration in {category_name} ({region_mix_display} vs {baseline_mix_display} baseline)")
+        # Use centralized allocation issues
+        allocation_issues = self._build_allocation_issues(region_rows)
+        allocation_text = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues that offset segment-level strengths"
         
-        # Build gold standard paradox pattern
-        if outperform_segments and direction_text == PerformanceDirection.UNDERPERFORMS.value:
-            # Classic Simpson's Paradox: outperforms in segments but underperforms overall
-            segment_text = " and ".join(outperform_segments[:3])  # Top segments
-            
-            # Create allocation explanation
-            if allocation_issues:
-                allocation_text = " and ".join(allocation_issues[:2])
-            else:
-                allocation_text = "allocation issues that offset segment-level strengths"
-            
+        # Use the same contradiction block everywhere
+        if contradicts and segs and direction_text == PerformanceDirection.UNDERPERFORMS.value:
+            seg_text = " and ".join(segs[:3])
             return (f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp "
                    f"({actual_region_rate:.0%} vs {actual_baseline_rate:.0%}) despite "
-                   f"{segment_text} due to {allocation_text}.")
+                   f"{seg_text} due to {allocation_text}.")
         else:
             # Fallback with actual data
             contributing_segments = []
@@ -562,12 +666,12 @@ class NarrativeTemplateEngine:
             for _, row in region_data.iterrows():
                 category_name = row.get(
                 'category_clean',
-                self._clean_category_display_name(row.get('category'))
+                pretty_category(row.get('category'))
             )
-                # Use pre-enriched net_gap_pp column
-                net_gap_pp = row['net_gap_pp']
-                # Use minor_gap threshold for meaningful contributors (convert numeric pp to decimal for comparison)
-                if abs(row['net_gap_numeric'] / 100) >= self.thresholds.minor_gap:
+                # Calculate net gap in percentage points for display
+                net_gap_pp = f"{row['net_gap']*100:+.1f}pp"
+                # Use minor_gap threshold for meaningful contributors
+                if abs(row['net_gap']) >= self.thresholds.minor_gap:
                     contributing_segments.append(f"{category_name} ({net_gap_pp})")
             
             segments_text = ", ".join(contributing_segments[:3]) if contributing_segments else "complex dynamics"
@@ -582,48 +686,22 @@ class NarrativeTemplateEngine:
         overall_region_rate = region_totals["region_overall_rate"]
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
-        # Get performance in each category for "despite" clause
-        performance_segments = []
-        allocation_issues = []
+        # Use centralized contradiction logic
+        region_rows = decomposition_df[decomposition_df["region"] == region]
+        direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
+        contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
         
-        region_data = decomposition_df[decomposition_df["region"] == region]
-        for _, row in region_data.iterrows():
-            category_name = row.get(
-                'category_clean',
-                self._clean_category_display_name(row.get('category'))
-            )
-            # Use pre-enriched columns
-            region_rate_pct = row['region_rate_pct']
-            baseline_rate_pct = row['rest_rate_pct']
-            region_mix_display = row['region_mix_display']
-            baseline_mix_display = row['rest_mix_display']
-            
-            # Track performance in each segment for "despite" clause (use raw values for comparison)
-            rate_diff = row['region_rate'] - row['rest_rate']
-            # Use minor_rate_diff threshold for meaningful rate differences
-            if abs(rate_diff) >= self.thresholds.minor_rate_diff:
-                if rate_diff > 0:
-                    performance_segments.append(f"outperforming in {category_name} ({region_rate_pct} vs {baseline_rate_pct})")
-                else:
-                    performance_segments.append(f"underperforming in {category_name} ({region_rate_pct} vs {baseline_rate_pct})")
-            else:
-                performance_segments.append(f"same performance in {category_name} ({region_rate_pct} vs {baseline_rate_pct})")
-            
-            # Track allocation issues for "due to" clause (use raw values for calculation)
-            mix_diff_pp = (row['region_mix_pct'] - row['rest_mix_pct']) * 100  # Convert to percentage points
-            if abs(mix_diff_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                if mix_diff_pp > 0:
-                    allocation_issues.append(f"over-concentration in {category_name} ({region_mix_display} vs {baseline_mix_display} baseline)")
-                else:
-                    allocation_issues.append(f"under-allocation to {category_name} ({region_mix_display} vs {baseline_mix_display} baseline)")
-        
-        # Build gold standard pattern: "despite...due to"
-        despite_clause = " and ".join(performance_segments[:2]) if performance_segments else "mixed segment performance"
-        
-        # Use composition-focused language for allocation issues
+        # Use centralized allocation issues
+        allocation_issues = self._build_allocation_issues(region_rows)
         due_to_clause = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues"
         
-        return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}) despite {despite_clause} due to {due_to_clause}."
+        # Use the same contradiction block everywhere
+        if contradicts and segs:
+            seg_text = " and ".join(segs[:3])
+            return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}) despite {seg_text} due to {due_to_clause}."
+        else:
+            # straight driver
+            return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), driven by {due_to_clause}."
     
     def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
         """Template for performance-driven narrative - using backup logic."""
@@ -633,37 +711,156 @@ class NarrativeTemplateEngine:
         overall_region_rate = region_totals["region_overall_rate"]
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
-        # Get top contributors from enriched DataFrame
         region_data = decomposition_df[decomposition_df["region"] == region]
-        
-        top_contributors = region_data[region_data["is_top_contributor"] == True].nlargest(3, 'abs_gap_numeric')
-        
-        # Use pre-computed contributor text
-        category_text = ", ".join(top_contributors['contributor_text'].tolist()) if len(top_contributors) > 0 else "various factors"
-        
-        # Use performance-focused language for driving factors
-        return f"{region} {direction_text} the {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs. {overall_baseline_rate:.0%}), driven by {category_text}"
+        top = (region_data.assign(_abs=region_data["performance_gap_contribution"].abs())
+                         .sort_values("_abs", ascending=False)
+                         .head(3)[["category_clean","region_rate","rest_rate","performance_gap_contribution"]])
+
+        drivers = ", ".join(
+            f"{r.category_clean} ({r.region_rate*100:.1f}% vs {r.rest_rate*100:.1f}%, "
+            f"{r.performance_gap_contribution*100:+.1f}pp impact)"
+            for r in top.itertuples()
+        ) if len(top) else "various factors"
+
+        return (f"{region} {direction_text} the {baseline_name} by {gap_magnitude:.1f}pp "
+                f"({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), "
+                f"driven by {drivers}.")
     
     def _no_gap_template(self, region: str, regional_gaps: pd.DataFrame, baseline_name: str) -> str:
         """Template for no significant gap narrative."""
         region_totals = regional_gaps[regional_gaps["region"] == region].iloc[0]
         total_gap = region_totals["total_net_gap"]
         base_narrative = (f"{region} performs in line with {baseline_name} baseline "
-                         f"with no significant performance difference "
-                         f"({total_gap*100:+.1f}pp gap)")
+                f"with no significant performance difference "
+                f"({total_gap*100:+.1f}pp gap)")
         
         # Add cancellation warning if this region has offsetting effects
         # Note: We need access to cancellation_report here, but it's not passed in.
         # For now, return base narrative. The warning logic should be added at calling site.
         return base_narrative
     
-    def _create_cancellation_table(self, category_breakdown: pd.DataFrame) -> pd.DataFrame:
-        """Template table for cancellation cases."""
-        return self._create_standard_table(category_breakdown)  # Same format for now
-    
-    def _create_paradox_table(self, category_breakdown: pd.DataFrame) -> pd.DataFrame:
-        """Template table for paradox cases."""
-        return self._create_standard_table(category_breakdown)  # Same format for now
+    def _contradiction_evidence(
+        self,
+        direction: PerformanceDirection,
+        rows: pd.DataFrame,
+        *,
+        min_rate_pp: Optional[float] = None,
+        min_exposure: float = 0.02  # ignore slivers <2% of combined exposure
+    ) -> Tuple[bool, float, list]:
+        """
+        Returns: (contradicts, disagree_share, segments_list)
+          - contradicts: True iff weighted share of segments that go against the overall direction is material
+          - disagree_share: 0..1 of exposure pulling opposite to headline (same definition as detector)
+          - segments_list: ["Cat A (+1.2pp)", ...] top few contradicting segments
+        """
+        
+        # Early-out for in-line cases (no meaningful contradiction possible)
+        if direction == PerformanceDirection.IN_LINE:
+            return False, 0.0, []
+            
+        # thresholds
+        min_rate_pp = (min_rate_pp if min_rate_pp is not None
+                       else self.thresholds.minor_rate_diff * 100.0)  # convert to pp
+
+        # Use shared weight computation (same as detector)
+        w = _weights_common(rows)
+
+        # compute rate deltas (pp)
+        rate_dx_pp = (rows["region_rate"] - rows["rest_rate"]) * 100.0
+        # exposure filter
+        exposure_ok = w >= min_exposure
+        # material rate filter
+        rate_ok = rate_dx_pp.abs() >= min_rate_pp
+
+        # opposite sign vs overall direction
+        overall_sign = 1 if direction == PerformanceDirection.OUTPERFORMS else -1
+        opposite = (rate_dx_pp * overall_sign) < 0
+
+        mask = exposure_ok & rate_ok & opposite
+        disagree_share = float(w[mask].sum())
+        contradicts = disagree_share >= getattr(self.thresholds, "paradox_disagree_share", 0.40)
+
+        # Build a ranked list of contradicting segments (by weight * |rate dx|)
+        tmp = rows.loc[mask].copy()
+        if len(tmp):
+            tmp["_label"] = tmp.apply(
+                lambda r: r.get("category_clean", r.get("category", "")), axis=1
+            )
+            tmp["_impact_rank"] = (w.loc[tmp.index] * rate_dx_pp.loc[tmp.index].abs())
+            tmp = tmp.sort_values("_impact_rank", ascending=False)
+            segments = [
+                f"{lbl} ({dx:+.1f}pp)" for lbl, dx in zip(tmp["_label"], rate_dx_pp.loc[tmp.index])
+            ]
+        else:
+            segments = []
+
+        return contradicts, disagree_share, segments
+
+    def _build_allocation_issues(self, rows: pd.DataFrame) -> List[str]:
+        """Allocation phrases with unlabeled % and pp impact."""
+        out = []
+        for _, r in rows.iterrows():
+            dx_pp = (r["region_mix_pct"] - r["rest_mix_pct"]) * 100
+            if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
+                name = r.get("category_clean", pretty_category(r.get("category")))
+                r_pct = r["region_mix_pct"] * 100
+                b_pct = r["rest_mix_pct"] * 100
+                impact_pp = r.get("construct_gap_contribution", 0.0) * 100
+                out.append(
+                    f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
+                    f"({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)"
+                )
+        return out
+
+    def _build_evidence_tables(self, rows: pd.DataFrame, direction: PerformanceDirection) -> Tuple[Dict[str,pd.DataFrame], List[str]]:
+        """Build all evidence tables in one place - single source of truth."""
+        # contradiction (single source of truth)
+        contradicts, _, segs = self._contradiction_evidence(direction, rows)
+
+        # Get the region name from the first row for column names
+        region_name = rows.iloc[0]["region"] if not rows.empty else "Region"
+
+        # Build rates_mix table with Category as index and region name in columns
+        # Let make_slides.py handle percentage formatting based on column names
+        category_index = rows.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
+        rates_mix = pd.DataFrame({
+            f"{region_name} rate": rows["region_rate"].values,  # Will be auto-detected as rate for formatting
+            "Peers rate": rows["rest_rate"].values,
+            "Rate Δ (pp)": np.round((rows["region_rate"]-rows["rest_rate"]).values*100, 1),  # pp = percentage points
+            f"{region_name} mix pct": rows["region_mix_pct"].values,  # Will be auto-detected for % formatting  
+            "Peers mix pct": rows["rest_mix_pct"].values,
+            "Mix Δ (pp)": np.round((rows["region_mix_pct"]-rows["rest_mix_pct"]).values*100, 1),   
+        }, index=category_index)
+        
+        if "net_gap" in rows:
+            rates_mix["Net impact (pp)"] = np.round((rows["net_gap"]*100).values, 1)  # Use signed net gap, not abs
+            rates_mix = rates_mix.sort_values("Net impact (pp)", key=abs, ascending=False)  # Sort by absolute value
+
+        # Build top_drivers table with Category as index
+        top = (rows.assign(_abs=(rows["net_gap"].abs()*100))
+                    .sort_values("_abs", ascending=False)
+                    .head(10))
+        top_category_index = top.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
+        top_drivers = pd.DataFrame({
+            "Net (pp)": np.round((top["net_gap"]*100).values, 1),
+            "Mix (pp)": np.round((top["construct_gap_contribution"]*100).values, 1), 
+            "Execution (pp)": np.round((top["performance_gap_contribution"]*100).values, 1)
+        }, index=top_category_index)
+
+        if contradicts:
+            # Build contradiction table to match the segments list
+            # Category is now the index, so filter by index
+            category_names = [s.split(" (")[0] for s in segs]
+            contradiction = rates_mix.loc[
+                rates_mix.index.isin(category_names)
+            ][["Rate Δ (pp)", "Mix Δ (pp)"]]
+        else:
+            contradiction = pd.DataFrame(columns=["Rate Δ (pp)", "Mix Δ (pp)"])
+
+        return ({"rates_mix_table": rates_mix,
+                 "top_drivers_table": top_drivers,
+                 "contradiction_evidence": contradiction},
+                segs)
     
     def _create_standard_table(self, category_breakdown: pd.DataFrame) -> pd.DataFrame:
         """Template table for standard cases with proper ranking by gap importance."""
@@ -674,11 +871,11 @@ class NarrativeTemplateEngine:
         # (abs_gap_numeric already exists from enrichment, no need to recreate)
         table = table.sort_values('abs_gap_numeric', ascending=False)
         
-        # Use pre-enriched display columns (ALL DataFrames should be enriched by this point)
-        table['Region%'] = table['region_rate_pct']
-        table['Baseline%'] = table['rest_rate_pct'] 
-        table['Gap_pp'] = table['net_gap_pp']
-        table['Mix%'] = table['region_mix_display']
+        # Format columns inline from numeric values
+        table['Region%'] = (table['region_rate'] * 100).round(1).astype(str) + '%'
+        table['Baseline%'] = (table['rest_rate'] * 100).round(1).astype(str) + '%'
+        table['Gap_pp'] = (table['net_gap'] * 100).round(1).astype(str) + 'pp'
+        table['Mix%'] = (table['region_mix_pct'] * 100).round(1).astype(str) + '%'
         
         # Add status indicators and business insights with contribution ranking
         def get_status_with_rank(gap, rank):
@@ -696,27 +893,11 @@ class NarrativeTemplateEngine:
         table['Status'] = table.apply(lambda row: get_status_with_rank(row['net_gap'], row['rank']), axis=1)
         
         # Clean category names using unified method
-        table['Category'] = table['category'].apply(lambda name: self._clean_category_display_name(name))
+        table['Category'] = table['category'].apply(pretty_category)
         
         return table[['Status', 'Category', 'Region%', 'Baseline%', 'Gap_pp', 'Mix%']]
     
-    def _clean_category_display_name(self, category_name) -> str:
-        """Clean category names for business display."""
-        # Handle tuple directly
-        if isinstance(category_name, tuple) and len(category_name) == 2:
-            return f"{category_name[0]} - {category_name[1]}"
-        
-        # Handle string representation of tuple
-        elif isinstance(category_name, str) and category_name.startswith("('") and category_name.endswith("')"):
-            try:
-                parsed = ast.literal_eval(category_name)
-                if isinstance(parsed, tuple) and len(parsed) == 2:
-                    
-                    return f"{parsed[0]} - {parsed[1]}"
-            except:
-                pass
-        
-        return str(category_name)
+
 
 class BusinessAnalyzer:
     """Pure business logic for interpreting prepared analysis data."""
@@ -764,7 +945,7 @@ class BusinessAnalyzer:
         )
         
         # Step 2: Determine PerformanceDirection (universal)
-        performance_direction = self._determine_performance_direction(total_gap)
+        performance_direction = gap_direction_from(total_gap, self.thresholds)
         
         # Step 3: Assess gap significance for narrative context
         gap_significance = self.assess_gap_significance(gap_magnitude)
@@ -826,16 +1007,6 @@ class BusinessAnalyzer:
             # In balanced cases, default to performance_driven as it's more actionable
             return BusinessConclusion.PERFORMANCE_DRIVEN
 
-    def _determine_performance_direction(self, total_gap: float) -> PerformanceDirection:
-        """Pure data-driven performance direction logic."""
-        # Use near_zero_gap threshold instead of hardcoded value
-        if abs(total_gap) < self.thresholds.near_zero_gap:
-            return PerformanceDirection.IN_LINE
-        elif total_gap > 0:
-            return PerformanceDirection.OUTPERFORMS
-        else:
-            return PerformanceDirection.UNDERPERFORMS
-
 # =============================================================================
 # EDGE CASE DETECTION
 # =============================================================================
@@ -868,7 +1039,7 @@ class EdgeCaseDetector:
     
     def _pair_gap_vs_common_mix(self, rows: pd.DataFrame) -> Tuple[float, float]:
         """
-        New helper for Simpson detection using common-mix comparator.
+        (Fixed) pooled and common-mix gaps, decimals.
         
         Args:
             rows: per product; must include cols: region_rate, rest_rate, region_mix_pct, rest_mix_pct
@@ -879,12 +1050,8 @@ class EdgeCaseDetector:
         # pooled headline diff (decimal)
         pooled = (rows['region_mix_pct']*rows['region_rate']).sum() - (rows['rest_mix_pct']*rows['rest_rate']).sum()
         
-        # common-mix weights (exposure-based). If you don't have trials, use (mA+mB)
-        if 'region_trials' in rows and 'rest_trials' in rows:
-            w = rows['region_trials'].fillna(0) + rows['rest_trials'].fillna(0)
-        else:
-            w = rows['region_mix_pct'] + rows['rest_mix_pct']
-        w = w / w.sum() if w.sum() else w
+        # common-mix weights (fixed bug: use helper method)
+        w = _weights_common(rows)
         common = (w * (rows['region_rate'] - rows['rest_rate'])).sum()
         
         return float(pooled), float(common)
@@ -934,7 +1101,6 @@ class EdgeCaseDetector:
         self,
         aggregate_results: pd.DataFrame,
         detailed_results: pd.DataFrame,
-        top_n_focus: int = 3,
         parent_index: int = 0  # 0 = child[0] is the parent; 1 = child[1]; etc.
     ) -> ParadoxReport:
         """
@@ -946,22 +1112,9 @@ class EdgeCaseDetector:
         
         paradox_cases = []
         affected_regions = set()
-
-        def _to_tuple(x):
-            if isinstance(x, tuple):
-                return x
-            s = str(x)
-            if s.startswith("("):
-                try:
-                    t = ast.literal_eval(s)
-                    if isinstance(t, (list, tuple)):
-                        return tuple(t)
-                except Exception:
-                    pass
-            return (s,)
-
+        
         def _match_parent(parent, child, idx):
-            t = _to_tuple(child)
+            t = as_tuple(child)
             idx = min(idx, len(t) - 1)  # safe clamp
             return str(t[idx]) == str(parent)
 
@@ -975,7 +1128,7 @@ class EdgeCaseDetector:
                 ]
                 if len(detailed_subset) <= 1:
                     continue
-
+                
                 # Aggregate-level RATE gap (direction at parent)
                 pooled = float(agg_row["region_rate"] - agg_row["rest_rate"])
 
@@ -983,14 +1136,8 @@ class EdgeCaseDetector:
                 _, common = self._pair_gap_vs_common_mix(detailed_subset)
 
                 # Materiality gating under unified thresholds
-                if {'region_trials', 'rest_trials'}.issubset(detailed_subset.columns):
-                    w = (detailed_subset['region_trials'].fillna(0) + detailed_subset['rest_trials'].fillna(0))
-                else:
-                    w = (detailed_subset['region_mix_pct'] + detailed_subset['rest_mix_pct'])
-                w = w / w.sum() if w.sum() else w
-
-                rate_diff = (detailed_subset['region_rate'] - detailed_subset['rest_rate'])
-                disagree_share = float(w[np.sign(rate_diff) == (-1 if pooled > 0 else 1)].sum()) if pooled != 0 else float(w[rate_diff != 0].sum())
+                # Use consolidated helper methods
+                disagree_share = _disagree_share_common(detailed_subset, pooled)
                 impact_change = abs(abs(common) - abs(pooled))
 
                 flip = self._paradox_direction_ok(pooled, common)
@@ -1015,7 +1162,7 @@ class EdgeCaseDetector:
                         "impact_change": impact_change
                     })
                     affected_regions.add(region)
-
+        
         if not paradox_cases:
             return ParadoxReport(False, [], ParadoxType.NONE, GapSignificance.LOW)
 
@@ -1036,29 +1183,9 @@ class EdgeCaseDetector:
             if len(rows) <= 1:
                 continue
 
-            # pooled headline diff (decimal)
-            pooled = float(
-                (rows['region_mix_pct'] * rows['region_rate']).sum()
-                - (rows['rest_mix_pct'] * rows['rest_rate']).sum()
-            )
-
-            # common-mix weights across PRODUCTS
-            if {'region_trials', 'rest_trials'}.issubset(rows.columns):
-                w = rows['region_trials'].fillna(0) + rows['rest_trials'].fillna(0)
-            else:
-                w = rows['region_mix_pct'] + rows['rest_mix_pct']
-            w = w / w.sum() if w.sum() else w
-
-            # common-mix rate gap
-            diff = rows['region_rate'] - rows['rest_rate']
-            common = float((w * diff).sum())
-
-            # how much exposure disagrees with the pooled direction
-            if pooled == 0:
-                disagree_share = float(w[diff != 0].sum())
-            else:
-                disagree_share = float(w[np.sign(diff) == -np.sign(pooled)].sum())
-
+            # Use consolidated helper methods
+            pooled, common = self._pair_gap_vs_common_mix(rows)
+            disagree_share = _disagree_share_common(rows, pooled)
             impact_change = abs(abs(common) - abs(pooled))
             flip = self._paradox_direction_ok(pooled, common)
             material = (
@@ -1098,21 +1225,8 @@ def _rollup_by_axis(df_rows: pd.DataFrame, parent_index: int) -> pd.DataFrame:
     at parent_index from the category tuple. No category names are hard-coded.
     Expects df_rows with: ['region','category','region_rate','rest_rate','region_mix_pct','rest_mix_pct'].
     """
-    def _to_tuple(x):
-        if isinstance(x, tuple):
-            return x
-        s = str(x)
-        if s.startswith("("):
-            try:
-                t = ast.literal_eval(s)
-                if isinstance(t, (list, tuple)):
-                    return tuple(t)
-            except Exception:
-                pass
-        return (s,)
-
     tmp = df_rows.copy()
-    tmp["_cat_tuple"] = tmp["category"].apply(_to_tuple)
+    tmp["_cat_tuple"] = tmp["category"].apply(as_tuple)
     tmp["_parent"] = tmp["_cat_tuple"].apply(lambda t: t[parent_index] if len(t) > parent_index else t[-1])
 
     def _agg(g):
@@ -1238,12 +1352,35 @@ def run_oaxaca_analysis(
             'baseline_overall_rate': baseline_overall_rate
         }
         
-        # Align indices for consistent calculation
-        baseline_rates = baseline_rates.reindex(region_mix.index, fill_value=0.0)
-        baseline_mix = baseline_mix.reindex(region_mix.index, fill_value=0.0)
+        # CRITICAL FIX: Align on the union of ALL cells (not just region cells)
+        # This prevents math validation failures from dropped baseline-only cells
+        
+        # Pre-reindex validation
+        assert abs(region_mix.sum() - 1.0) < 1e-12, f"Region mix doesn't sum to 1.0: {region_mix.sum()}"
+        assert abs(baseline_mix.sum() - 1.0) < 1e-12, f"Baseline mix doesn't sum to 1.0: {baseline_mix.sum()}"
+        
+        # Use full union of cells from all sources
+        all_idx = (region_mix.index
+                  .union(baseline_mix.index)
+                  .union(region_rates.index)
+                  .union(baseline_rates.index))
+
+        region_mix   = region_mix.reindex(all_idx,   fill_value=0.0)
+        baseline_mix = baseline_mix.reindex(all_idx, fill_value=0.0)
+
+        # Let rates be NaN where undefined; they won't matter when mix=0
+        region_rates   = region_rates.reindex(all_idx)
+        baseline_rates = baseline_rates.reindex(all_idx)
+
+        # If a rate is NaN on one side but that side has exposure, borrow the other side's rate;
+        # if both NaN, set 0 (will be multiplied by 0 exposure on both sides anyway).
+        region_rates   = region_rates.fillna(baseline_rates).fillna(0.0)
+        baseline_rates = baseline_rates.fillna(region_rates).fillna(0.0)
+
+        idx_to_iterate = all_idx
         
         # Process each category
-        for category in region_mix.index:
+        for category in idx_to_iterate:
             # Get values (with defaults for missing categories)
             region_mix_val = region_mix.get(category, 0)
             baseline_mix_val = baseline_mix.get(category, 0) 
@@ -1258,12 +1395,12 @@ def run_oaxaca_analysis(
             )
             
             # Calculate additional metrics
-            performance_index = region_rate_val / baseline_rate_val if baseline_rate_val != 0 else np.nan
+
             
-            # Create result record
+            # Create result record - store both tuple and string for consistency
             decomposition_results.append({
                 "region": region,
-                "category": str(category),
+                "category": str(category),  # display string
                 "region_mix_pct": region_mix_val,
                 "rest_mix_pct": baseline_mix_val,
                 "region_rate": region_rate_val,
@@ -1271,7 +1408,7 @@ def run_oaxaca_analysis(
                 "construct_gap_contribution": construct_gap,
                 "performance_gap_contribution": performance_gap,
                 "net_gap": net_gap,
-                "performance_index": performance_index
+
             })
     
     # Convert to DataFrame
@@ -1328,7 +1465,6 @@ def run_oaxaca_analysis(
         p_parent_child = edge_detector.detect_simpson_paradox(
             aggregate_results=decomposition_df,
             detailed_results=subcategory_results.decomposition_df,
-            top_n_focus=3,
             parent_index=0  # children are tuples (category_columns..., subcategory_columns...), parent is first position
         )
         if p_parent_child.paradox_detected:
@@ -1347,7 +1483,6 @@ def run_oaxaca_analysis(
         p_axis0 = edge_detector.detect_simpson_paradox(
             aggregate_results=agg_axis0,
             detailed_results=decomposition_df,
-            top_n_focus=3,
             parent_index=0
         )
         if p_axis0.paradox_detected:
@@ -1358,15 +1493,14 @@ def run_oaxaca_analysis(
         p_axis1 = edge_detector.detect_simpson_paradox(
             aggregate_results=agg_axis1,
             detailed_results=decomposition_df,
-            top_n_focus=3,
             parent_index=1
         )
         if p_axis1.paradox_detected:
             paradox_report = _merge_paradox(paradox_report, p_axis1)
     
     # Enrich DataFrames with all computed columns needed downstream
-    enriched_decomposition_df = enrich_decomposition_df(decomposition_df, thresholds)
-    enriched_regional_gaps = enrich_regional_gaps_df(regional_gaps)
+    enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, thresholds)
+    enriched_regional_gaps = compute_derived_regional_gaps(regional_gaps)
     
     # Step 6: Mathematical cancellation detection
     cancellation_report = CancellationReport(
@@ -1407,7 +1541,7 @@ def run_oaxaca_analysis(
                 logger.info(f"🎯 COORDINATOR: Using HYBRID data for {reason} in {region}")
 
                 if subcategory_results:
-                    analysis_decomposition_df = enrich_decomposition_df(subcategory_results.decomposition_df, thresholds)
+                    analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, thresholds)
                 else:
                     # paradox found without subcategory rerun (portfolio or multi-axis rollups)
                     analysis_decomposition_df = enriched_decomposition_df
@@ -1468,105 +1602,74 @@ def run_oaxaca_analysis(
 # DATAFRAME ENRICHMENT UTILITIES
 # =============================================================================
 
-def enrich_decomposition_df(decomposition_df: pd.DataFrame, thresholds: AnalysisThresholds = None) -> pd.DataFrame:
-    """Enrich decomposition DataFrame with all computed columns needed downstream."""
+def compute_derived_metrics_df(decomposition_df: pd.DataFrame, thresholds: AnalysisThresholds = None) -> pd.DataFrame:
+    """Compute numeric derived metrics without display formatting."""
     thresholds = thresholds or AnalysisThresholds()
     enriched = decomposition_df.copy()
-    
-    # Add formatting columns for display
-    enriched['region_rate_pct'] = (enriched['region_rate'] * 100).round(1).astype(str) + '%'
-    enriched['rest_rate_pct'] = (enriched['rest_rate'] * 100).round(1).astype(str) + '%'
-    enriched['net_gap_pp'] = (enriched['net_gap'] * 100).round(1).astype(str) + 'pp'
-    enriched['region_mix_display'] = (enriched['region_mix_pct'] * 100).round(1).astype(str) + '%'
-    enriched['rest_mix_display'] = (enriched['rest_mix_pct'] * 100).round(1).astype(str) + '%'
-    
-    # Add absolute gap for ranking and cumulative analysis
+
+    # NUMERIC helpers only
     enriched['abs_gap'] = enriched['net_gap'].abs()
-    
-    # CRITICAL: Keep numeric values for calculations
-    enriched['net_gap_numeric'] = (enriched['net_gap'] * 100).round(1)  # Numeric pp for calculations
-    enriched['abs_gap_numeric'] = enriched['net_gap_numeric'].abs()
-    
-    # Add clean category names for display
-    enriched['category_clean'] = enriched['category'].apply(_clean_category_display_name)
-    
-    # Add contributor text (formatted for narrative)
-    enriched['contributor_text'] = enriched.apply(lambda row: 
-        f"{row['category_clean']} ({row['net_gap_pp']})", axis=1)
-    
-    # Add positive/negative contributor text separately - use numeric values for comparison
-    enriched['positive_contributor_text'] = enriched.apply(lambda row:
-        f"{row['category_clean']} (+{row['net_gap_numeric']:.0f}pp)" if row['net_gap_numeric'] > 0 else None, axis=1)
-    enriched['negative_contributor_text'] = enriched.apply(lambda row:
-        f"{row['category_clean']} ({row['net_gap_numeric']:.0f}pp)" if row['net_gap_numeric'] < 0 else None, axis=1)
-    
-    # Add ranking within each region - use numeric values for consistent ranking
-    enriched['gap_rank'] = enriched.groupby('region')['abs_gap_numeric'].rank(method='dense', ascending=False)
-    
-    # Add cumulative contribution analysis per region - use numeric values consistently
+    enriched['abs_gap_numeric'] = (enriched['net_gap'] * 100).abs()       # still numeric
+    enriched['category_clean'] = enriched['category'].apply(pretty_category)
+
+    # cumsum_impact / is_top_contributor (numeric, no strings)
     for region in enriched['region'].unique():
-        region_mask = enriched['region'] == region
-        region_data = enriched[region_mask].sort_values('abs_gap_numeric', ascending=False)
-        
-        # If only one category, it's always a top contributor
-        if len(region_data) == 1:
-            enriched.loc[region_mask, 'cumsum_impact'] = region_data['abs_gap_numeric'].iloc[0]
-            enriched.loc[region_mask, 'is_top_contributor'] = True
+        m = enriched['region'] == region
+        r = enriched[m].sort_values('abs_gap_numeric', ascending=False)
+        if len(r) == 1:
+            enriched.loc[m, 'cumsum_impact'] = r['abs_gap_numeric'].iloc[0]
+            enriched.loc[m, 'is_top_contributor'] = True
         else:
-            total_impact = region_data['abs_gap_numeric'].sum()
-            cumsum_threshold = total_impact * thresholds.cumulative_contribution_threshold
-            
-            # Calculate cumulative sum in order of importance
-            region_data_sorted = region_data.sort_values('abs_gap_numeric', ascending=False)
-            cumsum_impact = region_data_sorted['abs_gap_numeric'].cumsum()
-            
-            # Map back to original positions in enriched DataFrame
-            for idx, (orig_idx, row) in enumerate(region_data_sorted.iterrows()):
-                enriched.loc[orig_idx, 'cumsum_impact'] = cumsum_impact.iloc[idx]
-                enriched.loc[orig_idx, 'is_top_contributor'] = cumsum_impact.iloc[idx] <= cumsum_threshold
-            
-            # IMPORTANT: Ensure at least the top contributor is marked if none qualify
-            # This handles cases where threshold is too restrictive for small datasets
-            region_top_contributors = enriched[region_mask]['is_top_contributor'].sum()
-            if region_top_contributors == 0 and len(region_data) > 0:
-                # Mark the largest contributor as a top contributor - use numeric values
-                largest_contrib_idx = region_data['abs_gap_numeric'].idxmax()
-                enriched.loc[largest_contrib_idx, 'is_top_contributor'] = True
-    
-    # Add status indicators using enum values
-    enriched['performance_status'] = enriched['net_gap'].apply(
-        lambda x: PerformanceDirection.OUTPERFORMS.value if x > 0 
-                 else PerformanceDirection.UNDERPERFORMS.value if x < 0 
-                 else PerformanceDirection.IN_LINE.value
-    )
-    
+            tot = r['abs_gap_numeric'].sum()
+            thr = tot * thresholds.cumulative_contribution_threshold
+            cs = r['abs_gap_numeric'].cumsum()
+            for idx, v in zip(r.index, cs):
+                enriched.loc[idx, 'cumsum_impact'] = v
+                enriched.loc[idx, 'is_top_contributor'] = v <= thr
+            if enriched[m]['is_top_contributor'].sum() == 0 and len(r) > 0:
+                enriched.loc[r['abs_gap_numeric'].idxmax(), 'is_top_contributor'] = True
+
     return enriched
 
-def enrich_regional_gaps_df(regional_gaps: pd.DataFrame) -> pd.DataFrame:
-    """Enrich regional gaps DataFrame with computed columns."""
+def compute_derived_regional_gaps(regional_gaps: pd.DataFrame) -> pd.DataFrame:
+    """Compute numeric derived metrics for regional gaps."""
     enriched = regional_gaps.copy()
-    
-    # Add formatted columns
-    enriched['total_gap_pp'] = (enriched['total_net_gap'] * 100).round(1).astype(str) + 'pp'
-    enriched['construct_gap_pp'] = (enriched['total_construct_gap'] * 100).round(1).astype(str) + 'pp'
-    enriched['performance_gap_pp'] = (enriched['total_performance_gap'] * 100).round(1).astype(str) + 'pp'
-    
-    enriched['region_overall_rate_pct'] = (enriched['region_overall_rate'] * 100).round(1).astype(str) + '%'
-    enriched['baseline_overall_rate_pct'] = (enriched['baseline_overall_rate'] * 100).round(1).astype(str) + '%'
-    
-    # Add magnitude and direction
     enriched['gap_magnitude'] = enriched['total_net_gap'].abs()
     enriched['gap_direction'] = enriched['total_net_gap'].apply(
         lambda x: PerformanceDirection.OUTPERFORMS.value if x > 0 else PerformanceDirection.UNDERPERFORMS.value
     )
-    
     return enriched
 
-def _clean_category_display_name(category) -> str:
-    """Clean category name for display."""
-    if isinstance(category, tuple):
-        return ' → '.join(str(c) for c in category)
-    return str(category)
+# ================================
+# SHARED SIMPSON PARADOX HELPERS
+# ================================
+
+def _weights_common(rows: pd.DataFrame) -> pd.Series:
+    """Compute exposure weights consistently across EdgeCaseDetector and NarrativeTemplateEngine."""
+    if {'region_trials','rest_trials'}.issubset(rows.columns):
+        w = rows['region_trials'].fillna(0) + rows['rest_trials'].fillna(0)
+    else:
+        w = rows['region_mix_pct'].fillna(0) + rows['rest_mix_pct'].fillna(0)
+    return w / w.sum() if w.sum() else w
+
+def _disagree_share_common(rows: pd.DataFrame, pooled: float) -> float:
+    """Compute disagree share consistently across EdgeCaseDetector and NarrativeTemplateEngine."""
+    w = _weights_common(rows)
+    diff = rows['region_rate'] - rows['rest_rate']
+    return float(w[diff != 0].sum()) if pooled == 0 else float(w[np.sign(diff) == -np.sign(pooled)].sum())
+
+# ================================
+# DISPLAY FORMATTING FUNCTIONS  
+# ================================
+
+def format_regional_gaps_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Add display formatting to regional gaps DataFrame."""
+    d = df.copy()
+    for col in ['total_net_gap','total_construct_gap','total_performance_gap']:
+        d[col + '_pp'] = (d[col] * 100).round(1).astype(str) + 'pp'
+    d['region_overall_rate_pct'] = (d['region_overall_rate'] * 100).round(1).astype(str) + '%'
+    d['baseline_overall_rate_pct'] = (d['baseline_overall_rate'] * 100).round(1).astype(str) + '%'
+    return d
 
 def _calculate_regional_aggregates(
     decomposition_df: pd.DataFrame, 
@@ -1704,26 +1807,6 @@ def get_baseline_data(
     
     return baseline_mix, baseline_rates
 
-# =============================================================================
-# MINIMAL UNIT TEST FUNCTIONS
-# =============================================================================
-
-def _assert_oaxaca_identity_rows(df):
-    """Minimal unit test you can drop in - validate Oaxaca identity per region."""
-    # df is your per-product decomposition for ONE region
-    lhs = (df['region_mix_pct']*df['region_rate']).sum() - (df['rest_mix_pct']*df['rest_rate']).sum()
-    rhs = df['net_gap'].sum()
-    assert abs(lhs - rhs) < 1e-12, f"Row identity failed: {lhs} vs {rhs}"
-
-def _assert_oaxaca_identity_totals(regional_gaps):
-    """Validate that totals split adds up correctly."""
-    assert np.allclose(
-        regional_gaps['total_net_gap'],
-        regional_gaps['total_construct_gap'] + regional_gaps['total_performance_gap'],
-        atol=1e-12
-    ), "Totals split does not add up"
-
-
 # --- AUTO SLICE SELECTION ---
 
 @dataclass
@@ -1765,7 +1848,8 @@ def _score_cut(
     baseline_type: str,
     numerator_column: str,
     denominator_column: str,
-    decomposition_method: str
+    decomposition_method: str,
+    region_column: str = "region" 
 ) -> Tuple[float, Dict[str, float], AnalysisResult, pd.DataFrame]:
     """
     Run Oaxaca for this cut, compute a single score, and return diagnostics.
@@ -1773,7 +1857,7 @@ def _score_cut(
     # 1) Run the analysis for this cut
     ar = run_oaxaca_analysis(
         df=df,
-        region_column="region",
+        region_column=region_column,                # pass through
         numerator_column=numerator_column,
         denominator_column=denominator_column,
         category_columns=list(category_cols),
@@ -1838,7 +1922,8 @@ def auto_find_best_slice(
     denominator_column: str = "total",
     thresholds: AnalysisThresholds = None,
     decomposition_method: str = "two_part",
-    portfolio_mode: bool = False
+    portfolio_mode: bool = False,
+    region_column: str = "region"   
 ) -> BestSliceDecision:
     """
     Try multiple 'cuts' (different category_columns) and pick the one that most cleanly
@@ -1860,7 +1945,7 @@ def auto_find_best_slice(
         wide_cut = max(candidate_cuts, key=lambda cols: len(list(cols)))
         ar_probe = run_oaxaca_analysis(
             df=df,
-            region_column="region",
+            region_column=region_column,             # pass through
             numerator_column=numerator_column,
             denominator_column=denominator_column,
             category_columns=list(wide_cut),
@@ -1879,7 +1964,7 @@ def auto_find_best_slice(
         # fallback: pick the region with the largest |gap|
         ar_probe = run_oaxaca_analysis(
             df=df,
-            region_column="region",
+            region_column=region_column,             # pass through
             numerator_column=numerator_column,
             denominator_column=denominator_column,
             category_columns=list(next(iter(candidate_cuts))),
@@ -1906,7 +1991,8 @@ def auto_find_best_slice(
                 baseline_type=baseline_type,
                 numerator_column=numerator_column,
                 denominator_column=denominator_column,
-                decomposition_method=decomposition_method
+                decomposition_method=decomposition_method,
+                region_column=region_column                # pass through
             )
         except Exception as e:
             logger.debug(f"[AUTO-SLICE] Skipping {cols}: {e}")
@@ -1918,7 +2004,7 @@ def auto_find_best_slice(
                 best_categories=cols,
                 score=score,
                 score_breakdown=breakdown,
-                top_segments=topk[["category","region_rate_pct","rest_rate_pct","net_gap_pp","region_mix_display"]],
+                top_segments=topk[["category","region_rate","rest_rate","net_gap","region_mix_pct"]],
                 analysis_result=ar
             )
 
@@ -1926,3 +2012,449 @@ def auto_find_best_slice(
         raise RuntimeError("Auto slice failed to evaluate any candidate cuts.")
 
     return best
+
+
+# --- Titles only (no internal slugs) -----------------------------------------
+def _format_cut_name(cols: Iterable[str]) -> str:
+    return " × ".join(cols).title()
+
+def _title_for_cut(cols: Iterable[str], metric_name: Optional[str]) -> str:
+    name = _format_cut_name(cols)
+    return f"{metric_name} - {name}" if metric_name else name
+
+
+def build_oaxaca_exec_pack(
+    df: pd.DataFrame,
+    *,
+    # choose ONE path:
+    candidate_cuts: Iterable[Iterable[str]] = (),   # AUTO mode (rank cuts)
+    fixed_cut: Optional[Iterable[str]] = None,      # FIXED mode (render this cut)
+    fixed_region: Optional[str] = None,             # optional with fixed_cut
+    focus_region: Optional[str] = None,             # used by AUTO mode
+
+    # analysis plumbing:
+    region_column: str = "region",
+    numerator_column: str = "wins",
+    denominator_column: str = "total",
+    baseline_type: str = "rest_of_world",
+    decomposition_method: str = "two_part",
+    thresholds: AnalysisThresholds = None,
+
+    # presentation knobs:
+    max_charts: int = 2,
+    charts: Optional[List[str]] = None,
+    metric_name: Optional[str] = None,
+    alternatives: int = 1  # AUTO mode: render this many alternative cuts (0 = none)
+) -> Dict:
+    """
+    Returns:
+      {
+        "slides": {
+          "Product": { "summary": {...}, "slide_info": {...} },
+          "Vertical": { "summary": {...}, "slide_info": {...} },
+          "Product × Vertical": { "summary": {...}, "slide_info": {...} },
+          ...
+        },
+        "payload": <primary payload with best_slice info>
+      }
+    """
+    thresholds = thresholds or AnalysisThresholds()
+
+    # Unpack the (slide_spec, payload) from present_executive_pack_for_slides
+    def _exec_from_result(ar: AnalysisResult, region: str, title: str, cut_cols: Iterable[str], role: str):
+        slide, payload = ar.present_executive_pack_for_slides(
+            region, max_charts=max_charts, charts=charts, custom_title=title
+        )
+        slide = {**slide, "cut": list(cut_cols), "role": role}
+        return slide, payload
+
+    slides: List[Dict] = []
+    payload: Optional[Dict] = None
+
+    # ---------------------- FIXED MODE ---------------------------------------
+    if fixed_cut is not None:
+        fixed_cut = tuple(fixed_cut)
+        region = fixed_region or focus_region
+        if region is None:
+            probe = run_oaxaca_analysis(
+                df=df,
+                region_column=region_column,
+                numerator_column=numerator_column,
+                denominator_column=denominator_column,
+                category_columns=list(fixed_cut),
+                baseline_type=baseline_type,
+                decomposition_method=decomposition_method,
+                thresholds=thresholds,
+                detect_edge_cases=False,
+            )
+            pick = probe.regional_gaps.reindex(
+                probe.regional_gaps["total_net_gap"].abs().sort_values(ascending=False).index
+            )
+            region = str(pick.iloc[0]["region"])
+
+        ar = run_oaxaca_analysis(
+            df=df,
+            region_column=region_column,
+            numerator_column=numerator_column,
+            denominator_column=denominator_column,
+            category_columns=list(fixed_cut),
+            baseline_type=baseline_type,
+            decomposition_method=decomposition_method,
+            thresholds=thresholds,
+        )
+        title = _title_for_cut(fixed_cut, metric_name)
+        s, payload = _exec_from_result(ar, region, title, fixed_cut, role="primary")
+        slides.append(s)
+
+        if "best_slice" not in payload:
+            payload["best_slice"] = {
+                "focus_region": region,
+                "best_categories": list(fixed_cut),
+                "score": None,
+                "score_breakdown": {},
+                "top_segments": None,
+            }
+        # Convert slides list to dictionary with cut names as keys
+        slides_dict = {}
+        for slide in slides:
+            cut_name = _format_cut_name(slide['cut'])  # e.g., "Product", "Vertical", "Product × Vertical"
+            # Remove the 'cut' and 'role' metadata, keep only slide content
+            slides_dict[cut_name] = {
+                'summary': slide['summary'],
+                'slide_info': slide['slide_info']
+            }
+        
+        return {"slides": slides_dict, "payload": payload}
+
+    # ---------------------- AUTO MODE ----------------------------------------
+    candidate_cuts = list(candidate_cuts)
+    if not candidate_cuts:
+        raise ValueError("Provide candidate_cuts for AUTO mode or fixed_cut for FIXED mode.")
+
+    # 1) Pick best cut (and region if needed)
+    best = auto_find_best_slice(
+        df=df,
+        candidate_cuts=candidate_cuts,
+        focus_region=focus_region,
+        region_column=region_column,
+        numerator_column=numerator_column,
+        denominator_column=denominator_column,
+        baseline_type=baseline_type,
+        decomposition_method=decomposition_method,
+        thresholds=thresholds,
+        portfolio_mode=(focus_region is None),
+    )
+    region = best.focus_region
+    title = _title_for_cut(best.best_categories, metric_name)
+
+    s, payload = _exec_from_result(best.analysis_result, region, title, best.best_categories, role="primary")
+    # attach score info to the primary slide (no separate meta)
+    s.update({"score": best.score, "score_breakdown": best.score_breakdown})
+    slides.append(s)
+
+    if "best_slice" not in payload:
+        payload["best_slice"] = {
+            "focus_region": region,
+            "best_categories": list(best.best_categories),
+            "score": best.score,
+            "score_breakdown": best.score_breakdown,
+            "top_segments": best.top_segments,
+        }
+
+    # 2) Rank and add alternatives
+    if alternatives > 0:
+        others = []
+        for cols in candidate_cuts:
+            cols = tuple(cols)
+            if cols == best.best_categories:
+                continue
+            try:
+                sc, br, ar, _ = _score_cut(
+                    df=df, region=region, category_cols=cols, thresholds=thresholds,
+                    baseline_type=baseline_type, numerator_column=numerator_column,
+                    denominator_column=denominator_column, decomposition_method=decomposition_method,
+                    region_column=region_column
+                )
+                others.append((sc, br, ar, cols))
+            except Exception as e:
+                logger.debug(f"[ALT] skipping {cols}: {e}")
+                continue
+
+        others.sort(key=lambda t: t[0], reverse=True)
+        for sc, br, ar, cols in others[:alternatives]:
+            alt_title = _title_for_cut(cols, metric_name)
+            s_alt, _ = _exec_from_result(ar, region, alt_title, cols, role="alternative")
+            s_alt.update({"score": sc, "score_breakdown": br})
+            slides.append(s_alt)
+
+    # Convert slides list to dictionary with cut names as keys
+    slides_dict = {}
+    for slide in slides:
+        cut_name = _format_cut_name(slide['cut'])  # e.g., "Product", "Vertical", "Product × Vertical"
+        # Remove the 'cut' and 'role' metadata, keep only slide content
+        slides_dict[cut_name] = {
+            'summary': slide['summary'],
+            'slide_info': slide['slide_info']
+        }
+    
+    return {"slides": slides_dict, "payload": payload}
+
+
+# =============================================================================
+# VISUALIZATION FUNCTIONS
+# =============================================================================
+
+def plot_rates_and_mix_panel(result, region: str, top_n: int = 12, sort_by: str = "abs_gap"):
+    """
+    Left: slopechart of success rates (Region vs Peers) per category.
+    Right: barh of mix % (Region vs Peers) for the same categories (aligned).
+    """
+    import matplotlib.pyplot as plt
+    
+    rows = result.decomposition_df[result.decomposition_df["region"] == region].copy()
+    rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
+    rows["mix_diff_pp"]  = (rows["region_mix_pct"] - rows["rest_mix_pct"]) * 100
+    rows["abs_gap"] = rows["net_gap"].abs()
+    rows = rows.sort_values("abs_gap" if sort_by=="abs_gap" else "mix_diff_pp", ascending=False).head(top_n)
+    rows = rows.iloc[::-1].copy()  # biggest at the top visually
+
+    labels = rows.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
+
+    fig = plt.figure(figsize=(12, max(5, 0.45*len(rows))))
+    gs = fig.add_gridspec(1, 2, width_ratios=[3, 2])
+    axL = fig.add_subplot(gs[0,0])
+    axR = fig.add_subplot(gs[0,1])
+
+    y = range(len(rows))
+
+    # Left: slopechart of rates
+    axL.hlines(y, rows["rest_rate"]*100, rows["region_rate"]*100, alpha=0.6)
+    axL.plot(rows["rest_rate"]*100, y, "o", label="Peers", alpha=0.8)
+    axL.plot(rows["region_rate"]*100, y, "o", label="Region", alpha=0.8)
+    for i, (_, r) in enumerate(rows.iterrows()):
+        dx = (r["region_rate"] - r["rest_rate"]) * 100
+        axL.text((r["rest_rate"]*100 + r["region_rate"]*100)/2, i,
+                 f"{dx:+.1f}pp", va="center", ha="center", fontsize=9)
+    axL.set_yticks(y, labels)
+    axL.set_xlabel("Success rate (%)")
+    axL.set_title(f"{region}: Rates by category")
+    axL.grid(True, axis="x", alpha=0.3)
+    axL.legend(loc="lower right")
+
+    # Right: aligned mix percentages (barh, side-by-side)
+    w = 0.4
+    axR.barh([i - w/2 for i in y], rows["region_mix_pct"]*100, height=w, alpha=0.8, label="Region")
+    axR.barh([i + w/2 for i in y], rows["rest_mix_pct"]*100,   height=w, alpha=0.6, label="Peers")
+    axR.set_yticks(y, [""]*len(rows))  # align with left
+    axR.set_xlabel("Mix (%)")
+    axR.set_title("Exposure mix")
+    axR.grid(True, axis="x", alpha=0.3)
+    axR.legend(loc="lower right")
+
+    fig.tight_layout()
+    return fig, (axL, axR)
+
+
+# =============================================================================
+# SYNTHETIC DATA GENERATION FOR TESTING
+# =============================================================================
+
+def create_oaxaca_synthetic_data(target_region: str = "North America", target_gap_pp: float = -5.0) -> pd.DataFrame:
+    """
+    Generate synthetic conversion rate data where target_region underperforms Global
+    by target_gap_pp percentage points, with clear category-level drivers.
+    
+    Creates realistic product × vertical combinations with Simpson's paradox potential.
+    """
+    import numpy as np
+    
+    np.random.seed(42)  # Reproducible results
+    
+    # Define categories that will drive the gap
+    products = ["Premium", "Standard", "Basic"]
+    verticals = ["Enterprise", "SMB", "Consumer"]
+    regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
+    
+    # Generate data with specific patterns
+    data_rows = []
+    
+    # Strategy: North America has poor mix (too much low-converting stuff)
+    # but decent execution within categories
+    
+    for region in regions:
+        for product in products:
+            for vertical in verticals:
+                # Base conversion rates by segment (these are good rates)
+                base_rates = {
+                    ("Premium", "Enterprise"): 0.18,
+                    ("Premium", "SMB"): 0.15,
+                    ("Premium", "Consumer"): 0.12,
+                    ("Standard", "Enterprise"): 0.14,
+                    ("Standard", "SMB"): 0.11,
+                    ("Standard", "Consumer"): 0.08,
+                    ("Basic", "Enterprise"): 0.10,
+                    ("Basic", "SMB"): 0.07,
+                    ("Basic", "Consumer"): 0.05,
+                }
+                
+                base_rate = base_rates[(product, vertical)]
+                
+                # Regional performance adjustments (execution differences)
+                if region == "North America":
+                    # NA is actually slightly BETTER at execution per segment
+                    rate_multiplier = 1.05  # 5% better execution
+                elif region == "Europe":
+                    rate_multiplier = 1.02
+                elif region == "Asia":  
+                    rate_multiplier = 1.08
+                elif region == "Latin America":
+                    rate_multiplier = 0.95
+                else:  # Global baseline
+                    rate_multiplier = 1.0
+                
+                conversion_rate = base_rate * rate_multiplier
+                
+                # Volume/mix patterns (this is where NA gets hurt)
+                if region == "North America":
+                    # Bad mix: over-indexed on low-converting segments
+                    if product == "Basic":
+                        volume = np.random.randint(8000, 12000)  # Too much Basic
+                    elif product == "Standard":
+                        volume = np.random.randint(4000, 6000)   # Some Standard  
+                    else:  # Premium
+                        volume = np.random.randint(1000, 2000)   # Too little Premium
+                        
+                    if vertical == "Consumer":
+                        volume = int(volume * 1.8)  # Over-indexed on Consumer
+                    elif vertical == "SMB":
+                        volume = int(volume * 1.0)
+                    else:  # Enterprise
+                        volume = int(volume * 0.6)  # Under-indexed on Enterprise
+                        
+                elif region == "Asia":
+                    # Good mix: more premium and enterprise
+                    if product == "Premium":
+                        volume = np.random.randint(6000, 9000)
+                    elif product == "Standard":
+                        volume = np.random.randint(3000, 5000)
+                    else:  # Basic
+                        volume = np.random.randint(1000, 2000)
+                        
+                    if vertical == "Enterprise":
+                        volume = int(volume * 1.5)
+                    elif vertical == "SMB": 
+                        volume = int(volume * 1.2)
+                    else:  # Consumer
+                        volume = int(volume * 0.8)
+                        
+                else:
+                    # Other regions: more balanced
+                    volume = np.random.randint(3000, 7000)
+                    if vertical == "Enterprise":
+                        volume = int(volume * 1.2)
+                    elif vertical == "Consumer":
+                        volume = int(volume * 1.1)
+                
+                # Calculate conversions
+                conversions = int(volume * conversion_rate)
+                
+                data_rows.append({
+                    'region': region,
+                    'product': product,
+                    'vertical': vertical, 
+                    'visits': volume,
+                    'conversions': conversions,
+                    'conversion_rate': conversion_rate
+                })
+    
+    df = pd.DataFrame(data_rows)
+    
+    # Verify we hit our target (approximately)
+    global_rate = df[df['region'] == 'Global']['conversions'].sum() / df[df['region'] == 'Global']['visits'].sum()
+    target_rate = df[df['region'] == target_region]['conversions'].sum() / df[df['region'] == target_region]['visits'].sum()
+    actual_gap_pp = (target_rate - global_rate) * 100
+    
+    print(f"🎯 Synthetic data generated:")
+    print(f"   Global conversion rate: {global_rate:.1%}")  
+    print(f"   {target_region} conversion rate: {target_rate:.1%}")
+    print(f"   Gap: {actual_gap_pp:+.1f}pp (target: {target_gap_pp:+.1f}pp)")
+    
+    return df
+
+
+def analyze_oaxaca_metrics(
+    config: Dict[str, Any],
+    metric_anomaly_map: Dict[str, Dict[str, Any]],
+    data_df: pd.DataFrame
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Perform Oaxaca-Blinder analysis for all configured metrics and return results in unified format.
+    
+    Args:
+        config: Configuration dictionary with metrics and their Oaxaca settings
+        metric_anomaly_map: Dictionary mapping metric names to anomaly information
+        data_df: DataFrame containing the data for analysis
+    
+    Returns:
+        Dictionary in unified format: {metric_name: {'slides': {'oaxaca_primary': slide_data, 'oaxaca_alternative': slide_data}, 'payload': {...}}}
+    """
+    metrics_config = config.get('metrics', {})
+    unified_results = {}
+    
+    # Analyze each metric
+    for metric_name, metric_config in metrics_config.items():
+        # Check if this metric has an anomaly detected
+        if metric_name not in metric_anomaly_map:
+            print(f"   ⏭️  Skipping {metric_name} - no anomaly detected")
+            continue
+            
+        try:
+            print(f"   📊 Processing Oaxaca-Blinder analysis for {metric_name}")
+            
+            # Get anomaly information
+            anomaly = metric_anomaly_map[metric_name]
+            target_region = anomaly['anomalous_region']
+            
+            # Get configuration
+            region_column = metric_config.get('region_column', 'region')
+            numerator_column = metric_config.get('numerator_column')
+            denominator_column = metric_config.get('denominator_column')
+            candidate_cuts = metric_config.get('candidate_cuts', [["product"]])
+            max_charts = metric_config.get('max_charts', 2)
+            alternatives = metric_config.get('alternatives', 1)
+            
+            if not numerator_column or not denominator_column:
+                print(f"   ⚠️  Skipping {metric_name} - missing numerator/denominator column configuration")
+                continue
+            
+            print(f"   📊 Testing candidate cuts: {candidate_cuts}")
+            
+            # Run Oaxaca-Blinder analysis using the unified driver function
+            oaxaca_results = build_oaxaca_exec_pack(
+                df=data_df,  
+                candidate_cuts=candidate_cuts,
+                focus_region=target_region,
+                region_column=region_column,
+                numerator_column=numerator_column,
+                denominator_column=denominator_column,
+                max_charts=max_charts,
+                metric_name=metric_name,
+                alternatives=alternatives
+            )
+            
+            # Extract best cut information for logging
+            best_categories = oaxaca_results['payload']['best_slice']['best_categories']
+            best_score = oaxaca_results['payload']['best_slice']['score']
+            print(f"   🏆 Best cut selected: {best_categories} (score: {best_score:.3f})")
+            
+            # Store results in unified format
+            unified_results[metric_name] = oaxaca_results
+            print(f"   ✅ Oaxaca-Blinder analysis completed for {metric_name}")
+            
+        except Exception as e:
+            print(f"   ⚠️  Failed to analyze {metric_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    return unified_results
