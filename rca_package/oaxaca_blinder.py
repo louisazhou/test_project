@@ -65,12 +65,17 @@ Architecture:
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Union, Iterable, Any, Callable
+from typing import Dict, List, Optional, Tuple, Union, Iterable, Any
 from dataclasses import dataclass
 from enum import Enum
 import ast 
 import numpy as np
 import pandas as pd
+import math
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MultipleLocator, FuncFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -172,16 +177,15 @@ class NarrativeDecision:
     # Generated narrative text
     narrative_text: str
     
-    # Supporting evidence (ready for display)
+    # Supporting evidence table (with traffic light status indicators)
     supporting_table_df: pd.DataFrame
-    key_metrics: Dict[str, float]  # gap_magnitude, primary_contribution, etc.
     
-    # Metadata
+    # Key metrics and metadata
+    key_metrics: Dict[str, float]  # gap_magnitude, primary_contribution, etc.
     baseline_type: str
     
-    # Evidence bundle (single source of truth)
-    evidence_tables: Dict[str, pd.DataFrame]   # {"rates_mix": df, "top_drivers": df, "contradiction": df}
-    contradiction_segments: List[str]          # ranked labels used by "despite …"
+    # Contradiction segments (ranked labels used by "despite …")
+    contradiction_segments: List[str]
 
 @dataclass
 class ParadoxReport:
@@ -215,6 +219,7 @@ class AnalysisResult:
     
     # Internal state (baseline_type passed from orchestrator)
     baseline_type: str
+    viz_meta: Dict[str, Any] = None  # optional per-analysis viz labels
       
     def get_summary_stats(self, format_for_display: bool = False) -> Dict:
         """
@@ -332,15 +337,17 @@ class AnalysisResult:
         shares = {"mix_share": mix_abs/total_abs if total_abs > 0 else 0.5, 
                   "exe_share": exe_abs/total_abs if total_abs > 0 else 0.5}
 
-        # 3) Supporting evidence table (top rows)
+        # 3) Supporting evidence table and top drivers text  
         root = getattr(decision.root_cause_type, "value", str(decision.root_cause_type))
         evidence_df = decision.supporting_table_df.head(table_rows).copy()
-        tables = decision.evidence_tables
-
-        # 3.1) Build richer template text that includes table markers
+        
+        rows_for_region = self.decomposition_df[self.decomposition_df["region"] == region]
+        top3 = (rows_for_region.assign(_abs=rows_for_region["net_gap"].abs())
+                .sort_values("_abs", ascending=False)
+                .head(3))
         top_drivers_text = ", ".join(
-            f"{category} ({r['Net (pp)']:+.1f}pp)"
-            for category, r in tables["top_drivers_table"].head(3).iterrows()
+            f"{c} ({ng*100:+.1f}pp)"
+            for c, ng in zip(top3["category_clean"], top3["net_gap"])
         )
         despite_text = ("Despite " + " and ".join(decision.contradiction_segments[:2]) + "."
                        if decision.contradiction_segments else "")
@@ -349,25 +356,20 @@ class AnalysisResult:
 
 Top drivers: {top_drivers_text}. {despite_text}
 
-## Detailed Analysis
-
-{{{{ rates_mix_table }}}}
-
-## Impact Breakdown  
-
-{{{{ top_drivers_table }}}}""".strip()
+""".strip()
 
         # 4) Decide which charts to show (driver logic lives here)
         chart_names: List[str]
         if charts is not None:
             chart_names = charts
         else:
-            # All cases now default to the single useful chart
-            chart_names = ["rates_and_mix"]
+            # Use both visualizations for comprehensive insights
+            chart_names = ["rates_and_mix", "quadrant_prompts"]
 
         # 5) Convert chart names → figure_generators spec
         chart_registry = {
             "rates_and_mix": plot_rates_and_mix_panel,
+            "quadrant_prompts": quadrant_prompts,
         }
         figure_generators = []
         for name in chart_names[:max_charts]:
@@ -376,7 +378,8 @@ Top drivers: {top_drivers_text}. {despite_text}
             fn = chart_registry[name]
             cap = {
                 # Decision-grade visualizations only
-                "rates_and_mix":    f"Left: Success rates comparison. Right: Exposure mix comparison. Leaders can verify narrative claims instantly.",
+                "rates_and_mix":    f"Left: Metric % comparison. Right: Exposure (% of total count) comparison.",
+                "quadrant_prompts": f"Bubble chart showing gaps in exposure (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
             }.get(name, "")
             figure_generators.append({
                 "function": fn,
@@ -399,8 +402,8 @@ Top drivers: {top_drivers_text}. {despite_text}
                     "exe_share": shares["exe_share"],
                 },
                 "figure_generators": figure_generators,
-                "dfs": {"supporting_evidence": evidence_df, **tables},
-                "layout_type": "text_tables_then_figure",
+                "dfs": {"supporting_evidence": evidence_df},  # supporting table with traffic lights
+                "layout_type": "text_figure_then_figure",
                 "total_hypotheses": 1,  # Each Oaxaca slide represents one hypothesis
             },
         }
@@ -470,15 +473,22 @@ class OaxacaCore:
         region_rate: float,
         baseline_mix: float, 
         baseline_rate: float,
-        method: str = "two_part"
+        method: str = "business_centered",
+        baseline_overall_rate: Optional[float] = None,
     ) -> Tuple[float, float, float]:
         """
-        Core gap decomposition logic.
-        
-        Returns:
-            (construct_gap, performance_gap, net_gap)
+        Returns (construct_gap, performance_gap, net_gap).
+        - 'business_centered' (default): mix = (w_R - w_B) * (r_B - baseline_overall)
+                                         exec = w_R * (r_R - r_B)
+        - 'two_part' / 'reverse' / 'symmetric' kept for completeness.
         """
-        if method == "two_part":
+        if method == "business_centered":
+            assert baseline_overall_rate is not None, \
+                "baseline_overall_rate required for business_centered"
+            construct_gap   = (region_mix - baseline_mix) * (baseline_rate - baseline_overall_rate)
+            performance_gap = region_mix * (region_rate - baseline_rate)
+
+        elif method == "two_part":
             # B-baseline (rest-of-world baseline)
             construct_gap = (region_mix - baseline_mix) * baseline_rate
             performance_gap = region_mix * (region_rate - baseline_rate)
@@ -496,7 +506,7 @@ class OaxacaCore:
             performance_gap = avg_mix * (region_rate - baseline_rate)
             
         else:
-            raise ValueError(f"Invalid method: {method}. Use 'two_part', 'reverse', or 'symmetric'")
+            raise ValueError(f"Invalid method: {method}")
         
         net_gap = region_mix * region_rate - baseline_mix * baseline_rate
         return construct_gap, performance_gap, net_gap
@@ -563,13 +573,13 @@ class NarrativeTemplateEngine:
             region in cancellation_report.affected_regions):
             narrative_text += ", but note offsetting composition and performance effects at the category level (cancellation), which makes the topline fragile."
         
-        # Step 4: Create supporting table
-        supporting_table = self._create_template_table(region, decomposition_df, business_conclusion)
+        # Create simplified supporting table with traffic light status
+        supporting_table = self._create_supporting_table(region, decomposition_df)
         
-        # Build evidence tables centrally (single source of truth)
+        # Get contradiction segments
         rows = decomposition_df[decomposition_df["region"] == region]
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
-        tables, segs = self._build_evidence_tables(rows, direction)
+        _, _, segs = self._contradiction_evidence(direction, rows)
         
         return NarrativeDecision(
             root_cause_type=business_conclusion,
@@ -584,7 +594,6 @@ class NarrativeTemplateEngine:
                 "performance_gap": total_performance_gap,  # Already in decimal form
             },
             baseline_type=baseline_type,
-            evidence_tables=tables,
             contradiction_segments=segs
         )
     
@@ -603,6 +612,10 @@ class NarrativeTemplateEngine:
         region_totals = regional_gaps[regional_gaps["region"] == region].iloc[0]
         gap_magnitude = region_totals["gap_magnitude"] * 100  # Convert to pp for display
         
+        # For performance-driven cases, use net gap (performance + composition) instead of just performance component
+        if conclusion == BusinessConclusion.PERFORMANCE_DRIVEN:
+            gap_magnitude = abs(region_totals["total_net_gap"]) * 100  # Use net gap for performance-driven
+        
         baseline_name = self._get_baseline_name(baseline_type)
         direction_text = direction.value
         
@@ -616,14 +629,6 @@ class NarrativeTemplateEngine:
         else:  # NO_SIGNIFICANT_GAP
             return self._no_gap_template(region, regional_gaps, baseline_name)
     
-    def _create_template_table(self, region: str, decomposition_df: pd.DataFrame, conclusion: BusinessConclusion) -> pd.DataFrame:
-        """Template-driven table creation for ALL cases."""
-        
-        # Get region data from enriched DataFrame
-        region_data = decomposition_df[decomposition_df["region"] == region]
-        
-        # All cases use the same standard table format
-        return self._create_standard_table(region_data)
     
     # Template methods for different narrative types
     def _get_baseline_name(self, baseline_type: str) -> str:
@@ -743,9 +748,6 @@ class NarrativeTemplateEngine:
         self,
         direction: PerformanceDirection,
         rows: pd.DataFrame,
-        *,
-        min_rate_pp: Optional[float] = None,
-        min_exposure: float = 0.02  # ignore slivers <2% of combined exposure
     ) -> Tuple[bool, float, list]:
         """
         Returns: (contradicts, disagree_share, segments_list)
@@ -758,9 +760,10 @@ class NarrativeTemplateEngine:
         if direction == PerformanceDirection.IN_LINE:
             return False, 0.0, []
             
-        # thresholds
-        min_rate_pp = (min_rate_pp if min_rate_pp is not None
-                       else self.thresholds.minor_rate_diff * 100.0)  # convert to pp
+        # Use centralized thresholds - no bespoke constants
+        min_rate_pp = self.thresholds.minor_rate_diff * 100.0  # convert to pp
+        # default exposure cutoff ≈ 2% derived from visual indicator (1pp) × 2
+        min_exposure = self.thresholds.visual_indicator_threshold * 2.0
 
         # Use shared weight computation (same as detector)
         w = _weights_common(rows)
@@ -778,14 +781,12 @@ class NarrativeTemplateEngine:
 
         mask = exposure_ok & rate_ok & opposite
         disagree_share = float(w[mask].sum())
-        contradicts = disagree_share >= getattr(self.thresholds, "paradox_disagree_share", 0.40)
+        contradicts = disagree_share >= self.thresholds.paradox_disagree_share
 
         # Build a ranked list of contradicting segments (by weight * |rate dx|)
         tmp = rows.loc[mask].copy()
         if len(tmp):
-            tmp["_label"] = tmp.apply(
-                lambda r: r.get("category_clean", r.get("category", "")), axis=1
-            )
+            tmp["_label"] = tmp["category_clean"]  # Use guaranteed clean column
             tmp["_impact_rank"] = (w.loc[tmp.index] * rate_dx_pp.loc[tmp.index].abs())
             tmp = tmp.sort_values("_impact_rank", ascending=False)
             segments = [
@@ -802,7 +803,7 @@ class NarrativeTemplateEngine:
         for _, r in rows.iterrows():
             dx_pp = (r["region_mix_pct"] - r["rest_mix_pct"]) * 100
             if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                name = r.get("category_clean", pretty_category(r.get("category")))
+                name = r["category_clean"]
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
                 impact_pp = r.get("construct_gap_contribution", 0.0) * 100
@@ -812,74 +813,24 @@ class NarrativeTemplateEngine:
                 )
         return out
 
-    def _build_evidence_tables(self, rows: pd.DataFrame, direction: PerformanceDirection) -> Tuple[Dict[str,pd.DataFrame], List[str]]:
-        """Build all evidence tables in one place - single source of truth."""
-        # contradiction (single source of truth)
-        contradicts, _, segs = self._contradiction_evidence(direction, rows)
-
-        # Get the region name from the first row for column names
-        region_name = rows.iloc[0]["region"] if not rows.empty else "Region"
-
-        # Build rates_mix table with Category as index and region name in columns
-        # Let make_slides.py handle percentage formatting based on column names
-        category_index = rows.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
-        rates_mix = pd.DataFrame({
-            f"{region_name} rate": rows["region_rate"].values,  # Will be auto-detected as rate for formatting
-            "Peers rate": rows["rest_rate"].values,
-            "Rate Δ (pp)": np.round((rows["region_rate"]-rows["rest_rate"]).values*100, 1),  # pp = percentage points
-            f"{region_name} mix pct": rows["region_mix_pct"].values,  # Will be auto-detected for % formatting  
-            "Peers mix pct": rows["rest_mix_pct"].values,
-            "Mix Δ (pp)": np.round((rows["region_mix_pct"]-rows["rest_mix_pct"]).values*100, 1),   
-        }, index=category_index)
-        
-        if "net_gap" in rows:
-            rates_mix["Net impact (pp)"] = np.round((rows["net_gap"]*100).values, 1)  # Use signed net gap, not abs
-            rates_mix = rates_mix.sort_values("Net impact (pp)", key=abs, ascending=False)  # Sort by absolute value
-
-        # Build top_drivers table with Category as index
-        top = (rows.assign(_abs=(rows["net_gap"].abs()*100))
-                    .sort_values("_abs", ascending=False)
-                    .head(10))
-        top_category_index = top.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
-        top_drivers = pd.DataFrame({
-            "Net (pp)": np.round((top["net_gap"]*100).values, 1),
-            "Mix (pp)": np.round((top["construct_gap_contribution"]*100).values, 1), 
-            "Execution (pp)": np.round((top["performance_gap_contribution"]*100).values, 1)
-        }, index=top_category_index)
-
-        if contradicts:
-            # Build contradiction table to match the segments list
-            # Category is now the index, so filter by index
-            category_names = [s.split(" (")[0] for s in segs]
-            contradiction = rates_mix.loc[
-                rates_mix.index.isin(category_names)
-            ][["Rate Δ (pp)", "Mix Δ (pp)"]]
-        else:
-            contradiction = pd.DataFrame(columns=["Rate Δ (pp)", "Mix Δ (pp)"])
-
-        return ({"rates_mix_table": rates_mix,
-                 "top_drivers_table": top_drivers,
-                 "contradiction_evidence": contradiction},
-                segs)
-    
-    def _create_standard_table(self, category_breakdown: pd.DataFrame) -> pd.DataFrame:
-        """Template table for standard cases with proper ranking by gap importance."""
-        # Use all columns from the enriched DataFrame (don't filter out enriched columns!)
-        table = category_breakdown.copy()
+    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame) -> pd.DataFrame:
+        """Create simplified supporting table with traffic light status indicators."""
+        # Get region data from enriched DataFrame
+        region_data = decomposition_df[decomposition_df["region"] == region].copy()
         
         # Sort by absolute gap size so most important contributors appear first
-        # (abs_gap_numeric already exists from enrichment, no need to recreate)
-        table = table.sort_values('abs_gap_numeric', ascending=False)
+        region_data = region_data.sort_values('abs_gap_numeric', ascending=False)
         
         # Format columns inline from numeric values
-        table['Region%'] = (table['region_rate'] * 100).round(1).astype(str) + '%'
-        table['Baseline%'] = (table['rest_rate'] * 100).round(1).astype(str) + '%'
-        table['Gap_pp'] = (table['net_gap'] * 100).round(1).astype(str) + 'pp'
-        table['Mix%'] = (table['region_mix_pct'] * 100).round(1).astype(str) + '%'
+        region_data_display = region_data.copy()
+        region_data_display['Region%'] = (region_data['region_rate'] * 100).round(1).astype(str) + '%'
+        region_data_display['Baseline%'] = (region_data['rest_rate'] * 100).round(1).astype(str) + '%'
+        region_data_display['Gap_pp'] = (region_data['net_gap'] * 100).round(1).astype(str) + 'pp'
+        region_data_display['Mix%'] = (region_data['region_mix_pct'] * 100).round(1).astype(str) + '%'
         
-        # Add status indicators and business insights with contribution ranking
+        # Add status indicators with business insights and ranking
         def get_status_with_rank(gap, rank):
-            # Use visual_indicator_threshold instead of hardcoded value
+            # Use visual_indicator_threshold from centralized thresholds
             threshold = self.thresholds.visual_indicator_threshold
             if gap > threshold:
                 return f"🟢 Strength #{rank}"
@@ -889,14 +840,15 @@ class NarrativeTemplateEngine:
                 return f"⚪ Neutral"
         
         # Add ranking to show which gaps matter most
-        table['rank'] = range(1, len(table) + 1)
-        table['Status'] = table.apply(lambda row: get_status_with_rank(row['net_gap'], row['rank']), axis=1)
+        region_data_display['rank'] = range(1, len(region_data_display) + 1)
+        region_data_display['Status'] = region_data_display.apply(
+            lambda row: get_status_with_rank(row['net_gap'], row['rank']), axis=1
+        )
         
-        # Clean category names using unified method
-        table['Category'] = table['category'].apply(pretty_category)
+        # Use category_clean for display (guaranteed to exist from enrichment)
+        region_data_display['Category'] = region_data['category_clean']
         
-        return table[['Status', 'Category', 'Region%', 'Baseline%', 'Gap_pp', 'Mix%']]
-    
+        return region_data_display[['Status', 'Category', 'Region%', 'Baseline%', 'Gap_pp', 'Mix%']]
 
 
 class BusinessAnalyzer:
@@ -1037,7 +989,8 @@ class EdgeCaseDetector:
         # "both"
         return (pooled * common) < 0
     
-    def _pair_gap_vs_common_mix(self, rows: pd.DataFrame) -> Tuple[float, float]:
+    @staticmethod
+    def _pair_gap_vs_common_mix(rows: pd.DataFrame) -> Tuple[float, float]:
         """
         (Fixed) pooled and common-mix gaps, decimals.
         
@@ -1056,6 +1009,15 @@ class EdgeCaseDetector:
         
         return float(pooled), float(common)
     
+    def _material_gate(self, pooled: float, common: float, disagree_share: float, impact_change: float) -> bool:
+        """DRY material paradox gating logic."""
+        t = self.thresholds
+        return (
+            max(abs(pooled), abs(common)) >= t.paradox_material_gap and
+            disagree_share >= t.paradox_disagree_share and
+            impact_change >= t.paradox_impact_swing
+        )
+    
     def detect_mathematical_cancellation(
         self,
         decomposition_df: pd.DataFrame,
@@ -1065,6 +1027,7 @@ class EdgeCaseDetector:
         Flag regions where category-level effects materially oppose each other,
         leaving the topline ~zero. Avoids conflating pure composition gaps with cancellation.
         """
+        eps = self.thresholds.minor_gap  # reuse 0.5pp (decimal) as presence cutoff
         affected_regions = []
 
         for _, row in regional_gaps.iterrows():
@@ -1084,8 +1047,13 @@ class EdgeCaseDetector:
             opposing = (total_c * total_p) < 0
 
             # 3) internal cancellation evidence: category gaps are large vs tiny topline
+            # ignore baseline-only or region-only cells
             reg_rows = decomposition_df[decomposition_df["region"] == region]
-            sum_abs_cat = float(reg_rows["net_gap"].abs().sum())
+            both_present = (reg_rows["region_mix_pct"].abs() >= eps) & (reg_rows["rest_mix_pct"].abs() >= eps)
+            active = reg_rows.loc[both_present]
+            
+            # Sum of absolute nets only over shared footprint
+            sum_abs_cat = float(active["net_gap"].abs().sum())
             internal_cancel = sum_abs_cat >= (2.0 * abs(total_net) + self.thresholds.minor_gap)
 
             if near_zero_topline and material_components and opposing and internal_cancel:
@@ -1133,19 +1101,15 @@ class EdgeCaseDetector:
                 pooled = float(agg_row["region_rate"] - agg_row["rest_rate"])
 
                 # Child-level COMMON-MIX rate gap
-                _, common = self._pair_gap_vs_common_mix(detailed_subset)
+                _, common = EdgeCaseDetector._pair_gap_vs_common_mix(detailed_subset)
 
                 # Materiality gating under unified thresholds
                 # Use consolidated helper methods
-                disagree_share = _disagree_share_common(detailed_subset, pooled)
+                disagree_share = _disagree_share_common(detailed_subset, pooled, self.thresholds)
                 impact_change = abs(abs(common) - abs(pooled))
 
                 flip = self._paradox_direction_ok(pooled, common)
-                material = (
-                    max(abs(pooled), abs(common)) >= self.thresholds.paradox_material_gap and
-                    disagree_share >= self.thresholds.paradox_disagree_share and
-                    impact_change >= self.thresholds.paradox_impact_swing
-                )
+                material = self._material_gate(pooled, common, disagree_share, impact_change)
 
                 logger.debug(f"[PARADOX] region={region} parent={parent_label} pooled={pooled:+.4f} "
                              f"common={common:+.4f} disagree_share={disagree_share:.2f} "
@@ -1184,15 +1148,11 @@ class EdgeCaseDetector:
                 continue
 
             # Use consolidated helper methods
-            pooled, common = self._pair_gap_vs_common_mix(rows)
-            disagree_share = _disagree_share_common(rows, pooled)
+            pooled, common = EdgeCaseDetector._pair_gap_vs_common_mix(rows)
+            disagree_share = _disagree_share_common(rows, pooled, self.thresholds)
             impact_change = abs(abs(common) - abs(pooled))
             flip = self._paradox_direction_ok(pooled, common)
-            material = (
-                max(abs(pooled), abs(common)) >= self.thresholds.paradox_material_gap and
-                disagree_share >= self.thresholds.paradox_disagree_share and
-                impact_change >= self.thresholds.paradox_impact_swing
-            )
+            material = self._material_gate(pooled, common, disagree_share, impact_change)
 
             if flip and material:
                 cases.append({
@@ -1268,7 +1228,7 @@ def run_oaxaca_analysis(
     category_columns: Union[str, List[str]] = "product",
     subcategory_columns: Optional[List[str]] = None,
     baseline_type: str = "rest_of_world",
-    decomposition_method: str = "two_part",
+    decomposition_method: str = "business_centered",
     detect_edge_cases: bool = True,
     detect_cancellation: bool = True,
     thresholds: AnalysisThresholds = None
@@ -1328,36 +1288,16 @@ def run_oaxaca_analysis(
         region_mix = OaxacaCore.calculate_mix(region_data, category_columns, denominator_column)
         region_rates = OaxacaCore.calculate_rates(region_data, category_columns, numerator_column, denominator_column)
         
-        # Calculate actual gap for validation - cache baseline overall rate
-        region_overall_rate = OaxacaCore.calculate_rates(region_data, [], numerator_column, denominator_column).iloc[0]
+        # Calculate baseline overall rate for business_centered method  
         b_all_mix, b_all_rates = get_baseline_data(
             df, region_column, baseline_type, region, numerator_column, denominator_column, []
         )
         baseline_overall_rate = b_all_rates.iloc[0]
-        actual_gaps[region] = region_overall_rate - baseline_overall_rate
-        
-        # IDENTITY CHECKS: Explicit topline validation
-        # Region topline check
-        lhs = (region_mix * region_rates).sum()
-        rhs = region_overall_rate
-        assert abs(lhs - rhs) < 1e-12, f"Region topline mismatch for {region}: {lhs} vs {rhs}"
-        
-        # Baseline topline check (using cached b_all_rates)
-        assert abs((baseline_mix * baseline_rates).sum() - baseline_overall_rate) < 1e-12, \
-               f"Baseline topline mismatch for {region}"
-        
-        # Store overall rates for narrative generation
-        regional_overall_rates[region] = {
-            'region_overall_rate': region_overall_rate,
-            'baseline_overall_rate': baseline_overall_rate
-        }
-        
-        # CRITICAL FIX: Align on the union of ALL cells (not just region cells)
-        # This prevents math validation failures from dropped baseline-only cells
         
         # Pre-reindex validation
-        assert abs(region_mix.sum() - 1.0) < 1e-12, f"Region mix doesn't sum to 1.0: {region_mix.sum()}"
-        assert abs(baseline_mix.sum() - 1.0) < 1e-12, f"Baseline mix doesn't sum to 1.0: {baseline_mix.sum()}"
+        tol = thresholds.mathematical_tolerance
+        assert abs(region_mix.sum() - 1.0) < tol, f"Region mix doesn't sum to 1.0: {region_mix.sum()}"
+        assert abs(baseline_mix.sum() - 1.0) < tol, f"Baseline mix doesn't sum to 1.0: {baseline_mix.sum()}"
         
         # Use full union of cells from all sources
         all_idx = (region_mix.index
@@ -1368,14 +1308,21 @@ def run_oaxaca_analysis(
         region_mix   = region_mix.reindex(all_idx,   fill_value=0.0)
         baseline_mix = baseline_mix.reindex(all_idx, fill_value=0.0)
 
-        # Let rates be NaN where undefined; they won't matter when mix=0
-        region_rates   = region_rates.reindex(all_idx)
-        baseline_rates = baseline_rates.reindex(all_idx)
-
-        # If a rate is NaN on one side but that side has exposure, borrow the other side's rate;
-        # if both NaN, set 0 (will be multiplied by 0 exposure on both sides anyway).
-        region_rates   = region_rates.fillna(baseline_rates).fillna(0.0)
-        baseline_rates = baseline_rates.fillna(region_rates).fillna(0.0)
+        # For rates, reindex but only fill NaN with 0 (no cross-filling between sides)
+        region_rates   = region_rates.reindex(all_idx).fillna(0.0)
+        baseline_rates = baseline_rates.reindex(all_idx).fillna(0.0)
+        
+        # IDENTITY VALIDATION: Use unionized arrays to compute toplines that validation will check
+        region_topline_from_union   = float((region_mix   * region_rates).sum())
+        baseline_topline_from_union = float((baseline_mix * baseline_rates).sum())
+        actual_gap_from_union = region_topline_from_union - baseline_topline_from_union
+        actual_gaps[region] = actual_gap_from_union
+        
+        # Store overall rates for narrative generation (use unionized toplines)
+        regional_overall_rates[region] = {
+            'region_overall_rate': region_topline_from_union,
+            'baseline_overall_rate': baseline_topline_from_union
+        }
 
         idx_to_iterate = all_idx
         
@@ -1391,12 +1338,10 @@ def run_oaxaca_analysis(
             construct_gap, performance_gap, net_gap = OaxacaCore.decompose_gap(
                 region_mix_val, region_rate_val,
                 baseline_mix_val, baseline_rate_val,
-                decomposition_method
+                method=decomposition_method,
+                baseline_overall_rate=baseline_overall_rate
             )
-            
-            # Calculate additional metrics
-
-            
+              
             # Create result record - store both tuple and string for consistency
             decomposition_results.append({
                 "region": region,
@@ -1593,7 +1538,8 @@ def run_oaxaca_analysis(
         narrative_decisions=narrative_decisions,  # Clean enum-driven narrative system
         paradox_report=paradox_report,
         cancellation_report=cancellation_report,
-        baseline_type=baseline_type  # Pass baseline_type from orchestrator
+        baseline_type=baseline_type,
+        viz_meta={}  # initialize
     )
     
     return analysis_result
@@ -1652,11 +1598,15 @@ def _weights_common(rows: pd.DataFrame) -> pd.Series:
         w = rows['region_mix_pct'].fillna(0) + rows['rest_mix_pct'].fillna(0)
     return w / w.sum() if w.sum() else w
 
-def _disagree_share_common(rows: pd.DataFrame, pooled: float) -> float:
+def _disagree_share_common(rows: pd.DataFrame, pooled: float, thresholds: AnalysisThresholds = None) -> float:
     """Compute disagree share consistently across EdgeCaseDetector and NarrativeTemplateEngine."""
+    t = thresholds or AnalysisThresholds()
     w = _weights_common(rows)
-    diff = rows['region_rate'] - rows['rest_rate']
-    return float(w[diff != 0].sum()) if pooled == 0 else float(w[np.sign(diff) == -np.sign(pooled)].sum())
+    diff = (rows['region_rate'] - rows['rest_rate']).fillna(0.0)
+    material = diff.abs() >= t.minor_rate_diff  # treat tiny deltas as zero
+    if pooled == 0:
+        return float(w[material].sum())
+    return float(w[material & (np.sign(diff) == -np.sign(pooled))].sum())
 
 # ================================
 # DISPLAY FORMATTING FUNCTIONS  
@@ -1834,8 +1784,9 @@ def _topk_evidence(decomp_region_df: pd.DataFrame, thresholds: AnalysisThreshold
     topk = d.head(k)
     concentration = float(topk["abs_gap_numeric"].sum() / (d["abs_gap_numeric"].sum() or 1.0))
     exposure_share = float(topk["region_mix_pct"].sum())  # 0..1
-    # Penalize tiny segments among top-k (default tiny < 3% exposure)
-    tiny_cutoff = 0.03
+    # Penalize tiny segments among top-k
+    # derive 3% from visual indicator (1pp) × 3 to avoid a new constant
+    tiny_cutoff = thresholds.visual_indicator_threshold * 3.0
     tiny_rate = float((topk["region_mix_pct"] < tiny_cutoff).mean())
     return topk, concentration, exposure_share, tiny_rate
 
@@ -2022,7 +1973,6 @@ def _title_for_cut(cols: Iterable[str], metric_name: Optional[str]) -> str:
     name = _format_cut_name(cols)
     return f"{metric_name} - {name}" if metric_name else name
 
-
 def build_oaxaca_exec_pack(
     df: pd.DataFrame,
     *,
@@ -2062,6 +2012,15 @@ def build_oaxaca_exec_pack(
 
     # Unpack the (slide_spec, payload) from present_executive_pack_for_slides
     def _exec_from_result(ar: AnalysisResult, region: str, title: str, cut_cols: Iterable[str], role: str):
+        # ensure viz_meta exists
+        if getattr(ar, "viz_meta", None) is None:
+            ar.viz_meta = {}
+        # bind the chosen cut & labels for viz to read
+        ar.viz_meta["cut_cols"] = list(cut_cols)
+        if metric_name:
+            ar.viz_meta["metric_name"] = metric_name
+        ar.viz_meta["category_name"] = _format_cut_name(cut_cols)  # e.g., "Product × Vertical"
+
         slide, payload = ar.present_executive_pack_for_slides(
             region, max_charts=max_charts, charts=charts, custom_title=title
         )
@@ -2199,18 +2158,266 @@ def build_oaxaca_exec_pack(
     
     return {"slides": slides_dict, "payload": payload}
 
+def analyze_oaxaca_metrics(
+    config: Dict[str, Any],
+    metric_anomaly_map: Dict[str, Dict[str, Any]],
+    data_df: pd.DataFrame
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Perform Oaxaca-Blinder analysis for all configured metrics and return results in unified format.
+    
+    Args:
+        config: Configuration dictionary with metrics and their Oaxaca settings
+        metric_anomaly_map: Dictionary mapping metric names to anomaly information
+        data_df: DataFrame containing the data for analysis
+    
+    Returns:
+        Dictionary in unified format: {metric_name: {'slides': {'oaxaca_primary': slide_data, 'oaxaca_alternative': slide_data}, 'payload': {...}}}
+    """
+    metrics_config = config.get('metrics', {})
+    unified_results = {}
+    
+    # Analyze each metric
+    for metric_name, metric_config in metrics_config.items():
+        # Check if this metric has an anomaly detected
+        if metric_name not in metric_anomaly_map:
+            print(f"   ⏭️  Skipping {metric_name} - no anomaly detected")
+            continue
+            
+        try:
+            print(f"   📊 Processing Oaxaca-Blinder analysis for {metric_name}")
+            
+            # Get anomaly information
+            anomaly = metric_anomaly_map[metric_name]
+            target_region = anomaly['anomalous_region']
+            
+            # Get configuration
+            region_column = metric_config.get('region_column', 'region')
+            numerator_column = metric_config.get('numerator_column')
+            denominator_column = metric_config.get('denominator_column')
+            candidate_cuts = metric_config.get('candidate_cuts', [["product"]])
+            max_charts = metric_config.get('max_charts', 2)
+            alternatives = metric_config.get('alternatives', 1)
+            
+            if not numerator_column or not denominator_column:
+                print(f"   ⚠️  Skipping {metric_name} - missing numerator/denominator column configuration")
+                continue
+            
+            print(f"   📊 Testing candidate cuts: {candidate_cuts}")
+            
+            # Run Oaxaca-Blinder analysis using the unified driver function
+            oaxaca_results = build_oaxaca_exec_pack(
+                df=data_df,  
+                candidate_cuts=candidate_cuts,
+                focus_region=target_region,
+                region_column=region_column,
+                numerator_column=numerator_column,
+                denominator_column=denominator_column,
+                max_charts=max_charts,
+                metric_name=metric_name,
+                alternatives=alternatives
+            )
+            
+            # Extract best cut information for logging
+            best_categories = oaxaca_results['payload']['best_slice']['best_categories']
+            best_score = oaxaca_results['payload']['best_slice']['score']
+            print(f"   🏆 Best cut selected: {best_categories} (score: {best_score:.3f})")
+            
+            # Store results in unified format
+            unified_results[metric_name] = oaxaca_results
+            print(f"   ✅ Oaxaca-Blinder analysis completed for {metric_name}")
+            
+        except Exception as e:
+            print(f"   ⚠️  Failed to analyze {metric_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    return unified_results
 
 # =============================================================================
 # VISUALIZATION FUNCTIONS
 # =============================================================================
 
-def plot_rates_and_mix_panel(result, region: str, top_n: int = 12, sort_by: str = "abs_gap"):
+# --- Quadrant Prompts (exposure Δ vs performance Δ) --------------------------
+def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
+
+    meta = getattr(result, "viz_meta", {}) or {}
+    metric_name = meta.get("metric_name")
+    category_name = meta.get("category_name")
+
+    # ----------------------- style -----------------------
+    POS, NEG = "#2e7d32", "#c62828"
+    GRID = "#8e8e8e"
+    Q = {"I": "#e8f4ec", "II": "#f6f2dc", "III": "#ffffff", "IV": "#fdecea"}
+    PILL_BBOX = dict(boxstyle="square,pad=0.35", fc="white", ec="#cfcfcf", lw=1.0)
+    ARROW = dict(arrowstyle="-", lw=1.0, color="#777")
+
+    # ----------------------- data ------------------------
+    df = result.decomposition_df
+    rows = df[df["region"] == region].copy()
+    labels = rows["category_clean"].astype(str).values
+    dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
+    dy = (rows["region_rate"] - rows["rest_rate"]).values * 100.0
+    net = rows["net_gap"].values * 100.0
+    sizes = np.clip(rows["region_mix_pct"].values * 3200.0, 40.0, 1600.0)
+    colors = np.where(net >= 0, POS, NEG)
+
+    # ---------------- symmetric limits --------
+    def nice_step(a):
+        a = abs(float(a))
+        return 1 if a <= 6 else 2 if a <= 15 else 5 if a <= 30 else 10 if a <= 60 else 20
+
+    def sym_limits(max_abs, pad=0.18, min_half=6.0):
+        half = max_abs * (1 + pad)
+        half = max(half, min_half)
+        step = nice_step(half)
+        half = math.ceil(half / step) * step
+        return (-half, half), step
+
+    (xlo, xhi), xstep = sym_limits(np.nanmax(np.abs(dx)) if len(dx) else 0.0, min_half=6.0)
+    (ylo, yhi), ystep = sym_limits(np.nanmax(np.abs(dy)) if len(dy) else 0.0, min_half=6.0)
+
+    # ---------------- figure layout --------
+    fig = plt.figure(figsize=(18, 10))
+    gs = GridSpec(
+        3, 2, figure=fig,
+        height_ratios=[1, 0.12, 0.12],   # ax2 smaller by design, legends below it
+        width_ratios=[1.4, 1.0],         # ax1 bigger, ax2 narrower
+        hspace=0.25, wspace=0.06
+    )
+
+    ax = fig.add_subplot(gs[:, 0])   # ax1 takes entire left column (tallest)
+    axk = fig.add_subplot(gs[0, 1])  # ax2 = top-right, smaller
+    ax_leg1 = fig.add_subplot(gs[1, 1])  # legend1 below ax2
+    ax_leg2 = fig.add_subplot(gs[2, 1])  # legend2 below legend1
+
+    # ---------------- left main quadrant -----------------
+    ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi)
+    if hasattr(ax, "set_box_aspect"): ax.set_box_aspect(1)
+    ax.axvline(0, color=GRID, lw=1.0, zorder=0)
+    ax.axhline(0, color=GRID, lw=1.0, zorder=0)
+    ax.fill_between([0, xhi], 0, yhi, color=Q["I"], zorder=-5)
+    ax.fill_between([xlo, 0], 0, yhi, color=Q["II"], zorder=-5)
+    ax.fill_between([xlo, 0], ylo, 0, color=Q["III"], zorder=-5)
+    ax.fill_between([0, xhi], ylo, 0, color=Q["IV"], zorder=-5)
+
+    # quadrant numerals
+    ax.text(0.97, 0.96, "I", transform=ax.transAxes, ha="right", va="top", color="#666", weight="bold")
+    ax.text(0.03, 0.96, "II", transform=ax.transAxes, ha="left", va="top", color="#666", weight="bold")
+    ax.text(0.03, 0.05, "III", transform=ax.transAxes, ha="left", va="bottom", color="#666", weight="bold")
+    ax.text(0.97, 0.05, "IV", transform=ax.transAxes, ha="right", va="bottom", color="#666", weight="bold")
+
+    ax.xaxis.set_major_locator(MultipleLocator(xstep))
+    ax.yaxis.set_major_locator(MultipleLocator(ystep))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:+.0f}"))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:+.0f}"))
+    ax.set_xlabel("Exposure Δ (pp)", labelpad=6)
+    ax.set_ylabel("Performance Δ (pp)", labelpad=6)
+    title = "Compared to Peers: Exposure vs Performance"
+    if metric_name:
+        title = f"{title} — {metric_name}"
+    if category_name:
+        title = f"{title} (bubbles: {category_name})"
+    ax.set_title(title, fontsize=13, loc="left", pad=6)
+
+    # bubbles
+    ax.scatter(dx, dy, s=sizes, c=colors, ec="white", lw=1.1, alpha=0.96, zorder=3)
+
+    # annotations
+    if annotate_top_n and len(rows):
+        idx = np.argsort(np.abs(net))[::-1][:annotate_top_n]
+        for i in idx:
+            text = f"{labels[i]}   {dx[i]:+0.1f}/{dy[i]:+0.1f}  →  {net[i]:+0.1f}"
+            xoff = 18 if dx[i] >= 0 else -18
+            yoff = 14 if dy[i] >= 0 else -14
+            ax.annotate(
+                text, xy=(dx[i], dy[i]), xytext=(xoff, yoff), textcoords="offset points",
+                fontsize=10, color="#222", bbox=PILL_BBOX,
+                arrowprops=ARROW, clip_on=False, annotation_clip=False
+            )
+
+    # ---------------- right top: "How to Read" quadrant -----------------
+    axk.set_xlim(-1, 1); axk.set_ylim(-1, 1)
+    if hasattr(axk, "set_box_aspect"): axk.set_box_aspect(1)
+    axk.set_xticks([]); axk.set_yticks([])
+    axk.set_title("Legend / How to Read the Chart", fontsize=13, loc="left", pad=6)
+
+    axk.axvline(0, color=GRID, lw=1.0)
+    axk.axhline(0, color=GRID, lw=1.0)
+    axk.fill_between([0, 1], 0, 1, color=Q["I"], zorder=-5)
+    axk.fill_between([-1, 0], 0, 1, color=Q["II"], zorder=-5)
+    axk.fill_between([-1, 0], -1, 0, color=Q["III"], zorder=-5)
+    axk.fill_between([0, 1], -1, 0, color=Q["IV"], zorder=-5)
+
+    # quadrant numerals for ax2
+    axk.text(0.95, 0.95, "I", transform=axk.transAxes, ha="right", va="top", color="#666", weight="bold")
+    axk.text(0.05, 0.95, "II", transform=axk.transAxes, ha="left", va="top", color="#666", weight="bold")
+    axk.text(0.05, 0.05, "III",transform=axk.transAxes, ha="left", va="bottom", color="#666", weight="bold")
+    axk.text(0.95, 0.05, "IV", transform=axk.transAxes, ha="right", va="bottom", color="#666", weight="bold")
+
+    def center(axc, x, y, title, sub):
+        axc.text(x, y+0.12, title, ha="center", va="center", fontsize=13, weight="bold", color="#222")
+        axc.text(x, y-0.03, sub, ha="center", va="center", fontsize=11, color="#333")
+
+    center(axk, +0.5, +0.5, "Double Good", "(why not invest more?)")
+    center(axk, -0.5, +0.5, "Under-allocated to\nStrong Executor", "(Scale-up?)")
+    center(axk, -0.5,-0.5, "Low % Share\n& Weak Execution", "(Fine)")
+    center(axk, +0.5,-0.5, "Over-allocated to\nWeak Executor", "(Scale-down or fix?)")
+
+    # example bubble in ax2
+    ex = (0.78, 0.78)
+    axk.scatter([ex[0]], [ex[1]], s=320, c=POS, ec="white", lw=1.0, zorder=3)
+    axk.annotate("Δx / Δy  →  net (pp)",
+                 xy=ex, xytext=(ex[0], ex[1]-0.45),
+                 xycoords=axk.transData, textcoords=axk.transData,
+                 ha="center", va="top", fontsize=11, color="#222",
+                 bbox=PILL_BBOX, arrowprops=dict(arrowstyle="-|>", lw=1.1, color="#333"))
+
+    # ---------------- legend1 below ax2 -----------------
+    ax_leg1.axis("off")
+    handles_impact = [
+        Line2D([0], [0], marker='o', color='w', label='Positive', markerfacecolor=POS, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Negative', markerfacecolor=NEG, markersize=10)
+    ]
+    ax_leg1.legend(
+        handles=handles_impact, ncol=2,
+        title="Net Impact to Top-line Metric's Gap",
+        loc="center", frameon=True,
+        facecolor="white", edgecolor="#bdbdbd"
+    )
+
+    # ---------------- legend2 below legend1 -----------------
+    ax_leg2.axis("off")
+    handles_mix = [
+        Line2D([0], [0], marker='o', color='w', label='1%', markerfacecolor="#9e9e9e", markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='5%', markerfacecolor="#9e9e9e", markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='15%', markerfacecolor="#9e9e9e", markersize=20)
+    ]
+    ax_leg2.legend(
+        handles=handles_mix, ncol=3,
+        title="Exposure (% share)",
+        loc="center", frameon=True,
+        facecolor="white", edgecolor="#bdbdbd"
+    )
+
+    return fig
+
+def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str = "abs_gap", 
+                              metric_name: Optional[str] = None, category_name: Optional[str] = None):
     """
     Left: slopechart of success rates (Region vs Peers) per category.
     Right: barh of mix % (Region vs Peers) for the same categories (aligned).
     """
-    import matplotlib.pyplot as plt
-    
+
+    # Pull defaults bound on the AnalysisResult
+    meta = getattr(result, "viz_meta", {}) or {}
+    if metric_name is None:
+        metric_name = meta.get("metric_name")
+    if category_name is None:
+        # prefer the formatted name from the chosen cut; fall back only if missing
+        category_name = meta.get("category_name")
+
     rows = result.decomposition_df[result.decomposition_df["region"] == region].copy()
     rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
     rows["mix_diff_pp"]  = (rows["region_mix_pct"] - rows["rest_mix_pct"]) * 100
@@ -2218,38 +2425,74 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 12, sort_by: str 
     rows = rows.sort_values("abs_gap" if sort_by=="abs_gap" else "mix_diff_pp", ascending=False).head(top_n)
     rows = rows.iloc[::-1].copy()  # biggest at the top visually
 
-    labels = rows.apply(lambda r: r.get("category_clean", r["category"]), axis=1)
+    labels = rows["category_clean"]
+    
+    # Setup metric label
+    rate_label = f"{metric_name} %" if metric_name else "Metric (%)"
 
     fig = plt.figure(figsize=(12, max(5, 0.45*len(rows))))
     gs = fig.add_gridspec(1, 2, width_ratios=[3, 2])
     axL = fig.add_subplot(gs[0,0])
     axR = fig.add_subplot(gs[0,1])
 
+    region_color = "#5DADE2"   # neutral blue
+    peers_color  = "#BDC3C7"   # neutral gray
+    pos_color    = "#2e7d32"   # green for better region performance
+    neg_color    = "#c62828"   # red for worse region performance
+
     y = range(len(rows))
 
     # Left: slopechart of rates
-    axL.hlines(y, rows["rest_rate"]*100, rows["region_rate"]*100, alpha=0.6)
-    axL.plot(rows["rest_rate"]*100, y, "o", label="Peers", alpha=0.8)
-    axL.plot(rows["region_rate"]*100, y, "o", label="Region", alpha=0.8)
     for i, (_, r) in enumerate(rows.iterrows()):
-        dx = (r["region_rate"] - r["rest_rate"]) * 100
-        axL.text((r["rest_rate"]*100 + r["region_rate"]*100)/2, i,
-                 f"{dx:+.1f}pp", va="center", ha="center", fontsize=9)
+        start = r["rest_rate"] * 100
+        end   = r["region_rate"] * 100
+        color = pos_color if end > start else neg_color
+        axL.hlines(y=i, xmin=start, xmax=end, color=color, lw=1.5, alpha=0.7)
+    axL.plot(rows["rest_rate"]*100, y, "o", color=peers_color, label="Peers", alpha=0.8)
+    axL.plot(rows["region_rate"]*100, y, "o", color=region_color, label=region, alpha=0.8)
+    for i, (_, r) in enumerate(rows.iterrows()):
+        dx = r["rate_diff_pp"]
+        axL.text((r["rest_rate"]*100 + r["region_rate"]*100)/2, i+0.05,
+                 f"{dx:+.1f}pp", color=pos_color if dx > 0 else neg_color, va="center", ha="center", fontsize=9)
     axL.set_yticks(y, labels)
-    axL.set_xlabel("Success rate (%)")
-    axL.set_title(f"{region}: Rates by category")
+    axL.set_xlabel(rate_label)
+    axL.set_title(f"{rate_label} in {region}: by {category_name}", fontsize=11)
     axL.grid(True, axis="x", alpha=0.3)
-    axL.legend(loc="lower right")
+    axL.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=2)
 
     # Right: aligned mix percentages (barh, side-by-side)
     w = 0.4
-    axR.barh([i - w/2 for i in y], rows["region_mix_pct"]*100, height=w, alpha=0.8, label="Region")
-    axR.barh([i + w/2 for i in y], rows["rest_mix_pct"]*100,   height=w, alpha=0.6, label="Peers")
+    region_vals = rows["region_mix_pct"] * 100
+    peers_vals  = rows["rest_mix_pct"] * 100
+
+    axR.barh([i + w/2 for i in y], peers_vals,  height=w, color=peers_color,  alpha=0.8, label="Peers")
+    axR.barh([i - w/2 for i in y], region_vals, height=w, color=region_color, alpha=0.8, label=region)
+    
+    # Annotate significant gaps > 5%
+    for i, (_, r) in enumerate(rows.iterrows()):
+        region_val = r["region_mix_pct"] * 100
+        peers_val  = r["rest_mix_pct"] * 100
+        diff = region_val - peers_val
+
+        if abs(diff) >= 5:
+            # Case 1: Region higher → region green, peers gray
+            if diff > 0:
+                axR.text(region_val + 1, i - w/2, f"{region_val:.1f}%", va="center", ha="left",
+                        fontsize=9, color=pos_color, fontweight="bold")
+                axR.text(peers_val + 1, i + w/2, f"{peers_val:.1f}%", va="center", ha="left",
+                        fontsize=9, color=peers_color)
+            # Case 2: Region lower → region red, peers gray
+            else:
+                axR.text(region_val + 1, i - w/2, f"{region_val:.1f}%", va="center", ha="left",
+                        fontsize=9, color=neg_color, fontweight="bold")
+                axR.text(peers_val + 1, i + w/2, f"{peers_val:.1f}%", va="center", ha="left",
+                        fontsize=9, color=peers_color)
+    
     axR.set_yticks(y, [""]*len(rows))  # align with left
-    axR.set_xlabel("Mix (%)")
-    axR.set_title("Exposure mix")
+    axR.set_xlabel("Exposure (% Share)")
+    axR.set_title(f"Exposure (% of Total Count) by {category_name}", fontsize=11)
     axR.grid(True, axis="x", alpha=0.3)
-    axR.legend(loc="lower right")
+    axR.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=2)
 
     fig.tight_layout()
     return fig, (axL, axR)
@@ -2382,79 +2625,3 @@ def create_oaxaca_synthetic_data(target_region: str = "North America", target_ga
     return df
 
 
-def analyze_oaxaca_metrics(
-    config: Dict[str, Any],
-    metric_anomaly_map: Dict[str, Dict[str, Any]],
-    data_df: pd.DataFrame
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Perform Oaxaca-Blinder analysis for all configured metrics and return results in unified format.
-    
-    Args:
-        config: Configuration dictionary with metrics and their Oaxaca settings
-        metric_anomaly_map: Dictionary mapping metric names to anomaly information
-        data_df: DataFrame containing the data for analysis
-    
-    Returns:
-        Dictionary in unified format: {metric_name: {'slides': {'oaxaca_primary': slide_data, 'oaxaca_alternative': slide_data}, 'payload': {...}}}
-    """
-    metrics_config = config.get('metrics', {})
-    unified_results = {}
-    
-    # Analyze each metric
-    for metric_name, metric_config in metrics_config.items():
-        # Check if this metric has an anomaly detected
-        if metric_name not in metric_anomaly_map:
-            print(f"   ⏭️  Skipping {metric_name} - no anomaly detected")
-            continue
-            
-        try:
-            print(f"   📊 Processing Oaxaca-Blinder analysis for {metric_name}")
-            
-            # Get anomaly information
-            anomaly = metric_anomaly_map[metric_name]
-            target_region = anomaly['anomalous_region']
-            
-            # Get configuration
-            region_column = metric_config.get('region_column', 'region')
-            numerator_column = metric_config.get('numerator_column')
-            denominator_column = metric_config.get('denominator_column')
-            candidate_cuts = metric_config.get('candidate_cuts', [["product"]])
-            max_charts = metric_config.get('max_charts', 2)
-            alternatives = metric_config.get('alternatives', 1)
-            
-            if not numerator_column or not denominator_column:
-                print(f"   ⚠️  Skipping {metric_name} - missing numerator/denominator column configuration")
-                continue
-            
-            print(f"   📊 Testing candidate cuts: {candidate_cuts}")
-            
-            # Run Oaxaca-Blinder analysis using the unified driver function
-            oaxaca_results = build_oaxaca_exec_pack(
-                df=data_df,  
-                candidate_cuts=candidate_cuts,
-                focus_region=target_region,
-                region_column=region_column,
-                numerator_column=numerator_column,
-                denominator_column=denominator_column,
-                max_charts=max_charts,
-                metric_name=metric_name,
-                alternatives=alternatives
-            )
-            
-            # Extract best cut information for logging
-            best_categories = oaxaca_results['payload']['best_slice']['best_categories']
-            best_score = oaxaca_results['payload']['best_slice']['score']
-            print(f"   🏆 Best cut selected: {best_categories} (score: {best_score:.3f})")
-            
-            # Store results in unified format
-            unified_results[metric_name] = oaxaca_results
-            print(f"   ✅ Oaxaca-Blinder analysis completed for {metric_name}")
-            
-        except Exception as e:
-            print(f"   ⚠️  Failed to analyze {metric_name}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-    
-    return unified_results
