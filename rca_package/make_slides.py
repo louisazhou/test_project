@@ -69,7 +69,7 @@ MAX_TABLE_HEIGHT = 4.0       # Maximum table height in inches
 
 # Layout validation constants
 VALID_LAYOUT_TYPES = {
-    'auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'text_tables_then_figure', 'figure'
+    'auto', 'text', 'text_figure', 'text_tables', 'text_tables_figure', 'text_tables_then_figure', 'text_figure_then_figure', 'figure'
 }
 
 class SlideContent:
@@ -389,10 +389,12 @@ class SlideLayouts:
                 # Enhanced percentage detection - check column name patterns and value ranges
                 col_name_lower = str(col_name).lower()
                 
-                # Smart percentage detection: Only apply auto-formatting to decimal values (0-1) 
-                # that clearly need conversion to percentage display
-                # Skip auto-formatting for already-formatted data or percentage points
-                should_auto_format_percent = (
+                # Smart percentage detection: combine name-based and value-based detection
+                # but exclude already-formatted data or percentage points
+                name_indicates_percent = any(x in col_name_lower for x in ['pct', 'percentage', 'rate', 'ratio']) and not any(
+                    x in col_name_lower for x in ['pp', 'delta', 'impact', 'δ']
+                )
+                value_indicates_percent = (
                     isinstance(value, (int, float)) and 
                     0 <= value <= 1 and 
                     value != 0 and
@@ -401,7 +403,7 @@ class SlideLayouts:
                     'impact' not in col_name_lower    # Not impact columns
                 )
                 
-                is_percent = should_auto_format_percent
+                is_percent = name_indicates_percent or value_indicates_percent
                 cell.text = self._format_cell_value(value, is_percent)
                 
                 # Apply styling
@@ -716,9 +718,18 @@ class SlideLayouts:
             else:
                 layout_type = 'text'  # Default fallback
         
-        # Handle special two-slide layout first
+        # Handle special two-slide layouts first
         if layout_type == 'text_tables_then_figure':
             self._create_text_tables_then_figure_slides(
+                content=content,
+                text_chunks=text_chunks,
+                table_positions=table_positions,
+                figure_generators=figure_generators,
+                highlight_cells=highlight_cells
+            )
+            return
+        elif layout_type == 'text_figure_then_figure':
+            self._create_text_figure_then_figure_slides(
                 content=content,
                 text_chunks=text_chunks,
                 table_positions=table_positions,
@@ -1379,7 +1390,7 @@ class SlideLayouts:
                             if fig_generator.get('title_suffix'):
                                 slide_title = f"{content.title} - {fig_generator['title_suffix']}"
                             else:
-                                slide_title = f"{content.title} - Chart"
+                                slide_title = content.title
                             
                             # Extract caption
                             caption = fig_generator.get('caption', '')
@@ -1403,13 +1414,201 @@ class SlideLayouts:
                         logger.warning(f"Failed to generate figure: {e}")
                         # Create a placeholder slide if figure generation fails
                         self._create_slide_with_structured_content(
-                            title=f"{content.title} - Chart",
+                            title=content.title,
                             text_chunks=["Figure generation failed."],
                             table_positions=[],
                             figure_path=None,
                             layout_type='text',
                             highlight_cells=highlight_cells
                         )
+    
+    def _create_text_figure_then_figure_slides(self, content: SlideContent, text_chunks: List[str],
+                                              table_positions: List[Tuple[str, pd.DataFrame]],
+                                              figure_generators: List[Dict],
+                                              highlight_cells: Optional[Dict]):
+        """Create two slides: first with text+first figure, second with subsequent figures."""
+        
+        if not figure_generators:
+            # No figures, just create text slide
+            self._create_slide_with_structured_content(
+                title=content.title,
+                text_chunks=text_chunks,
+                table_positions=table_positions,
+                figure_path=None,
+                layout_type='text_tables' if table_positions else 'text',
+                highlight_cells=highlight_cells
+            )
+            return
+        
+        # Slide 1: Text + First Figure
+        first_fig_generator = figure_generators[0]
+        fig_params = first_fig_generator.get('params', {})
+        generator_func = first_fig_generator.get('function')
+        
+        if generator_func:
+            try:
+                plt.close('all')  # Close any existing figures
+                
+                result = generator_func(**fig_params)
+                
+                # Handle different return types from generator functions
+                figures_to_save = []
+                if isinstance(result, plt.Figure):
+                    figures_to_save.append(result)
+                elif hasattr(result, '__iter__') and not isinstance(result, str):
+                    # Handle case where function returns multiple figures
+                    for item in result:
+                        if isinstance(item, plt.Figure):
+                            figures_to_save.append(item)
+                
+                # If no figures were returned directly, check all open figures
+                if not figures_to_save:
+                    figures_to_save = [plt.figure(num) for num in plt.get_fignums()]
+                
+                # Use first figure for the text+figure slide
+                if figures_to_save:
+                    first_fig = figures_to_save[0]
+                    
+                    # Create temp file for first figure
+                    temp_dir = tempfile.gettempdir()
+                    temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_first.png"
+                    first_figure_path = os.path.join(temp_dir, temp_filename)
+                    
+                    first_fig.savefig(first_figure_path, dpi=300, bbox_inches='tight')
+                    
+                    if content.show_figures:
+                        plt.figure(first_fig.number)
+                        plt.show()
+                    
+                    plt.close(first_fig)
+                    
+                    # Extract caption
+                    caption = first_fig_generator.get('caption', '')
+                    
+                    # Create first slide with text + first figure
+                    self._create_slide_with_structured_content(
+                        title=content.title,
+                        text_chunks=text_chunks,
+                        table_positions=table_positions,
+                        figure_path=first_figure_path,
+                        layout_type='text_tables_figure' if table_positions else 'text_figure',
+                        highlight_cells=highlight_cells,
+                        figure_caption=caption
+                    )
+                    
+                    # Clean up first figure
+                    if os.path.exists(first_figure_path):
+                        os.unlink(first_figure_path)
+                    
+                    # Handle remaining figures from the first generator
+                    for fig_idx, fig in enumerate(figures_to_save[1:], 1):
+                        temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_0_{fig_idx}.png"
+                        figure_path = os.path.join(temp_dir, temp_filename)
+                        
+                        fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                        
+                        if content.show_figures:
+                            plt.figure(fig.number)
+                            plt.show()
+                        
+                        plt.close(fig)
+                        
+                        # Create figure slide (no text, no tables)
+                        self._create_slide_with_structured_content(
+                            title=content.title,
+                            text_chunks=[],
+                            table_positions=[],
+                            figure_path=figure_path,
+                            layout_type='figure',
+                            highlight_cells=highlight_cells,
+                            figure_caption=caption
+                        )
+                        
+                        # Clean up
+                        if os.path.exists(figure_path):
+                            os.unlink(figure_path)
+                
+            except Exception as e:
+                logger.warning(f"Failed to generate first figure: {e}")
+                # Create text-only slide if figure generation fails
+                self._create_slide_with_structured_content(
+                    title=content.title,
+                    text_chunks=text_chunks,
+                    table_positions=table_positions,
+                    figure_path=None,
+                    layout_type='text_tables' if table_positions else 'text',
+                    highlight_cells=highlight_cells
+                )
+        
+        # Slide 2+: Subsequent Figures (if any)
+        for i, fig_generator in enumerate(figure_generators[1:], 1):
+            fig_params = fig_generator.get('params', {})
+            generator_func = fig_generator.get('function')
+            
+            if generator_func:
+                try:
+                    plt.close('all')  # Close any existing figures
+                    
+                    result = generator_func(**fig_params)
+                    
+                    # Handle different return types from generator functions
+                    figures_to_save = []
+                    if isinstance(result, plt.Figure):
+                        figures_to_save.append(result)
+                    elif hasattr(result, '__iter__') and not isinstance(result, str):
+                        # Handle case where function returns multiple figures
+                        for item in result:
+                            if isinstance(item, plt.Figure):
+                                figures_to_save.append(item)
+                    
+                    # If no figures were returned directly, check all open figures
+                    if not figures_to_save:
+                        figures_to_save = [plt.figure(num) for num in plt.get_fignums()]
+                    
+                    # Create slides for each figure
+                    for fig_idx, fig in enumerate(figures_to_save):
+                        # Create temp file
+                        temp_dir = tempfile.gettempdir()
+                        temp_filename = f"temp_figure_{int(datetime.now().timestamp() * 1000)}_{i}_{fig_idx}.png"
+                        figure_path = os.path.join(temp_dir, temp_filename)
+                        
+                        fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+                        
+                        if content.show_figures:
+                            plt.figure(fig.number)
+                            plt.show()
+                        
+                        plt.close(fig)
+                        
+                        # Extract caption
+                        caption = fig_generator.get('caption', '')
+                        
+                        # Create figure slide (no text, no tables)
+                        self._create_slide_with_structured_content(
+                            title=content.title,
+                            text_chunks=[],
+                            table_positions=[],
+                            figure_path=figure_path,
+                            layout_type='figure',
+                            highlight_cells=highlight_cells,
+                            figure_caption=caption
+                        )
+                        
+                        # Clean up
+                        if os.path.exists(figure_path):
+                            os.unlink(figure_path)
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to generate figure: {e}")
+                    # Create a placeholder slide if figure generation fails
+                    self._create_slide_with_structured_content(
+                        title=content.title,
+                        text_chunks=["Figure generation failed."],
+                        table_positions=[],
+                        figure_path=None,
+                        layout_type='text',
+                        highlight_cells=highlight_cells
+                    )
     
     def _create_slide_with_truncated_content(self, content: SlideContent, text_chunks: List[str],
                                            table_positions: List[Tuple[str, pd.DataFrame]],
@@ -1616,13 +1815,60 @@ class SlideLayouts:
                 
             p.text = f"{metric}:"
             p.font.bold = True  # Proper bold formatting for PowerPoint
-            p.font.size = Pt(12)
-            p.space_after = Pt(6)
+            p.font.size = Pt(10)
+            p.space_after = Pt(3)
             
             p = text_frame.add_paragraph()
-            p.text = explanation_text
-            p.font.size = Pt(12)
-            p.space_after = Pt(12)
+            
+            # Parse text to handle multiple "{prefix}: {text}" patterns
+            if ": " in explanation_text:
+                # Split the text into lines and process each line
+                lines = explanation_text.split('\n')
+                first_line = True
+                
+                for line in lines:
+                    if not first_line:
+                        # Add line break for subsequent lines
+                        p.add_run().text = "\n"
+                    first_line = False
+                    
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Check if this line has the "{prefix}: {text}" pattern
+                    if ": " in line and not line.startswith(" "):  # Avoid matching indented continuations
+                        prefix, rest_text = line.split(": ", 1)
+                        
+                        # Guardrail: only format as prefix if it's a reasonable length (≤12 characters)
+                        if len(prefix) <= 12:
+                            # Add prefix with bold and underline
+                            run = p.add_run()
+                            run.text = prefix + ": "
+                            run.font.bold = True
+                            run.font.underline = True
+                            run.font.size = Pt(10)
+                            
+                            # Add rest of text with normal formatting
+                            run = p.add_run()
+                            run.text = rest_text
+                            run.font.size = Pt(10)
+                        else:
+                            # Prefix too long, treat as normal text
+                            run = p.add_run()
+                            run.text = line
+                            run.font.size = Pt(10)
+                    else:
+                        # No colon pattern, use normal formatting
+                        run = p.add_run()
+                        run.text = line
+                        run.font.size = Pt(10)
+            else:
+                # No colon found anywhere, use normal formatting
+                p.text = explanation_text
+                p.font.size = Pt(10)
+            
+            p.space_after = Pt(10)
     
     def _calculate_content_layout(self, content_type: str, text_height: float = 0, 
                                 table_width: float = 0, table_height: float = 0,
