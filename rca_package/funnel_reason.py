@@ -466,9 +466,19 @@ def stage_flow(df_norm, df_lost, df_block, *, region, stage, config, use='amt',
     collapsed = (reg.groupby(['region', 'kind', 'stage'], group_keys=False).apply(_keep)
                 if not reg.empty else reg)
 
-    def _reasons(kind):
+    def _reasons(kind, max_reasons=3):
         items = []
         sub = collapsed[collapsed['kind'] == kind]
+        
+        if sub.empty:
+            return items
+            
+        # Sort by amount/count and take top N for summary text to avoid flooding
+        if kind == 'Blocked':
+            sub = sub.sort_values('n', ascending=False).head(max_reasons)
+        else:
+            sub = sub.sort_values('amt', ascending=False).head(max_reasons)
+        
         for _, row in sub.iterrows():
             if kind == 'Blocked':
                 # For blocked reasons, show count instead of % since blocked amounts are typically small
@@ -569,6 +579,7 @@ def plot_total_lost_single(tl_dict, *, label, use='amt', stage_order=None, stage
     base_txt = f"{int(bn):,}" if use == 'n' else _fmt_money_short(ba)
     title_metric = "# of Solutions Lost" if use == 'n' else "\\$PRC Lost"
     ax.set(aspect='equal', title=f"{label} — Total Lost ({title_metric}, total={base_txt})")
+    ax.title.set_fontsize(10)
     
     center_text = _fmt_money_short(ba) if use == 'amt' else f'{int(bn):,}'
     ax.text(0, 0, f"Total Lost\n{center_text}", ha='center', va='center', 
@@ -727,6 +738,7 @@ def plot_stage_donut(flow, *, use='amt', stage_transitions=None, ax=None):
     use_label = "# of Solutions" if use == 'n' else "\\$PRC"
     base_desc = f"funnel start: {_fmt_money_short(ba) if use == 'amt' else f'{int(bn):,}'}"
     ax.set(aspect='equal', title=f"{region}\n{stage} ({use_label}, {base_desc})")
+    ax.title.set_fontsize(10)
     ax.title.set_position([0.5, 0.85])
 
     at_risk_primary = ((flow['lost_n'] + flow['block_n']) / bn if use == 'n' and bn > 0
@@ -893,6 +905,51 @@ def analyze_funnel_reasons(df_lost, df_block, config, metric_anomaly_map, *,
             continue
 
     return unified_results
+
+def analyze_funnel_reasons_all_regions(df_lost, df_block, config, *, 
+                                      lost_columns, blocked_columns):
+    """
+    Analyze funnel reasons for ALL regions in the data, not just anomalous ones.
+    Creates dummy anomaly map for each region and generates comprehensive results.
+    
+    Args:
+        df_lost, df_block: input DataFrames
+        config: configuration dict (without column mappings)
+        lost_columns: dict mapping required lost data column names to actual DataFrame column names
+        blocked_columns: dict mapping required blocked data column names to actual DataFrame column names
+        
+    Returns:
+        dict: {metric_name: {region_name: unified_results_dict}}
+    """
+    # Get all unique regions from the data
+    config_with_columns = {**config, 'columns': {**lost_columns, **blocked_columns}}
+    all_regions = df_lost[lost_columns['lost_territory']].unique()
+    
+    all_results = {}
+    metrics_config = config.get('metrics', {})
+    
+    for metric_name in metrics_config.keys():
+        all_results[metric_name] = {}
+        
+        for region in all_regions:
+            # Create dummy anomaly map for this region
+            dummy_anomaly_map = {metric_name: {'anomalous_region': region}}
+            
+            # Analyze this region as if it were anomalous
+            region_results = analyze_funnel_reasons(
+                df_lost, df_block, config, dummy_anomaly_map,
+                lost_columns=lost_columns, blocked_columns=blocked_columns
+            )
+            
+            if metric_name in region_results:
+                # Add region name to slide titles for clarity
+                for slide_type, slide_data in region_results[metric_name]['slides'].items():
+                    original_title = slide_data['slide_info']['title']
+                    slide_data['slide_info']['title'] = f"{region} - {original_title}"
+                
+                all_results[metric_name][region] = region_results[metric_name]
+    
+    return all_results
 
 def analyze_funnel_reasons_data(df_lost, df_block, *, region, stage, config, 
                               comparison_region=None, comparison_type='rest_of_world'):

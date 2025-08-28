@@ -52,7 +52,7 @@ from rca_package.depth_spotter import (
     analyze_region_depth, create_synthetic_data
 )
 from rca_package.funnel_reason import (
-    analyze_funnel_reasons, create_funnel_synthetic_data
+    analyze_funnel_reasons, analyze_funnel_reasons_all_regions, create_funnel_synthetic_data
 )
 from rca_package.make_slides import SlideLayouts, dual_output, SlideContent
 
@@ -353,6 +353,14 @@ try:
     }
     
     funnel_config = load_config('configs/config_funnel.yaml')
+    
+    # Get comprehensive results for all regions
+    all_region_results = analyze_funnel_reasons_all_regions(
+        df_lost, df_blocked, funnel_config,
+        lost_columns=lost_columns, blocked_columns=blocked_columns
+    )
+    
+    # Process regular anomaly-driven results
     results = analyze_funnel_reasons(
         df_lost=df_lost,
         df_block=df_blocked,
@@ -362,6 +370,10 @@ try:
         blocked_columns=blocked_columns
     )
     process_analysis_results(results, unified_results)
+    
+    # Store all-region results for comprehensive slides
+    if 'all_region_funnel_results' not in globals():
+        all_region_funnel_results = all_region_results
 except Exception as e:
     print(f"⚠️  Funnel analysis skipped: {e}")
     import traceback
@@ -414,6 +426,40 @@ slides.create_metrics_summary_slide(
 )
 print("✅ Summary slide created (will appear as second slide)")
 
+# Create comprehensive funnel summary slide for all regions
+try:
+    if 'all_region_funnel_results' in globals():
+        # Create funnel-specific summary showing all regions
+        funnel_metrics = [m for m in metric_names if m in all_region_funnel_results]
+        if funnel_metrics:
+            # Build comprehensive text showing all regions for funnel metrics
+            comprehensive_funnel_texts = {}
+            
+            for metric_name in funnel_metrics:
+                region_summaries = []
+                for region, region_data in all_region_funnel_results[metric_name].items():
+                    for slide_type, slide_data in region_data['slides'].items():
+                        if 'summary' in slide_data and 'summary_text' in slide_data['summary']:
+                            summary = slide_data['summary']['summary_text']
+                            region_summaries.append(f"**{region}**: {summary}")
+                
+                if region_summaries:
+                    comprehensive_funnel_texts[metric_name] = "\n\n".join(region_summaries)
+            
+            # Create a summary DataFrame for funnel metrics only
+            funnel_summary_df = summary_df[funnel_metrics].copy() if funnel_metrics else pd.DataFrame()
+            
+            if not funnel_summary_df.empty:
+                slides.create_metrics_summary_slide(
+                    df=funnel_summary_df,
+                    metrics_text=comprehensive_funnel_texts,
+                    metric_anomaly_map={k: v for k, v in metric_anomaly_map.items() if k in funnel_metrics},
+                    title="Comprehensive Funnel Analysis - All Regions"
+                )
+                print("✅ Comprehensive funnel summary slide created")
+except Exception as e:
+    print(f"⚠️ Comprehensive funnel summary creation failed: {e}")
+
 # Generate detailed analysis slides (preserve YAML order)
 for metric_name in metric_names:
     if metric_name not in unified_results:
@@ -442,6 +488,43 @@ for metric_name in metric_names:
             total_hypotheses, 
             current_count
         )
+
+# Generate comprehensive funnel slides for all regions
+try:
+    if 'all_region_funnel_results' in globals():
+        funnel_metrics = [m for m in metric_names if m in all_region_funnel_results]
+        
+        for metric_name in funnel_metrics:
+            if metric_name in all_region_funnel_results:
+                print(f"\n🔄 Generating comprehensive slides for {metric_name} (all regions)")
+                
+                # Add a divider slide for comprehensive analysis
+                slides._create_divider_slide(f"{metric_name} - All Regions")
+                
+                # Generate slides for each region
+                for region, region_data in all_region_funnel_results[metric_name].items():
+                    for analysis_type, slide_data in region_data['slides'].items():
+                        @dual_output(console=True, slide=True, slide_builder=slides, 
+                                    layout_type=slide_data['slide_info'].get('layout_type', 'text_figure'), 
+                                    show_figures=SHOW_FIGURES)
+                        def create_region_analysis_slide():
+                            template_params = slide_data['slide_info'].get('template_params', {}).copy()
+                            figure_generators = slide_data['slide_info'].get('figure_generators', [])
+                            dfs = slide_data['slide_info'].get('dfs', {}).copy()
+                            
+                            return SlideContent(
+                                title=slide_data['slide_info']['title'],
+                                text_template=slide_data['slide_info'].get('template_text', ''),
+                                dfs=dfs,
+                                template_params=template_params,
+                                figure_generators=figure_generators,
+                                show_figures=SHOW_FIGURES
+                            )
+                        
+                        content, results = create_region_analysis_slide()
+                        print(f"✅ Generated {analysis_type} slide for {region}")
+except Exception as e:
+    print(f"⚠️ Comprehensive region slides creation failed: {e}")
 
 # %% [markdown]
 # ## 7. Save and Upload Presentation
