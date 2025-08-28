@@ -1,0 +1,29 @@
+# Funnel Analysis Configuration
+# This file contains the configuration for funnel reason analysis
+
+# =================== CONFIGURATION GUIDE ===================
+# stage_transitions:                     # Define the funnel flow
+#   <current_stage>: <next_stage>        # Maps each stage to its next stage
+#   # Set to null for final stage
+#
+# metrics:                               # Define metrics to analyze
+#   <metric_name>:                       # Human-readable metric name
+#     drop_off_from: <stage_name>        # Stage where drop-off occurs
+# ============================================================
+
+stage_transitions:
+  "Lead Qualification": "Technical Demo"
+  "Technical Demo": "Business Proposal"
+  "Business Proposal": "Contract Negotiation"
+  "Contract Negotiation": "Closed Won"
+  "Closed Won": null
+
+metrics:
+  "Technical Demo Conversion":
+    drop_off_from: "Technical Demo"
+  "Business Proposal Success":
+    drop_off_from: "Business Proposal"  
+  "Contract Negotiation Close":
+    drop_off_from: "Contract Negotiation"
+  "Total Lost":
+    drop_off_from: ["Technical Demo", "Business Proposal", "Contract Negotiation"]

@@ -51,6 +51,9 @@ from rca_package.hypothesis_scorer import (
 from rca_package.depth_spotter import (
     analyze_region_depth, create_synthetic_data
 )
+from rca_package.funnel_reason import (
+    analyze_funnel_reasons, create_funnel_synthetic_data
+)
 from rca_package.make_slides import SlideLayouts, dual_output, SlideContent
 
 # Control figure display - set to True if you want to see figures inline
@@ -87,6 +90,15 @@ data = {
     'avg_order_value': np.array([75.0, 65.0, 80.0, 85.0, 72.0]),
     'customer_satisfaction': np.array([4.2, 3.8, 4.3, 4.5, 4.0]),
     'revenue': np.array([1000000, 650000, 950000, 1100000, 850000]),
+    
+    # Funnel metrics (direct data instead of function call)
+    'technical_demo_conversion_rate': np.array([0.65, 0.45, 0.68, 0.72, 0.66]),  # NA underperforms
+    'technical_demo_pipeline_value': np.array([45000000, 25000000, 48000000, 35000000, 42000000]),
+    'business_proposal_success_rate': np.array([0.58, 0.62, 0.42, 0.61, 0.59]),  # Europe underperforms
+    'business_proposal_pipeline_value': np.array([38000000, 32000000, 22000000, 28000000, 35000000]),
+    'contract_negotiation_close_rate': np.array([0.72, 0.75, 0.78, 0.55, 0.74]),  # Asia underperforms
+    'contract_negotiation_pipeline_value': np.array([28000000, 31000000, 35000000, 18000000, 29000000]),
+    'total_lost_rate': np.array([0.15, 0.25, 0.16, 0.14, 0.17]),  # North America underperforms overall
     
     # Hypotheses (using technical names from config)
     'bounce_rate_pct': np.array([0.35, 0.45, 0.32, 0.28, 0.34]),
@@ -310,6 +322,51 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+# Process Funnel analysis
+try:
+    print("🔄 Processing funnel analysis...")
+    
+    # Generate synthetic funnel data
+    df_lost, df_blocked = create_funnel_synthetic_data()
+    
+    # Define column mappings for lost and blocked data (as required kwargs)
+    lost_columns = {
+        'lost_territory': "territory_l4_name",
+        'lost_stage': "Stage Before Closed", 
+        'lost_reason': "Closed Lost Sub Reason",
+        'lost_count': "# of Solutions Lost",
+        'lost_amount': "$ PRC Lost",
+        'lost_current_count': "# of Solutions Currently in Stage",
+        'lost_current_amount': "$ PRC Currently in Stage",
+        'lost_total_count': "Total # of Solutions (Lost + Current)",
+        'lost_total_amount': "Total $ PRC (Lost + Current)"
+    }
+    
+    blocked_columns = {
+        'blocked_territory': "territory_l4_name",
+        'blocked_stage': "Stage Being Blocked",
+        'blocked_reason': "Blocked Sub Reason", 
+        'blocked_count': "# of Solutions Blocked",
+        'blocked_amount': "$ PRC Blocked",
+        'blocked_current_count': "# of Solutions Currently in Stage",
+        'blocked_current_amount': "$ PRC Currently in Stage"
+    }
+    
+    funnel_config = load_config('configs/config_funnel.yaml')
+    results = analyze_funnel_reasons(
+        df_lost=df_lost,
+        df_block=df_blocked,
+        config=funnel_config,
+        metric_anomaly_map=metric_anomaly_map,
+        lost_columns=lost_columns,
+        blocked_columns=blocked_columns
+    )
+    process_analysis_results(results, unified_results)
+except Exception as e:
+    print(f"⚠️  Funnel analysis skipped: {e}")
+    import traceback
+    traceback.print_exc()
+
 # Calculate total hypotheses per metric once
 for metric_name in unified_results:
     total_hypotheses_per_metric[metric_name] = sum(
@@ -336,15 +393,17 @@ for metric_name in metrics_to_show:
 # Add the hypotheses count as a new row
 summary_df.loc['# of Hypotheses'] = pd.Series(hypotheses_counts).astype(int)
 
-# Collect summary texts from slide data (only for metrics with results)
+# Collect summary texts from slide data (preserve YAML metric order)
 summary_texts = {}
-for metric_name, result in unified_results.items():
-    texts = []
-    for analysis_type, slide_data in result['slides'].items():
-        if 'summary' in slide_data and 'summary_text' in slide_data['summary']:
-            texts.append(f"{analysis_type}: {slide_data['summary']['summary_text']}")
-    if texts:
-        summary_texts[metric_name] = "\n".join(texts)
+for metric_name in metric_names:  # Use original YAML order
+    if metric_name in unified_results:
+        result = unified_results[metric_name]
+        texts = []
+        for analysis_type, slide_data in result['slides'].items():
+            if 'summary' in slide_data and 'summary_text' in slide_data['summary']:
+                texts.append(f"{analysis_type}: {slide_data['summary']['summary_text']}")
+        if texts:
+            summary_texts[metric_name] = "\n".join(texts)
 
 # Create summary slide with all metrics
 slides.create_metrics_summary_slide(
@@ -355,8 +414,8 @@ slides.create_metrics_summary_slide(
 )
 print("✅ Summary slide created (will appear as second slide)")
 
-# Generate detailed analysis slides
-for metric_name, metric_config in config['metrics'].items():
+# Generate detailed analysis slides (preserve YAML order)
+for metric_name in metric_names:
     if metric_name not in unified_results:
         continue
         
