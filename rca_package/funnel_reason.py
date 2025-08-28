@@ -102,19 +102,25 @@ def normalize_funnel(df_lost, df_block, config):
     block['kind'] = 'Blocked'
 
     # Calculate stage origins for lost data
+    # Use 'first' for invariant columns (same per region+stage), 'sum' for reason-level data
     st_l = (lost.groupby(['region','stage'], as_index=False)
-                .agg(stage_total_n=('stage_total_n','max'),
-                     curr_n=('curr_n','max'), lost_n=('n','sum'),
-                     stage_total_amt=('stage_total_amt','max'),
-                     curr_amt=('curr_amt','max'), lost_amt=('amt','sum')))
+                .agg(stage_total_n=('stage_total_n','first'),   # invariant per region+stage
+                     curr_n=('curr_n','first'),                # invariant per region+stage  
+                     lost_n=('n','sum'),                       # sum across reasons
+                     stage_total_amt=('stage_total_amt','first'), # invariant per region+stage
+                     curr_amt=('curr_amt','first'),            # invariant per region+stage
+                     lost_amt=('amt','sum')))                  # sum across reasons
     st_l['stage_origin_n'] = st_l['stage_total_n'].fillna(st_l['curr_n'] + st_l['lost_n'])
     st_l['stage_origin_amt'] = st_l['stage_total_amt'].fillna(st_l['curr_amt'] + st_l['lost_amt'])
     lost = lost.merge(st_l[['region','stage','stage_origin_n','stage_origin_amt']], on=['region','stage'], how='left')
 
-    # Calculate stage origins for blocked data
+    # Calculate stage origins for blocked data  
+    # Use 'first' for invariant columns (same per region+stage), 'sum' for reason-level data
     st_b = (block.groupby(['region','stage'], as_index=False)
-                .agg(curr_n=('curr_n','max'), block_n=('n','sum'),
-                     curr_amt=('curr_amt','max'), block_amt=('amt','sum')))
+                .agg(curr_n=('curr_n','first'),      # invariant per region+stage
+                     block_n=('n','sum'),            # sum across reasons
+                     curr_amt=('curr_amt','first'),   # invariant per region+stage
+                     block_amt=('amt','sum')))        # sum across reasons
     st_b['stage_origin_n'] = st_b['curr_n'] + st_b['block_n']
     st_b['stage_origin_amt'] = st_b['curr_amt'] + st_b['block_amt']
     block = block.merge(st_b[['region','stage','stage_origin_n','stage_origin_amt']], on=['region','stage'], how='left')
@@ -417,21 +423,25 @@ def stage_flow(df_norm, df_lost, df_block, *, region, stage, config, use='amt',
     block_n = Bs[c['blocked_count']].sum() if not Bs.empty else 0
     block_amt = Bs[c['blocked_amount']].sum() if not Bs.empty else 0
 
-    # Advanced to next stages - handle missing total columns
+    # Advanced to later stages (unique per later stage to avoid double-counting)
     stage_list = list(config['stage_transitions'].keys())
     adv_n = adv_amt = 0
     if stage in stage_list and c['lost_total_count'] in df_lost.columns:
-        idx = stage_list.index(stage)
-        later_stages = stage_list[idx + 1:]
+        later_stages = stage_list[stage_list.index(stage)+1:]
         final_stage = config['stage_transitions'].get(stage_list[-1])
-        if final_stage:
+        if final_stage: 
             later_stages.append(final_stage)
-            
-        for s2 in later_stages:
-            L2 = df_lost[(df_lost[c['lost_territory']] == region) & (df_lost[c['lost_stage']] == s2)]
-            if not L2.empty:
-                adv_n += L2[c['lost_total_count']].sum()
-                adv_amt += L2[c['lost_total_amount']].sum()
+
+        later = df_lost[(df_lost[c['lost_territory']] == region) &
+                        (df_lost[c['lost_stage']].isin(later_stages))]
+
+        if not later.empty:
+            # Use 'first' to get one total per stage (avoids multiplying by # of reasons)
+            uniq = (later.groupby(c['lost_stage'], as_index=False)
+                        .agg(uniq_total_n=(c['lost_total_count'], 'first'),
+                             uniq_total_amt=(c['lost_total_amount'], 'first')))
+            adv_n = int(uniq['uniq_total_n'].sum())
+            adv_amt = float(uniq['uniq_total_amt'].sum())
 
     # Calculate flow components
     in_unblocked_n = max(curr_n - block_n, 0)
