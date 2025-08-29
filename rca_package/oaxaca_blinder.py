@@ -406,6 +406,21 @@ class AnalysisResult:
                 if getattr(self.cancellation_report, "cancellation_detected", False) else [],
         }
 
+        # Region-scoped and full audit tables
+        region_decomp = self.decomposition_df[self.decomposition_df["region"] == region].copy()
+        region_gaps_row = self.regional_gaps[self.regional_gaps["region"] == region].copy()
+
+        payload["audit"] = {
+            "region": region,
+            "decomposition_df_region": region_decomp,     # enriched, as-used in visuals
+            "decomposition_df_full": self.decomposition_df.copy(),
+            "regional_gaps_row": region_gaps_row,
+            "regional_gaps_full": self.regional_gaps.copy(),
+            "mathematical_validation": self.mathematical_validation,
+            "impact_column_used": "display_net",
+            "sort_key_used": "usefulness_rank"
+        }
+
         return slide_spec, payload
 
 # =============================================================================
@@ -701,14 +716,21 @@ class NarrativeTemplateEngine:
         overall_region_rate = region_totals["region_overall_rate"]
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
-        region_data = decomposition_df[decomposition_df["region"] == region]
-        top = (region_data.assign(_abs=region_data["performance_gap_contribution"].abs())
-                         .sort_values("_abs", ascending=False)
-                         .head(3)[["category_clean","region_rate","rest_rate","performance_gap_contribution"]])
+        region_data = decomposition_df[decomposition_df["region"] == region].copy()
+
+        # sort & show impacts using the same column as visuals
+        rank_key = "usefulness_rank" if "usefulness_rank" in region_data.columns else None
+        if rank_key:
+            top = (region_data.sort_values(rank_key).head(3)
+                [["category_clean","region_rate","rest_rate","display_net"]])
+        else:
+            top = (region_data.assign(_abs=region_data["display_net"].abs())
+                .sort_values("_abs", ascending=False)
+                .head(3)[["category_clean","region_rate","rest_rate","display_net"]])
 
         drivers = ", ".join(
             f"{r.category_clean} ({r.region_rate*100:.1f}% vs {r.rest_rate*100:.1f}%, "
-            f"{r.performance_gap_contribution*100:+.1f}pp impact)"
+            f"{r.display_net*100:+.1f}pp impact)"
             for r in top.itertuples()
         ) if len(top) else "various factors"
 
@@ -799,46 +821,46 @@ class NarrativeTemplateEngine:
         return out
 
     def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
-        """Create simplified supporting table with traffic light status indicators."""
-        # Get region data from enriched DataFrame
+        """Supporting table with explicit rate/share columns and the same display impact used everywhere."""
         region_data = decomposition_df[decomposition_df["region"] == region].copy()
 
+        # Ensure display_net is present and used as THE impact
         if "display_net" not in region_data.columns:
             region_data["display_net"] = (region_data["construct_gap_contribution"] +
                                           region_data["performance_gap_contribution"])
 
-        # Use pre-computed explain_score for usefulness sorting
-        if "explain_score" in region_data.columns:
-            region_data["_abs_display"] = region_data["display_net"].abs()
-            region_data = region_data.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
-        elif regional_gaps is not None:
-            # Fallback calculation if not enriched
-            tot = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-            sign = 1.0 if tot >= 0 else -1.0
-            region_data["explain_score"] = sign * region_data["display_net"]
-            region_data["_abs_display"]  = region_data["display_net"].abs()
-            region_data = region_data.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
+        # Usefulness ordering (canonical)
+        if "usefulness_rank" in region_data.columns:
+            region_data = region_data.sort_values("usefulness_rank", ascending=True)
+            ranks = region_data["usefulness_rank"].astype(int).tolist()
         else:
-            # final fallback to display_net sorting
-            region_data = region_data.sort_values('display_net', ascending=False)
-        
-        # Format columns inline from numeric values
-        out = region_data.copy()
-        out['Category']   = region_data['category_clean']
-        out['Region%']    = (region_data['region_rate'] * 100).round(1).astype(str) + '%'
-        out['Baseline%']  = (region_data['rest_rate']   * 100).round(1).astype(str) + '%'
-        out['Mix%']       = (region_data['region_mix_pct'] * 100).round(1).astype(str) + '%'
-        out['Impact_pp']  = (region_data['display_net'] * 100).round(1).astype(str) + 'pp'
+            # fallback: explain_score then |display_net|
+            region_data["_abs_display"] = region_data["display_net"].abs()
+            if "explain_score" in region_data.columns:
+                region_data = region_data.sort_values(["explain_score","_abs_display"], ascending=[False, False])
+            else:
+                region_data = region_data.sort_values("display_net", ascending=False)
+            ranks = list(range(1, len(region_data) + 1))
 
+        # Build columns
+        out = pd.DataFrame({
+            "Category": region_data["category_clean"],
+            "Region Rate %":  (region_data["region_rate"] * 100).round(1).astype(str) + '%',
+            "Baseline Rate %":(region_data["rest_rate"]   * 100).round(1).astype(str) + '%',
+            "Region Share %": (region_data["region_mix_pct"] * 100).round(1).astype(str) + '%',
+            "Baseline Share %":(region_data["rest_mix_pct"]   * 100).round(1).astype(str) + '%',
+            "Impact_pp":      (region_data["display_net"] * 100).round(1).astype(str) + 'pp',
+        })
+
+        # Optional traffic-light status (unchanged logic, but last column)
         thr = self.thresholds.visual_indicator_threshold
         def status(x, rank):
             if x >  thr:  return f"🟢 Strength #{rank}"
             if x < -thr:  return f"🔴 Gap #{rank}"
             return "⚪ Neutral"
+        out["Status"] = [status(v, r) for v, r in zip(region_data["display_net"], ranks)]
 
-        out['rank']   = range(1, len(out) + 1)
-        out['Status'] = [status(v, r) for v, r in zip(region_data['display_net'], out['rank'])]
-        return out[['Status','Category','Region%','Baseline%','Impact_pp','Mix%']]
+        return out
 
 
 class BusinessAnalyzer:
@@ -1575,6 +1597,14 @@ def compute_derived_metrics_df(decomposition_df: pd.DataFrame, regional_gaps: pd
     else:
         # Fallback: assume positive gaps are good (no regional context)
         enriched['explain_score'] = enriched['display_net']
+
+    # Canonical per-region usefulness rank: explain_score DESC, then |display_net| DESC
+    enriched["usefulness_rank"] = None
+    for r in enriched["region"].unique():
+        m = enriched["region"] == r
+        region_subset = enriched[m].sort_values(["explain_score","abs_gap_numeric"], ascending=[False, False])
+        for rank, idx in enumerate(region_subset.index, 1):
+            enriched.loc[idx, "usefulness_rank"] = rank
 
     # cumsum_impact / is_top_contributor (numeric, no strings)
     for region in enriched['region'].unique():
