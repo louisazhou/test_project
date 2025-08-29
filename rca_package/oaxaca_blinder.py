@@ -2089,6 +2089,55 @@ def build_oaxaca_exec_pack(
     thresholds = thresholds or AnalysisThresholds()
 
     # Unpack the (slide_spec, payload) from present_executive_pack_for_slides
+    # ---- Build a minimal, non-duplicated audit package for one cut ----
+    def _make_audit(ar: AnalysisResult, region: str, cut_cols: Iterable[str],
+                    score: Optional[float] = None, score_breakdown: Optional[Dict] = None) -> Dict[str, Any]:
+        cut_cols = list(cut_cols)
+        cut_name = _format_cut_name(cut_cols)
+        decision = ar.narrative_decisions.get(region)
+
+        # Region-only decomposition (keeps full math columns for traceability)
+        dreg = ar.decomposition_df[ar.decomposition_df["region"] == region].copy()
+
+        # Build the supporting evidence table with both shares and a display-aligned Impact_pp
+        # Sort by explain_score (fallbacks consistent with NarrativeTemplateEngine)
+        tmp = dreg.copy()
+        if "explain_score" not in tmp.columns:
+            sign = 1.0 if float(ar.regional_gaps.loc[ar.regional_gaps["region"] == region, "total_net_gap"].iloc[0]) >= 0 else -1.0
+            tmp["explain_score"] = sign * tmp["display_net"]
+        tmp["_abs_display"] = tmp["display_net"].abs()
+        tmp = tmp.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
+
+        support = pd.DataFrame({
+            "Category": tmp.get("category_clean", tmp["category"]),
+            "Region Rate %":  (tmp["region_rate"] * 100).round(1).astype(str) + "%",
+            "Baseline Rate %":(tmp["rest_rate"]   * 100).round(1).astype(str) + "%",
+            "Region Share %": (tmp["region_mix_pct"] * 100).round(1).astype(str) + "%",
+            "Baseline Share %":(tmp["rest_mix_pct"]   * 100).round(1).astype(str) + "%",
+            # Impact is what you display: construct + performance, never pooled net
+            "Impact_pp":      (tmp["display_net"] * 100).round(1).astype(str) + "pp",
+        })
+
+        # Regional topline row (for quick checks)
+        reg_row = ar.regional_gaps[ar.regional_gaps["region"] == region].reset_index(drop=True).copy()
+
+        audit = {
+            "region": region,
+            "cut": cut_cols,
+            "cut_name": cut_name,
+            "score": score,
+            "score_breakdown": score_breakdown or {},
+            "narrative": (decision.narrative_text if decision else None),
+            # full region-only rows incl. display_net, level_carry, net_gap for audit trail
+            "decomposition_df": dreg.reset_index(drop=True),
+            "regional_row": reg_row,
+            "supporting_evidence": support,
+            "paradox_regions": ar.paradox_report.affected_regions if getattr(ar.paradox_report, "paradox_detected", False) else [],
+            "cancellation_regions": ar.cancellation_report.affected_regions if getattr(ar.cancellation_report, "cancellation_detected", False) else [],
+            "math_validation_max_error": float(ar.mathematical_validation.get("max_error", 0.0)),
+        }
+        return audit
+
     def _exec_from_result(ar: AnalysisResult, region: str, title: str, cut_cols: Iterable[str], role: str):
         # ensure viz_meta exists
         if getattr(ar, "viz_meta", None) is None:
@@ -2151,11 +2200,15 @@ def build_oaxaca_exec_pack(
                 "score_breakdown": {},
                 "top_segments": None,
             }
-        # Convert slides list to dictionary with cut names as keys
+
+        # Add best audit + an empty alternatives bucket
+        payload["audit"] = _make_audit(ar, region, fixed_cut, score=None, score_breakdown={})
+        payload.setdefault("alternatives", [])
+
+        # Slides → dict (unchanged)
         slides_dict = {}
         for slide in slides:
-            cut_name = _format_cut_name(slide['cut'])  # e.g., "Product", "Vertical", "Product × Vertical"
-            # Remove the 'cut' and 'role' metadata, keep only slide content
+            cut_name = _format_cut_name(slide['cut'])
             slides_dict[cut_name] = {
                 'summary': slide['summary'],
                 'slide_info': slide['slide_info']
@@ -2184,7 +2237,7 @@ def build_oaxaca_exec_pack(
     region = best.focus_region
     title = _title_for_cut(best.best_categories, metric_name)
 
-    # Safety: if the best came without narratives, re-run (shouldn't happen with patch, but cheap)
+    # Safety: if the best came without narratives, re-run (shouldn't happen with updated auto_find_best_slice, but cheap)
     if not best.analysis_result.narrative_decisions:
         best.analysis_result = run_oaxaca_analysis(
             df=df, region_column=region_column, numerator_column=numerator_column,
@@ -2207,6 +2260,11 @@ def build_oaxaca_exec_pack(
             "top_segments": best.top_segments,
         }
 
+    # Best audit
+    payload["audit"] = _make_audit(best.analysis_result, region, best.best_categories,
+                                   score=best.score, score_breakdown=best.score_breakdown)
+    payload.setdefault("alternatives", [])
+
     # 2) Rank and add alternatives
     if alternatives > 0:
         others = []
@@ -2219,7 +2277,7 @@ def build_oaxaca_exec_pack(
                     df=df, region=region, category_cols=cols, thresholds=thresholds,
                     baseline_type=baseline_type, numerator_column=numerator_column,
                     denominator_column=denominator_column, decomposition_method=decomposition_method,
-                    region_column=region_column, generate_narratives=False
+                    region_column=region_column
                 )
                 others.append((sc, br, ar, cols))
             except Exception as e:
@@ -2228,7 +2286,7 @@ def build_oaxaca_exec_pack(
 
         others.sort(key=lambda t: t[0], reverse=True)
         for sc, br, ar, cols in others[:alternatives]:
-            # Re-run alternatives with narratives before rendering
+            # Re-run alternatives with narratives before rendering (they were scored without)
             if not ar.narrative_decisions:
                 ar = run_oaxaca_analysis(
                     df=df, region_column=region_column, numerator_column=numerator_column,
@@ -2236,10 +2294,16 @@ def build_oaxaca_exec_pack(
                     baseline_type=baseline_type, decomposition_method=decomposition_method,
                     generate_narratives=True, thresholds=thresholds
                 )
+            
             alt_title = _title_for_cut(cols, metric_name)
             s_alt, _ = _exec_from_result(ar, region, alt_title, cols, role="alternative")
             s_alt.update({"score": sc, "score_breakdown": br})
             slides.append(s_alt)
+
+            # Push alternative audit into the single payload
+            payload["alternatives"].append(
+                _make_audit(ar, region, cols, score=sc, score_breakdown=br)
+            )
 
     # Convert slides list to dictionary with cut names as keys
     slides_dict = {}
