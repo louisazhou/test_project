@@ -821,46 +821,51 @@ class NarrativeTemplateEngine:
         return out
 
     def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
-        """Supporting table with explicit rate/share columns and the same display impact used everywhere."""
         region_data = decomposition_df[decomposition_df["region"] == region].copy()
 
-        # Ensure display_net is present and used as THE impact
+        # Single source of truth for display impact
         if "display_net" not in region_data.columns:
             region_data["display_net"] = (region_data["construct_gap_contribution"] +
                                           region_data["performance_gap_contribution"])
 
-        # Usefulness ordering (canonical)
-        if "usefulness_rank" in region_data.columns:
-            region_data = region_data.sort_values("usefulness_rank", ascending=True)
-            ranks = region_data["usefulness_rank"].astype(int).tolist()
-        else:
-            # fallback: explain_score then |display_net|
-            region_data["_abs_display"] = region_data["display_net"].abs()
-            if "explain_score" in region_data.columns:
-                region_data = region_data.sort_values(["explain_score","_abs_display"], ascending=[False, False])
-            else:
-                region_data = region_data.sort_values("display_net", ascending=False)
-            ranks = list(range(1, len(region_data) + 1))
+        # ----- NEW: deterministic ranking buckets -----
+        # topline direction for the region
+        tot_gap = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        dir_sign = 1.0 if tot_gap >= 0 else -1.0
 
-        # Build columns
-        out = pd.DataFrame({
-            "Category": region_data["category_clean"],
-            "Region Rate %":  (region_data["region_rate"] * 100).round(1).astype(str) + '%',
-            "Baseline Rate %":(region_data["rest_rate"]   * 100).round(1).astype(str) + '%',
-            "Region Share %": (region_data["region_mix_pct"] * 100).round(1).astype(str) + '%',
-            "Baseline Share %":(region_data["rest_mix_pct"]   * 100).round(1).astype(str) + '%',
-            "Impact_pp":      (region_data["display_net"] * 100).round(1).astype(str) + 'pp',
-        })
+        thr = self.thresholds.visual_indicator_threshold  # "neutral" cutoff (decimal, e.g., 0.01 = 1pp)
+        region_data["_abs_display"] = region_data["display_net"].abs()
+        region_data["_neutral"] = region_data["_abs_display"] < thr
+        region_data["_same_dir"] = (np.sign(region_data["display_net"]) == dir_sign) & (~region_data["_neutral"])
 
-        # Optional traffic-light status (unchanged logic, but last column)
-        thr = self.thresholds.visual_indicator_threshold
-        def status(x, rank):
-            if x >  thr:  return f"🟢 Strength #{rank}"
-            if x < -thr:  return f"🔴 Gap #{rank}"
+        # bucket order: 0 = same direction, 1 = opposite, 2 = neutral (always last)
+        region_data["_bucket"] = np.where(region_data["_neutral"], 2,
+                                  np.where(region_data["_same_dir"], 0, 1))
+
+        # final ordering: bucket asc, |impact| desc
+        region_data = region_data.sort_values(["_bucket", "_abs_display"], ascending=[True, False]).reset_index(drop=True)
+
+        # ----- Output columns (all from the same truth set) -----
+        out = region_data.copy()
+        out["Category"]            = region_data["category_clean"]
+        out["Region Rate %"]       = (region_data["region_rate"] * 100).round(1).astype(str) + "%"
+        out["Baseline Rate %"]     = (region_data["rest_rate"]   * 100).round(1).astype(str) + "%"
+        out["Region Share %"]      = (region_data["region_mix_pct"] * 100).round(1).astype(str) + "%"
+        out["Baseline Share %"]    = (region_data["rest_mix_pct"]   * 100).round(1).astype(str) + "%"
+        # Impact_pp == display_pp (single source of truth)
+        out["Impact_pp"]           = (region_data["display_net"] * 100).round(1).astype(str) + "pp"
+
+        # status pills use the same threshold as ranking
+        def status(val, rank):
+            if val >  thr:  return f"🟢 Strength #{rank}"
+            if val < -thr:  return f"🔴 Gap #{rank}"
             return "⚪ Neutral"
-        out["Status"] = [status(v, r) for v, r in zip(region_data["display_net"], ranks)]
 
-        return out
+        out["rank"]   = range(1, len(out) + 1)
+        out["Status"] = [status(v, r) for v, r in zip(region_data["display_net"], out["rank"])]
+
+        # Present only the business-facing columns in the supporting table
+        return out[["Status","Category","Region Rate %","Baseline Rate %","Region Share %","Baseline Share %","Impact_pp"]]
 
 
 class BusinessAnalyzer:
@@ -1583,31 +1588,7 @@ def compute_derived_metrics_df(decomposition_df: pd.DataFrame, regional_gaps: pd
     enriched['abs_gap_numeric'] = (enriched['display_net'] * 100).abs()       # still numeric
     enriched['category_clean'] = enriched['category'].apply(pretty_category)
 
-    # Calculate explain_score for business-centered ranking
-    if regional_gaps is not None:
-        # Create a mapping from region to its total gap sign
-        region_signs = {}
-        for _, row in regional_gaps.iterrows():
-            region = row['region']
-            tot_gap = float(row['total_net_gap'])
-            region_signs[region] = 1.0 if tot_gap >= 0 else -1.0
-        
-        # Apply explain_score calculation
-        enriched['explain_score'] = enriched.apply(
-            lambda row: region_signs.get(row['region'], 1.0) * row['display_net'], 
-            axis=1
-        )
-    else:
-        # Fallback: assume positive gaps are good (no regional context)
-        enriched['explain_score'] = enriched['display_net']
 
-    # Canonical per-region usefulness rank: explain_score DESC, then |display_net| DESC
-    enriched["usefulness_rank"] = None
-    for r in enriched["region"].unique():
-        m = enriched["region"] == r
-        region_subset = enriched[m].sort_values(["explain_score","abs_gap_numeric"], ascending=[False, False])
-        for rank, idx in enumerate(region_subset.index, 1):
-            enriched.loc[idx, "usefulness_rank"] = rank
 
     # cumsum_impact / is_top_contributor (numeric, no strings)
     for region in enriched['region'].unique():
@@ -2099,14 +2080,26 @@ def build_oaxaca_exec_pack(
         # Region-only decomposition (keeps full math columns for traceability)
         dreg = ar.decomposition_df[ar.decomposition_df["region"] == region].copy()
 
-        # Build the supporting evidence table with both shares and a display-aligned Impact_pp
-        # Sort by explain_score (fallbacks consistent with NarrativeTemplateEngine)
+        # Build the supporting evidence table with deterministic bucketed ranking
+        # Same logic as _create_supporting_table: same-direction → opposite → neutral, then by |impact|
         tmp = dreg.copy()
-        if "explain_score" not in tmp.columns:
-            sign = 1.0 if float(ar.regional_gaps.loc[ar.regional_gaps["region"] == region, "total_net_gap"].iloc[0]) >= 0 else -1.0
-            tmp["explain_score"] = sign * tmp["display_net"]
+        
+        # Get topline direction and apply bucketed ranking
+        tot_gap = float(ar.regional_gaps.loc[ar.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        dir_sign = 1.0 if tot_gap >= 0 else -1.0
+        
+        # Use same threshold as in _create_supporting_table - get from analysis thresholds
+        thr = 0.01  # Default visual_indicator_threshold - should match AnalysisThresholds.visual_indicator_threshold
         tmp["_abs_display"] = tmp["display_net"].abs()
-        tmp = tmp.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
+        tmp["_neutral"] = tmp["_abs_display"] < thr
+        tmp["_same_dir"] = (np.sign(tmp["display_net"]) == dir_sign) & (~tmp["_neutral"])
+        
+        # bucket order: 0 = same direction, 1 = opposite, 2 = neutral (always last)
+        tmp["_bucket"] = np.where(tmp["_neutral"], 2,
+                          np.where(tmp["_same_dir"], 0, 1))
+        
+        # final ordering: bucket asc, |impact| desc
+        tmp = tmp.sort_values(["_bucket", "_abs_display"], ascending=[True, False])
 
         support = pd.DataFrame({
             "Category": tmp.get("category_clean", tmp["category"]),
@@ -2416,14 +2409,23 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     df = result.decomposition_df
     rows = df[df["region"] == region].copy()
 
-    # Use pre-computed explain_score from enrichment
-    if "explain_score" not in rows.columns:
-        # Fallback calculation if not enriched
-        if "display_net" not in rows.columns:
-            rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
-        tot = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-        sign = 1.0 if tot >= 0 else -1.0
-        rows["explain_score"] = sign * rows["display_net"]
+    # Use bucketed ranking instead of explain_score
+    if "display_net" not in rows.columns:
+        rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
+    
+    # Apply same bucketed ranking as in _create_supporting_table
+    tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+    dir_sign = 1.0 if tot_gap >= 0 else -1.0
+    thr = 0.01  # visual_indicator_threshold
+    
+    rows["_abs_display"] = rows["display_net"].abs()
+    rows["_neutral"] = rows["_abs_display"] < thr
+    rows["_same_dir"] = (np.sign(rows["display_net"]) == dir_sign) & (~rows["_neutral"])
+    rows["_bucket"] = np.where(rows["_neutral"], 2,
+                      np.where(rows["_same_dir"], 0, 1))
+    
+    # Sort by bucketed ranking for consistent annotation order
+    rows = rows.sort_values(["_bucket", "_abs_display"], ascending=[True, False])
 
     labels = rows["category_clean"].astype(str).values
     dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
@@ -2432,8 +2434,8 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     sizes = np.clip(rows["region_mix_pct"].values * 3200.0, 40.0, 1600.0)
     colors = np.where(net >= 0, POS, NEG)
 
-    # Use pre-computed explain_score for ranking
-    explain_score = rows["explain_score"].values
+    # Use display_net directly for ranking (same direction as business table)
+    ranking_values = rows["display_net"].values
 
     # ---------------- symmetric limits --------
     def nice_step(a):
@@ -2496,9 +2498,10 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     # bubbles
     ax.scatter(dx, dy, s=sizes, c=colors, ec="white", lw=1.1, alpha=0.96, zorder=3)
 
-    # annotations → pick top-N by usefulness (explain_score), not by |net|
+    # annotations → pick top-N by bucketed ranking (same order as business table)
     if annotate_top_n and len(rows):
-        idx = np.argsort(explain_score)[::-1][:annotate_top_n]
+        # Already sorted by bucketed ranking, so just take first N
+        idx = np.arange(min(annotate_top_n, len(rows)))
         for i in idx:
             text = f"{labels[i]}   {dx[i]:+0.1f}/{dy[i]:+0.1f}  →  {net[i]:+0.1f}"
             xoff = 18 if dx[i] >= 0 else -18
@@ -2592,19 +2595,23 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
 
     rows = result.decomposition_df[result.decomposition_df["region"] == region].copy()
 
-    # Use pre-computed explain_score from enrichment
-    if "explain_score" not in rows.columns:
-        # Fallback calculation if not enriched
-        if "display_net" not in rows.columns:
-            rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
-        tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-        sign = 1.0 if tot_gap >= 0 else -1.0
-        rows["explain_score"] = sign * rows["display_net"]
+    # Use bucketed ranking instead of explain_score 
+    if "display_net" not in rows.columns:
+        rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
+    
+    # Apply same bucketed ranking as in _create_supporting_table
+    tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+    dir_sign = 1.0 if tot_gap >= 0 else -1.0
+    thr = 0.01  # visual_indicator_threshold
+    
+    rows["_abs_display"] = rows["display_net"].abs()
+    rows["_neutral"] = rows["_abs_display"] < thr
+    rows["_same_dir"] = (np.sign(rows["display_net"]) == dir_sign) & (~rows["_neutral"])
+    rows["_bucket"] = np.where(rows["_neutral"], 2,
+                      np.where(rows["_same_dir"], 0, 1))
 
-    rows["_abs_display"] = rows["display_net"].abs() if "display_net" in rows.columns else rows["explain_score"].abs()
-
-    # always sort by usefulness → strongest explainers on top, offsets at bottom
-    rows = rows.sort_values(["explain_score", "_abs_display"], ascending=[False, False]).head(top_n)
+    # Sort by bucketed ranking → strongest explainers on top, offsets at bottom
+    rows = rows.sort_values(["_bucket", "_abs_display"], ascending=[True, False]).head(top_n)
     rows = rows.iloc[::-1].copy()  # biggest explainers appear at the TOP visually
 
     rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
