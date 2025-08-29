@@ -341,22 +341,7 @@ class AnalysisResult:
         root = getattr(decision.root_cause_type, "value", str(decision.root_cause_type))
         evidence_df = decision.supporting_table_df.head(table_rows).copy()
         
-        rows_for_region = self.decomposition_df[self.decomposition_df["region"] == region]
-        top3 = (rows_for_region.assign(_abs=rows_for_region["net_gap"].abs())
-                .sort_values("_abs", ascending=False)
-                .head(3))
-        top_drivers_text = ", ".join(
-            f"{c} ({ng*100:+.1f}pp)"
-            for c, ng in zip(top3["category_clean"], top3["net_gap"])
-        )
-        despite_text = ("Despite " + " and ".join(decision.contradiction_segments[:2]) + "."
-                       if decision.contradiction_segments else "")
-        
-        template_text = f"""{decision.narrative_text}
-
-Top drivers: {top_drivers_text}. {despite_text}
-
-""".strip()
+        template_text = f"""{decision.narrative_text}""".strip()
 
         # 4) Decide which charts to show (driver logic lives here)
         chart_names: List[str]
@@ -378,8 +363,8 @@ Top drivers: {top_drivers_text}. {despite_text}
             fn = chart_registry[name]
             cap = {
                 # Decision-grade visualizations only
-                "rates_and_mix":    f"Left: Metric % comparison. Right: Exposure (% of total count) comparison.",
-                "quadrant_prompts": f"Bubble chart showing gaps in exposure (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
+                "rates_and_mix":    "Left: Metric % comparison. Right: Exposure (% of total count) comparison.",
+                "quadrant_prompts": "Bubble chart showing gaps in exposure (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
             }.get(name, "")
             figure_generators.append({
                 "function": fn,
@@ -736,7 +721,7 @@ class NarrativeTemplateEngine:
         region_totals = regional_gaps[regional_gaps["region"] == region].iloc[0]
         total_gap = region_totals["total_net_gap"]
         base_narrative = (f"{region} performs in line with {baseline_name} baseline "
-                f"with no significant performance difference "
+                "with no significant performance difference "
                 f"({total_gap*100:+.1f}pp gap)")
         
         # Add cancellation warning if this region has offsetting effects
@@ -837,7 +822,7 @@ class NarrativeTemplateEngine:
             elif gap < -threshold:
                 return f"🔴 Gap #{rank}"
             else:
-                return f"⚪ Neutral"
+                return "⚪ Neutral"
         
         # Add ranking to show which gaps matter most
         region_data_display['rank'] = range(1, len(region_data_display) + 1)
@@ -879,7 +864,7 @@ class BusinessAnalyzer:
         cancellation_report: Optional[CancellationReport] = None
     ) -> NarrativeDecision:
         """Single flow narrative generation using template engine for all cases."""
-        logger.info(f"Entering: BusinessAnalyzer.generate_regional_narrative()")
+        logger.info("Entering: BusinessAnalyzer.generate_regional_narrative()")
         logger.info(f"[DATA] INPUT: region={region}, baseline_type={baseline_type}")
         
         # Get region data from enriched DataFrames
@@ -2617,7 +2602,7 @@ def create_oaxaca_synthetic_data(target_region: str = "North America", target_ga
     target_rate = df[df['region'] == target_region]['conversions'].sum() / df[df['region'] == target_region]['visits'].sum()
     actual_gap_pp = (target_rate - global_rate) * 100
     
-    print(f"🎯 Synthetic data generated:")
+    print("🎯 Synthetic data generated:")
     print(f"   Global conversion rate: {global_rate:.1%}")  
     print(f"   {target_region} conversion rate: {target_rate:.1%}")
     print(f"   Gap: {actual_gap_pp:+.1f}pp (target: {target_gap_pp:+.1f}pp)")
