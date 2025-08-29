@@ -1,7 +1,33 @@
+"""Funnel Reason Analysis Module
+
+This module provides comprehensive funnel analysis capabilities for identifying
+top drivers of lost and blocked opportunities across regions and stages.
+
+Main Components:
+- Data normalization and processing utilities
+- Single-stage and total-lost analysis functions
+- Interactive plotting with donut charts
+- Summary text generation
+- Synthetic data generation for testing
+
+Typical usage:
+    ```python
+    from rca_package.funnel_reason import analyze_funnel_reasons
+    from rca_package.yaml_processor import load_config
+    
+    config = load_config('configs/config_funnel.yaml')
+    results = analyze_funnel_reasons(
+        df_lost, df_blocked, config, metric_anomaly_map,
+        lost_columns=lost_columns, blocked_columns=blocked_columns
+    )
+    ```
+"""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from typing import Dict, List, Tuple, Optional, Union, Any
 
 # ==== COLORS (single source of truth) ====
 COLOR_STAGE_NEUTRAL = ['#3498DB', '#4ECDC4', '#FFC300', '#FF9F43', '#AF7AC5']
@@ -18,8 +44,23 @@ CALLOUT_PCT_INNER = 0.02  # 2% of the donut’s base -> hide inner label if belo
 # UTILS - Simple helper functions
 # =============================================================================
 
-def _fmt_money_short(x):
-    """Format money amounts with K/M/B suffix."""
+def _fmt_money_short(x: Union[float, int, None]) -> str:
+    """Format money amounts with K/M/B suffix.
+    
+    Args:
+        x: Numeric value to format (handles None gracefully)
+        
+    Returns:
+        Formatted string with appropriate suffix (e.g., '$1.2M', '$45.3K')
+        
+    Examples:
+        >>> _fmt_money_short(1234567)
+        '$1.2M'
+        >>> _fmt_money_short(45300)
+        '$45.3K'
+        >>> _fmt_money_short(None)
+        '$0.0'
+    """
     x = float(x or 0)
     s = '-' if x < 0 else ''
     x = abs(x)
@@ -28,13 +69,42 @@ def _fmt_money_short(x):
             return f"{s}${x/div:.1f}{unit}"
     return f"{s}${x:.1f}"
 
-def _bracket(primary_use, num_n, num_amt, base_n, base_amt):
-    """Generate bracket text following the bracket rule."""
+def _bracket(primary_use: str, num_n: Union[int, float], num_amt: Union[int, float], 
+             base_n: Union[int, float], base_amt: Union[int, float]) -> str:
+    """Generate bracket text following the bracket formatting rule.
+    
+    When primary_use='n', shows percentage in brackets.
+    When primary_use='amt', shows money amount in brackets.
+    
+    Args:
+        primary_use: Either 'n' (count-based) or 'amt' (amount-based)
+        num_n: Number count for this item
+        num_amt: Amount value for this item
+        base_n: Total base count
+        base_amt: Total base amount
+        
+    Returns:
+        Formatted bracket string (e.g., ' (19.9%)', ' ($9.9M)')
+    """
     return f" ({0 if primary_use!='n' else (0 if base_amt==0 else num_amt/base_amt):.1%})" \
            if primary_use=='n' else f" ({_fmt_money_short(num_amt)})"
 
-def lighten(hex_color, factor=0.85):
-    """Return a lighter hex color (toward white)."""
+def lighten(hex_color: str, factor: float = 0.85) -> str:
+    """Return a lighter version of a hex color by blending toward white.
+    
+    Args:
+        hex_color: Hex color string (e.g., '#FF5733')
+        factor: Lightening factor between 0.0 (no change) and 1.0 (pure white)
+        
+    Returns:
+        Lighter hex color string. Returns '#DDDDDD' if input is invalid.
+        
+    Examples:
+        >>> lighten('#FF0000', 0.5)
+        '#FF8080'
+        >>> lighten('invalid', 0.5)
+        '#DDDDDD'
+    """
     try:
         if not (isinstance(hex_color, str) and hex_color.startswith('#') and len(hex_color) == 7):
             return '#DDDDDD'
@@ -44,8 +114,19 @@ def lighten(hex_color, factor=0.85):
     except Exception:
         return '#DDDDDD'
 
-def _ensure_stage_val_column(tl_dict, use='amt'):
-    """Ensure tl_dict['stage_breakdown_df'] has a numeric 'val' column used for totals."""
+def _ensure_stage_val_column(tl_dict: Dict[str, Any], use: str = 'amt') -> None:
+    """Ensure stage breakdown DataFrame has a 'val' column for consistent processing.
+    
+    Adds a 'val' column to tl_dict['stage_breakdown_df'] if it doesn't exist,
+    using the appropriate source column based on the 'use' parameter.
+    
+    Args:
+        tl_dict: Dictionary containing 'stage_breakdown_df' key
+        use: Either 'amt' (use amount columns) or 'n' (use count columns)
+        
+    Modifies:
+        tl_dict['stage_breakdown_df']: Adds 'val' column in-place
+    """
     st = tl_dict.get('stage_breakdown_df')
     if st is None or st.empty or 'val' in st.columns:
         return
@@ -62,16 +143,27 @@ def _ensure_stage_val_column(tl_dict, use='amt'):
 # DATA LAYER - Single source of truth for normalization
 # =============================================================================
 
-def normalize_funnel(df_lost, df_block, config):
+def normalize_funnel(df_lost: pd.DataFrame, df_block: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
     """Return a single normalized long table for Lost/Blocked with stage origins and rates.
     
+    This function is the core data processing step that combines lost and blocked data
+    into a unified format with calculated rates and stage origin totals.
+    
     Args:
-        df_lost, df_block: raw input DataFrames
-        config: dict with 'columns' key mapping logical names to actual column names
+        df_lost: Raw lost opportunities DataFrame
+        df_block: Raw blocked opportunities DataFrame  
+        config: Configuration dict with 'columns' key mapping logical names to actual column names
         
     Returns:
-        df_norm: DataFrame with columns ['region','kind','stage','reason','n','amt',
-                'stage_origin_n','stage_origin_amt','rate_n','rate_amt']
+        Normalized DataFrame with columns:
+        - region, kind, stage, reason: identifiers
+        - n, amt: counts and amounts per reason
+        - stage_origin_n, stage_origin_amt: total pipeline size that entered this stage
+        - rate_n, rate_amt: rates as fractions (lost/blocked amount / stage origin)
+        
+    Note:
+        Uses 'first' aggregation for invariant columns (same per region+stage) to avoid 
+        double-counting when multiple reasons exist for the same region+stage.
     """
     c = config['columns']
     
@@ -140,18 +232,28 @@ def normalize_funnel(df_lost, df_block, config):
 # ANALYSIS HELPERS - Pure data processing, no plotting
 # =============================================================================
 
-def scope_lost(df_lost, *, config, focus_region, scope='rest_of_world', comparison_region=None):
+def scope_lost(df_lost: pd.DataFrame, *, config: Dict[str, Any], focus_region: str, 
+               scope: str = 'rest_of_world', comparison_region: Optional[str] = None) -> Tuple[pd.DataFrame, str]:
     """Return a scoped df_lost and label for total-lost analysis.
     
+    Filters and aggregates lost data based on specified scope to create comparison datasets.
+    
     Args:
-        df_lost: input DataFrame
-        config: configuration dict
-        focus_region: the region we're analyzing
-        scope: 'region' (focus only) | 'rest_of_world' | 'global' | 'region_name'
-        comparison_region: specific region name when scope is a region
+        df_lost: Input lost opportunities DataFrame
+        config: Configuration dict with column mappings
+        focus_region: The region we're analyzing (primary focus)
+        scope: Scoping strategy:
+            - 'region': Focus region only
+            - 'rest_of_world': All regions except focus
+            - 'global': All regions including focus
+            - region_name: Specific other region
+        comparison_region: Specific region name when scope is a region
         
     Returns:
-        tuple: (scoped_df_lost, label)
+        Tuple of (scoped DataFrame, descriptive label)
+        
+    Note:
+        Aggregates by stage+reason to avoid double-counting across regions.
     """
     c = config['columns']
     
@@ -500,18 +602,33 @@ def stage_flow(df_norm, df_lost, df_block, *, region, stage, config, use='amt',
 # PLOTTING LAYER - Consume precomputed data only
 # =============================================================================
 
-def plot_total_lost_single(tl_dict, *, label, use='amt', stage_order=None, stage_color_map=None, ax=None):
-    """Plot a single total-lost donut chart.
+def plot_total_lost_single(tl_dict: Dict[str, Any], *, label: str, use: str = 'amt', 
+                          stage_order: Optional[List[str]] = None, 
+                          stage_color_map: Optional[Dict[str, str]] = None, 
+                          ax: Optional[plt.Axes] = None) -> plt.Figure:
+    """Plot a single total-lost donut chart with inner and outer rings.
+    
+    Creates a two-tier donut chart where:
+    - Inner ring: Shows stage breakdown (which stages lost the most)
+    - Outer ring: Shows top sub-reasons within each stage
     
     Args:
-        tl_dict: output from total_lost_data()
-        label: region label for title
-        use: 'amt' or 'n'
-        stage_order: optional stage ordering
-        ax: optional matplotlib axes
+        tl_dict: Output from total_lost_data() containing:
+            - stage_breakdown_df: Stage-level aggregations
+            - outer: Sub-reason level data with Pareto filtering
+            - base_n, base_amt: Total base values
+        label: Region label for chart title
+        use: Display mode - 'amt' for amounts, 'n' for counts
+        stage_order: Optional ordering for stages (for consistent colors across charts)
+        stage_color_map: Optional color mapping for stages
+        ax: Optional matplotlib axes (creates new figure if None)
         
     Returns:
-        matplotlib figure
+        Matplotlib figure object
+        
+    Note:
+        Uses smart labeling to prevent overcrowding - only shows labels for 
+        significant slices (>3% or top 6 items).
     """
     st = tl_dict['stage_breakdown_df'].copy()
     outer = tl_dict['outer'].copy()
@@ -747,18 +864,30 @@ def plot_stage_donut(flow, *, use='amt', stage_transitions=None, ax=None):
             ha='center', va='center', fontsize=12, fontweight='bold')
     return ax
 
-def plot_funnel_donut(flow_data, *, comparison_flow=None, comparison_label=None, use='amt', stage_transitions=None):
-    """Plot funnel donut chart(s) from flow data.
+def plot_funnel_donut(flow_data: Dict[str, Any], *, comparison_flow: Optional[Dict[str, Any]] = None, 
+                      comparison_label: Optional[str] = None, use: str = 'amt', 
+                      stage_transitions: Optional[Dict[str, str]] = None) -> plt.Figure:
+    """Plot funnel donut chart(s) showing stage flow breakdown.
+    
+    Creates single or side-by-side donut charts showing funnel flow from a specific stage:
+    - Outer ring: Main categories (Advanced, Lost, Blocked, In-stage)
+    - Inner ring: Sub-reasons for Lost and Blocked categories
     
     Args:
-        flow_data: output from stage_flow()
-        comparison_flow: optional comparison flow data
-        comparison_label: label for comparison
-        use: 'amt' or 'n'
-        stage_transitions: dict of stage transitions
+        flow_data: Output from stage_flow() containing flow metrics and reasons
+        comparison_flow: Optional comparison flow data for side-by-side view
+        comparison_label: Label for comparison chart
+        use: Display mode - 'amt' for amounts, 'n' for counts  
+        stage_transitions: Stage progression mapping for "next stage" labeling
         
     Returns:
-        matplotlib figure
+        Matplotlib figure object
+        
+    Features:
+        - Smart inner ring labeling (hides labels < 2% of base)
+        - Consistent color scheme with transparency for inner ring
+        - Automatic legend positioning
+        - Center text showing percentage at risk (blocked + lost)
     """
     if comparison_flow:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), gridspec_kw={'wspace': 0.05})
@@ -797,22 +926,51 @@ def plot_funnel_donut(flow_data, *, comparison_flow=None, comparison_label=None,
 # HIGH-LEVEL INTERFACES - Main entry points
 # =============================================================================
 
-def analyze_funnel_reasons(df_lost, df_block, config, metric_anomaly_map, *, 
-                          lost_columns, blocked_columns):
-    """
-    Main entrypoint for funnel analysis:
-    - If metric['drop_off_from'] is a string → single-stage donut (region vs benchmark).
-    - If it's a list → total-lost pair (region vs rest).
+def analyze_funnel_reasons(df_lost: pd.DataFrame, df_block: pd.DataFrame, config: Dict[str, Any], 
+                          metric_anomaly_map: Dict[str, Dict[str, str]], *, 
+                          lost_columns: Dict[str, str], blocked_columns: Dict[str, str]) -> Dict[str, Any]:
+    """Main entrypoint for funnel reason analysis.
+    
+    Analyzes funnel performance for anomalous regions and generates visualization-ready results.
+    
+    Processing Logic:
+    - If metric['drop_off_from'] is a string → single-stage donut (region vs benchmark)
+    - If metric['drop_off_from'] is a list → total-lost pair (region vs rest of world)
     
     Args:
-        df_lost, df_block: input DataFrames
-        config: configuration dict (without column mappings)
-        metric_anomaly_map: anomaly detection results
-        lost_columns: dict mapping required lost data column names to actual DataFrame column names
-        blocked_columns: dict mapping required blocked data column names to actual DataFrame column names
+        df_lost: Lost opportunities DataFrame
+        df_block: Blocked opportunities DataFrame  
+        config: Configuration dict (without column mappings) containing:
+            - metrics: Dict of metric configurations
+            - stage_transitions: Stage progression mapping
+        metric_anomaly_map: Anomaly detection results mapping:
+            {metric_name: {'anomalous_region': region_name}}
+        lost_columns: Column name mappings for lost data:
+            {logical_name: actual_dataframe_column_name}
+        blocked_columns: Column name mappings for blocked data:
+            {logical_name: actual_dataframe_column_name}
         
     Returns:
-        unified_results dict for slide builders.
+        Unified results dict structured for slide builders:
+        {
+            metric_name: {
+                'slides': {
+                    'Funnel': {
+                        'summary': {'summary_text': str},
+                        'slide_info': {
+                            'title': str,
+                            'template_text': str,
+                            'figure_generators': List[Dict],
+                            'layout_type': str
+                        }
+                    }
+                },
+                'payload': Dict  # Raw data for downstream use
+            }
+        }
+        
+    Note:
+        Only processes metrics that appear in metric_anomaly_map with valid anomalous_region.
     """
     # Merge column mappings into config for internal use
     config_with_columns = config.copy()
@@ -906,20 +1064,33 @@ def analyze_funnel_reasons(df_lost, df_block, config, metric_anomaly_map, *,
 
     return unified_results
 
-def analyze_funnel_reasons_all_regions(df_lost, df_block, config, *, 
-                                      lost_columns, blocked_columns):
-    """
-    Analyze funnel reasons for ALL regions in the data, not just anomalous ones.
+def analyze_funnel_reasons_all_regions(df_lost: pd.DataFrame, df_block: pd.DataFrame, 
+                                      config: Dict[str, Any], *, 
+                                      lost_columns: Dict[str, str], 
+                                      blocked_columns: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """Analyze funnel reasons for ALL regions in the data, not just anomalous ones.
+    
     Creates dummy anomaly map for each region and generates comprehensive results.
+    This is useful when you want to see analysis for all regions, not just those
+    flagged as anomalous by the anomaly detection system.
     
     Args:
-        df_lost, df_block: input DataFrames
-        config: configuration dict (without column mappings)
-        lost_columns: dict mapping required lost data column names to actual DataFrame column names
-        blocked_columns: dict mapping required blocked data column names to actual DataFrame column names
+        df_lost: Lost opportunities DataFrame
+        df_block: Blocked opportunities DataFrame
+        config: Configuration dict (without column mappings)
+        lost_columns: Column name mappings for lost data
+        blocked_columns: Column name mappings for blocked data
         
     Returns:
-        dict: {metric_name: {region_name: unified_results_dict}}
+        Nested dict with structure:
+        {
+            metric_name: {
+                region_name: unified_results_dict  # Same format as analyze_funnel_reasons
+            }
+        }
+        
+    Note:
+        Automatically adds region names to slide titles for clarity in comprehensive view.
     """
     # Get all unique regions from the data
     config_with_columns = {**config, 'columns': {**lost_columns, **blocked_columns}}
@@ -1031,8 +1202,23 @@ def analyze_funnel_reasons_data(df_lost, df_block, *, region, stage, config,
 # SUMMARY TEXT BUILDERS - Standardized summary generation
 # =============================================================================
 
-def _format_reasons(reasons_list):
-    """Format list of reasons into proper English text."""
+def _format_reasons(reasons_list: List[str]) -> str:
+    """Format list of reasons into proper English text with Oxford comma.
+    
+    Args:
+        reasons_list: List of reason strings (may include percentages/counts)
+        
+    Returns:
+        Properly formatted English text
+        
+    Examples:
+        >>> _format_reasons(['Reason A (5%)'])
+        'Reason A (5%)'
+        >>> _format_reasons(['Reason A (5%)', 'Reason B (3%)'])
+        'Reason A (5%) and Reason B (3%)'
+        >>> _format_reasons(['A (5%)', 'B (3%)', 'C (2%)'])
+        'A (5%), B (3%), and C (2%)'
+    """
     if not reasons_list:
         return "no specific reasons identified"
     if len(reasons_list) == 1:
@@ -1041,8 +1227,24 @@ def _format_reasons(reasons_list):
         return f"{reasons_list[0]} and {reasons_list[1]}"
     return f"{', '.join(reasons_list[:-1])}, and {reasons_list[-1]}"
 
-def build_single_stage_summary(flow, *, use='amt'):
-    """Build summary text for single-stage funnel analysis."""
+def build_single_stage_summary(flow: Dict[str, Any], *, use: str = 'amt') -> str:
+    """Build summary text for single-stage funnel analysis.
+    
+    Creates a narrative summary of funnel performance at a specific stage,
+    highlighting lost and blocked percentages with top contributing reasons.
+    
+    Args:
+        flow: Output from stage_flow() containing metrics and reasons
+        use: Either 'amt' (dollar amounts) or 'n' (solution counts)
+        
+    Returns:
+        Formatted summary text describing stage performance
+        
+    Example:
+        "19.8% of $PRC dropped-off from this stage mainly due to Performance Issues (9.8%), 
+        Poor Technical Fit (6.2%), and Feature Gaps (3.8%), and among the currently active, 
+        8.3% was blocked due to Executive Approval (15 solutions) and Budget Approval (8 solutions)."
+    """
     base = (flow['base_amt'] if use == 'amt' else flow['base_n']) or 0
     lost = (flow['lost_amt'] if use == 'amt' else flow['lost_n'])
     blocked = (flow['block_amt'] if use == 'amt' else flow['block_n'])
@@ -1055,8 +1257,26 @@ def build_single_stage_summary(flow, *, use='amt'):
             f"and among the currently active, {blocked_pct:.1f}% was blocked due to {blocked_reasons_text}. "
             )
 
-def build_total_lost_summary(region_label, tl_dict, *, use='amt'):
-    """Build summary text for total lost analysis."""
+def build_total_lost_summary(region_label: str, tl_dict: Dict[str, Any], *, use: str = 'amt') -> str:
+    """Build summary text for total lost analysis across all stages.
+    
+    Creates a narrative summary of total lost opportunities, breaking down by
+    top contributing stages and overall top reasons.
+    
+    Args:
+        region_label: Name of the region being analyzed
+        tl_dict: Output from total_lost_data() containing stage and reason breakdowns
+        use: Either 'amt' (dollar amounts) or 'n' (solution counts)
+        
+    Returns:
+        Formatted summary text describing total lost performance
+        
+    Example:
+        "Of all lost $PRC in North America, 45.2% is from Technical Demo, 
+        32.1% is from Business Proposal, 22.7% is from Contract Negotiation. 
+        Top drivers: Performance Issues (18.3%), Price Too High (15.2%), 
+        Contract Terms (12.8%)."
+    """
     st = tl_dict['stage_breakdown_df']
     base_primary = (tl_dict['base_amt'] if use == 'amt' else tl_dict['base_n']) or 0
     if st.empty or base_primary == 0:
@@ -1083,8 +1303,30 @@ def build_total_lost_summary(region_label, tl_dict, *, use='amt'):
 # SYNTHETIC DATA GENERATION - For testing
 # =============================================================================
 
-def create_funnel_synthetic_data():
-    """Create synthetic funnel data for testing."""
+def create_funnel_synthetic_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Create synthetic funnel data for testing and development.
+    
+    Generates realistic lost and blocked opportunity data with regional variations
+    and configurable performance profiles. Useful for testing analysis functions
+    without requiring real data.
+    
+    Returns:
+        Tuple of (df_lost, df_blocked) containing synthetic data with:
+        - Multiple regions with different performance characteristics
+        - Stage-specific lost/blocked reasons
+        - Realistic deal sizes and volumes
+        - North America configured as underperforming region for testing
+        
+    Generated Data Structure:
+        df_lost columns: territory_l4_name, Stage Before Closed, Type,
+                        Closed Lost Reason, Closed Lost Sub Reason,
+                        # of Solutions Lost, $ PRC Lost, etc.
+        df_blocked columns: territory_l4_name, Stage Being Blocked,
+                           Blocked Sub Reason, # of Solutions Blocked, etc.
+                           
+    Note:
+        Uses fixed random seed (42) for reproducible test data.
+    """
     np.random.seed(42)
     regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
     
