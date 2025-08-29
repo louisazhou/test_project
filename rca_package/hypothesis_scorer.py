@@ -277,6 +277,99 @@ FONTS: Dict[str, Dict[str, Union[int, str]]] = {
 }
 
 
+def _build_formulas_tables(
+    df: pd.DataFrame,
+    metric_col: str,
+    hypo_col: str,
+    expected_direction: str,
+    anomalous_region: str,
+    reference_row: str = "Global"
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build detailed walk-through tables showing formulas and calculations step-by-step.
+    
+    This creates two DataFrames that provide complete transparency into the scoring process:
+    1. formulas_walkthrough: Shows per-region calculations with formulas
+    2. formulas_summary: Shows final score components and their calculations
+    
+    Args:
+        df: Input DataFrame with metric and hypothesis data
+        metric_col: Name of the metric column
+        hypo_col: Name of the hypothesis column  
+        expected_direction: Expected relationship ('same' or 'opposite')
+        anomalous_region: The focal region being analyzed
+        reference_row: Reference row name (usually "Global")
+        
+    Returns:
+        Tuple of (formulas_walkthrough_df, formulas_summary_df)
+    """
+    M_g = df.loc[reference_row, metric_col]
+    H_g = df.loc[reference_row, hypo_col]
+    regions = get_non_reference_regions(df, reference_row)
+
+    rows, m_deltas, h_adj_deltas, sign_flags = [], [], [], []
+    for r in regions:
+        M_r = df.loc[r, metric_col]
+        H_r = df.loc[r, hypo_col]
+        dM = np.nan if (pd.isna(M_g) or M_g == 0) else (M_r - M_g) / M_g
+        dH_raw = np.nan if (pd.isna(H_g) or H_g == 0) else (H_r - H_g) / H_g
+        dH_adj = -dH_raw if expected_direction == "opposite" else dH_raw
+
+        m_deltas.append(dM)
+        h_adj_deltas.append(dH_adj)
+        sign_flags.append(bool(np.sign(dM) == np.sign(dH_adj)))
+
+        rows.append({
+            "Region": r,
+            "Metric (M_r)": M_r,
+            "Δ_metric formula": f"({M_r} - {M_g}) / {M_g}",
+            "Δ_metric value": dM,
+            "Hypothesis (H_r)": H_r,
+            "Δ_hypo_raw formula": f"({H_r} - {H_g}) / {H_g}",
+            "Δ_hypo_raw value": dH_raw,
+            "Δ_hypo_adj formula": ("-(" + f"({H_r} - {H_g}) / {H_g}" + ")") if expected_direction == "opposite"
+                                   else f"({H_r} - {H_g}) / {H_g}",
+            "Δ_hypo_adj value": dH_adj,
+            "Sign match?": sign_flags[-1]
+        })
+
+    walk_df = pd.DataFrame(rows)
+
+    m_arr = np.array(m_deltas, dtype=float)
+    h_arr = np.array(h_adj_deltas, dtype=float)
+    sign_agree = float(np.nanmean(np.array(sign_flags, dtype=float))) if len(sign_flags) else 0.0
+    sigma_m = float(np.nanstd(m_arr)) if len(m_arr) else 0.0
+    sigma_h = float(np.nanstd(h_arr)) if len(h_arr) else 0.0
+
+    focal_idx = regions.index(anomalous_region) if anomalous_region in regions else None
+    m_focal = m_arr[focal_idx] if focal_idx is not None else np.nan
+    h_focal = h_arr[focal_idx] if focal_idx is not None else np.nan
+
+    z_m = (m_focal / sigma_m) if sigma_m and sigma_m > 1e-6 else 0.0
+    z_h = (h_focal / sigma_h) if sigma_h and sigma_h > 1e-6 else 0.0
+    explained_ratio = 0.0 if (np.isnan(z_m) or np.isnan(z_h) or abs(z_m) < 1e-6) else min(abs(z_h)/abs(z_m), 1.0)
+    focal_agrees = bool(sign_flags[focal_idx]) if (focal_idx is not None and len(sign_flags)) else False
+
+    base_score = 0.6*sign_agree + 0.4*explained_ratio
+    final_score = base_score if focal_agrees else base_score*0.3
+
+    # Create summary showing all calculation steps with actual focal region name
+    summary_df = pd.DataFrame([
+        {"Component": "Expected direction", "Formula": expected_direction, "Value": expected_direction},
+        {"Component": "Sign agreement", "Formula": f"{sum(sign_flags)}/{len(sign_flags)}", "Value": sign_agree},
+        {"Component": "σ(metric Δ)", "Formula": f"std({m_arr.tolist()})", "Value": sigma_m},
+        {"Component": "σ(hypo Δ, adj)", "Formula": f"std({h_arr.tolist()})", "Value": sigma_h},
+        {"Component": f"z_m ({anomalous_region})", "Formula": f"{m_focal} / {sigma_m}", "Value": z_m},
+        {"Component": f"z_h ({anomalous_region})", "Formula": f"{h_focal} / {sigma_h}", "Value": z_h},
+        {"Component": "Explained ratio", "Formula": f"min(|{z_h}|/|{z_m}|, 1)", "Value": explained_ratio},
+        {"Component": "Penalty rule", "Formula": f"×0.3 if {anomalous_region} sign mismatches",
+         "Value": "applied" if not focal_agrees else "not applied"},
+        {"Component": "Final score", "Formula": f"0.6*{sign_agree} + 0.4*{explained_ratio}", "Value": final_score},
+    ])
+
+    return walk_df, summary_df
+
+
 def sign_based_score_hypothesis(
     df: pd.DataFrame,
     metric_anomaly_info: Dict[str, Any],
@@ -415,6 +508,16 @@ def sign_based_score_hypothesis(
             magnitude_unit = '%'
         magnitude_str = f"{magnitude_value:.1f}{magnitude_unit}"
     
+    # Build detailed traceback tables showing step-by-step calculations
+    fw_df, fs_df = _build_formulas_tables(
+        df=df,
+        metric_col=metric_col,
+        hypo_col=hypo_col,
+        expected_direction=expected_direction,
+        anomalous_region=anomalous_region,
+        reference_row=reference_row
+    )
+
     # Results
     return {
         'hypo_val': hypo_val,
@@ -435,6 +538,11 @@ def sign_based_score_hypothesis(
             'background_colors': region_colors,
             'text_colors': region_text_colors,
             'metric_colors': metric_colors
+        },
+        # JSON-serializable traceback payload with step-by-step calculations
+        'traceback': {
+            'formulas_walkthrough': fw_df.to_dict('records'),
+            'formulas_summary': fs_df.to_dict('records')
         }
     }
 
@@ -1590,7 +1698,9 @@ def create_consolidated_results_dataframe(
                 'hypo_val': result['hypo_val'],
                 'sign_agreement': scores['sign_agreement'],
                 'explained_ratio': scores['explained_ratio'],
-                'p_value': scores['p_value']
+                'p_value': scores['p_value'],
+                # Keep tracebacks attached for downstream access
+                'traceback': result.get('traceback', {})
             }
             records.append(record)
     
@@ -1641,7 +1751,10 @@ def create_consolidated_results_dataframe(
                 'formatted_regional_values': {
                     region: format_number_for_display(regional_df.loc[region, hypo_name], hypo_name) 
                     for region in get_all_regions_ordered(regional_df, reference_row)
-                }
+                },
+                # Expose traceback tables at row level for convenient access
+                'formulas_walkthrough': base_record.get('traceback', {}).get('formulas_walkthrough'),
+                'formulas_summary': base_record.get('traceback', {}).get('formulas_summary'),
             })
             
             enhanced_records.append(base_record)
@@ -1785,7 +1898,15 @@ def score_hypotheses_for_metrics(
             'payload': {
                 'best_hypothesis': best_hypo_data.to_dict() if is_conclusive else None,
                 'all_results': metric_results.to_dict('records'),
-                'total_hypotheses': len(hypothesis_names)
+                'total_hypotheses': len(hypothesis_names),
+                # Per-hypothesis traceback tables for detailed inspection
+                'tracebacks': {
+                    row['hypothesis']: {
+                        'formulas_walkthrough': row.get('formulas_walkthrough'),
+                        'formulas_summary': row.get('formulas_summary')
+                    }
+                    for _, row in metric_results.iterrows()
+                }
             }
         }
     

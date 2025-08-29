@@ -49,6 +49,125 @@ COLORS = {
 }
 
 
+def _build_rate_tracebacks(
+    df: pd.DataFrame,
+    numerator_col: str,
+    denominator_col: str,
+    metric_name: str,
+    row_rate: float,
+    delta: float,
+    higher_is_better: bool,
+    focal_region: Optional[str]
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Traceback tables for rate_contrib()."""
+    # Re-derive pieces explicitly for transparency
+    expected_total = df['expected'].sum()
+    delta_ratio = abs(delta) / expected_total if expected_total > 0 else 0.0
+    diff = df[numerator_col] - df['expected']
+    pos_sum = diff.clip(lower=0).sum()
+    neg_sum = -diff.clip(upper=0).sum()
+    max_dev = diff.abs().max()
+    max_potential_contrib = (max_dev / abs(delta)) if delta != 0 else 0.0
+    mode = "two_sided" if ((delta_ratio < 0.05) or (max_potential_contrib > 1.0)) else "standard"
+
+    # Per-slice walkthrough (explicit formulas + values)
+    rows = []
+    for _, r in df.reset_index(drop=True).iterrows():
+        exp_formula = f"{denominator_col} × ROW_rate = {int(r[denominator_col]):,} × {row_rate:.6f}"
+        if mode == "two_sided":
+            rc_formula = ("diff/Σpos if diff>0; diff/Σ|neg| if diff<0  "
+                          f"(diff={r[numerator_col]-r['expected']:.6f}, Σpos={pos_sum:.6f}, Σ|neg|={neg_sum:.6f})")
+        else:
+            rc_formula = f"(actual - expected)/Δ  (Δ={delta:.6f})"
+
+        sign_rule = ("keep" if higher_is_better and (delta >= 0)
+                     else "flip" if higher_is_better and (delta < 0)
+                     else "flip" if (not higher_is_better) and (delta > 0)
+                     else "keep")
+
+        score_formula = "sqrt(|contrib| + max(|contrib| - coverage, 0) / max(coverage, 0.01))"
+
+        rows.append({
+            "slice": r["slice"] if "slice" in df.columns else getattr(r, "slice", ""),
+            f"{denominator_col}": int(r[denominator_col]),
+            f"{numerator_col}": int(r[numerator_col]),
+            "ROW_rate": row_rate,
+            "expected_formula": exp_formula,
+            "expected_value": r["expected"],
+            "diff": (r[numerator_col] - r["expected"]),
+            "raw_contrib_formula": rc_formula,
+            "raw_contrib_value": r.get("raw_contribution", np.nan),
+            "sign_adjustment_rule": sign_rule,
+            "contribution": r["contribution"],
+            "coverage": r["coverage"],
+            "score_formula": score_formula,
+            "score_value": r["score"],
+            "rate_display": r.get("display_value", "")
+        })
+    walkthrough = pd.DataFrame(rows)
+
+    # Summary with focal + method choice + key numbers
+    summary = pd.DataFrame([
+        {"Component": "metric_type", "Formula": "rate", "Value": "rate"},
+        {"Component": "metric_name", "Formula": "-", "Value": metric_name},
+        {"Component": "focal_region", "Formula": "-", "Value": focal_region},
+        {"Component": "higher_is_better", "Formula": "-", "Value": bool(higher_is_better)},
+        {"Component": "ROW_rate", "Formula": "ROW_num/ROW_den", "Value": row_rate},
+        {"Component": "Δ (total gap)", "Formula": "Σactual − Σexpected", "Value": delta},
+        {"Component": "mode", "Formula": "two_sided if Δ/Σexp<5% or max_dev/|Δ|>1 else standard", "Value": mode},
+        {"Component": "Σpos, Σ|neg|", "Formula": "from diff", "Value": f"{pos_sum:.6f}, {neg_sum:.6f}"},
+    ])
+
+    return walkthrough, summary
+
+
+def _build_additive_tracebacks(
+    df: pd.DataFrame,
+    metric_col: str,
+    row_total: float,
+    delta: float,
+    higher_is_better: bool,
+    focal_region: Optional[str]
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Traceback tables for additive_contrib()."""
+    rows = []
+    for _, r in df.reset_index(drop=True).iterrows():
+        cov_formula = f"{metric_col} / Σ{metric_col}"
+        exp_formula = f"coverage × ROW_total = {r['coverage']:.6f} × {row_total:,.0f}"
+        rc_formula = f"(actual - expected)/Δ  (Δ={delta:.6f})"
+        sign_rule = ("flip" if (higher_is_better and delta < 0) or ((not higher_is_better) and delta > 0) else "keep")
+        score_formula = "sqrt(|contrib| + max(|contrib| - coverage, 0) / max(coverage, 0.01))"
+
+        rows.append({
+            "slice": r["slice"] if "slice" in df.columns else getattr(r, "slice", ""),
+            metric_col: r[metric_col],
+            "coverage_formula": cov_formula,
+            "coverage_value": r["coverage"],
+            "expected_formula": exp_formula,
+            "expected_value": r["expected"],
+            "diff": (r[metric_col] - r["expected"]),
+            "raw_contrib_formula": rc_formula,
+            "raw_contrib_value": r.get("raw_contribution", np.nan),
+            "sign_adjustment_rule": sign_rule,
+            "contribution": r["contribution"],
+            "score_formula": score_formula,
+            "score_value": r["score"],
+        })
+    walkthrough = pd.DataFrame(rows)
+
+    summary = pd.DataFrame([
+        {"Component": "metric_type", "Formula": "additive", "Value": "additive"},
+        {"Component": "metric_name", "Formula": "-", "Value": metric_col},
+        {"Component": "focal_region", "Formula": "-", "Value": focal_region},
+        {"Component": "higher_is_better", "Formula": "-", "Value": bool(higher_is_better)},
+        {"Component": "ROW_total", "Formula": "-", "Value": row_total},
+        {"Component": "Δ (total gap)", "Formula": "Σactual − ROW_total", "Value": delta},
+        {"Component": "mode", "Formula": "standard", "Value": "standard"},
+    ])
+
+    return walkthrough, summary
+
+
 def _calculate_two_sided_contributions(actual_values: pd.Series, expected_values: pd.Series) -> pd.Series:
     """
     Calculate contributions using two-sided normalization for small delta cases.
@@ -96,7 +215,8 @@ def rate_contrib(
     denominator_col: str,
     numerator_col: str,
     metric_name: str,
-    higher_is_better: bool = True
+    higher_is_better: bool = True,
+    focal_region: Optional[str] = None
 ) -> Tuple[pd.DataFrame, float, float]:
     """
     Calculate contribution analysis for rate metrics (e.g., conversion rate).
@@ -210,6 +330,25 @@ def rate_contrib(
     # Add display string column
     df['display_value'] = df.apply(format_ratio_display, axis=1)
 
+    # === NEW: attach tracebacks for payload ===
+    try:
+        fw, fs = _build_rate_tracebacks(
+            df=df,
+            numerator_col=numerator_col,
+            denominator_col=denominator_col,
+            metric_name=metric_name,
+            row_rate=row_rate,
+            delta=delta,
+            higher_is_better=higher_is_better,
+            focal_region=focal_region
+        )
+        df.attrs["tracebacks"] = {
+            "formulas_walkthrough": fw.to_dict("records"),
+            "formulas_summary": fs.to_dict("records")
+        }
+    except Exception as _e:
+        logger.debug(f"Traceback build (rate) skipped: {_e}")
+    # =========================================
     
     return df, delta, row_rate
 
@@ -218,7 +357,8 @@ def additive_contrib(
     df_slice: pd.DataFrame, 
     row_total: float,
     metric_col: str,
-    higher_is_better: bool = True
+    higher_is_better: bool = True,
+    focal_region: Optional[str] = None
 ) -> Tuple[pd.DataFrame, float]:
     """
     Calculate contribution analysis for additive metrics (e.g., revenue, orders).
@@ -278,6 +418,24 @@ def additive_contrib(
         np.abs(df['contribution']) + 
         np.maximum(np.abs(df['contribution']) - df['coverage'], 0) / coverage_floored
     )
+    
+    # === NEW: attach tracebacks for payload ===
+    try:
+        fw, fs = _build_additive_tracebacks(
+            df=df,
+            metric_col=metric_col,
+            row_total=row_total,
+            delta=delta,
+            higher_is_better=higher_is_better,
+            focal_region=focal_region
+        )
+        df.attrs["tracebacks"] = {
+            "formulas_walkthrough": fw.to_dict("records"),
+            "formulas_summary": fs.to_dict("records")
+        }
+    except Exception as _e:
+        logger.debug(f"Traceback build (additive) skipped: {_e}")
+    # =========================================
     
     return df, delta
 
@@ -476,7 +634,8 @@ def analyze_region_depth(
                 contrib_df, delta, row_rate = rate_contrib(
                     region_df, row_numerator, row_denominator,
                     denominator_col, numerator_col, metric_name,
-                    metric_anomaly_map[metric_name].get('higher_is_better', True)
+                    metric_anomaly_map[metric_name].get('higher_is_better', True),
+                    focal_region=anomalous_region  # <-- NEW
                 )
                 
                 region_rate = contrib_df[numerator_col].sum() / contrib_df[denominator_col].sum()
@@ -496,7 +655,11 @@ def analyze_region_depth(
                 metric_col = metric_config['metric_col']
                 row_total = row_df[metric_col].sum()
                 
-                contrib_df, delta = additive_contrib(region_df, row_total, metric_col, metric_anomaly_map[metric_name].get('higher_is_better', True))
+                contrib_df, delta = additive_contrib(
+                    region_df, row_total, metric_col,
+                    metric_anomaly_map[metric_name].get('higher_is_better', True),
+                    focal_region=anomalous_region  # <-- NEW
+                )
                 
                 region_total = contrib_df[metric_col].sum()
                 plot_metric_col = metric_col
@@ -647,7 +810,8 @@ def analyze_region_depth(
                     'summary_df': full_analysis_df,  # Full analysis data for internal inspection
                     'delta': delta,
                     'row_value': row_value,
-                    'total_hypotheses': 1  # Add to payload as well
+                    # --- NEW: always include the two traceback tables ---
+                    'tracebacks': contrib_df.attrs.get('tracebacks', {})
                 },
             }
                 
