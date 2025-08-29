@@ -1243,6 +1243,7 @@ def run_oaxaca_analysis(
     decomposition_method: str = "business_centered",
     detect_edge_cases: bool = True,
     detect_cancellation: bool = True,
+    generate_narratives: bool = True,
     thresholds: AnalysisThresholds = None
 ) -> AnalysisResult:
     """
@@ -1258,6 +1259,7 @@ def run_oaxaca_analysis(
         baseline_type: Baseline method ("rest_of_world", "global_average", or region name)
         decomposition_method: Method for decomposition ("two_part", "reverse", "symmetric")
         detect_edge_cases: Whether to run edge case detection
+        generate_narratives: Whether to generate business narratives (False for scoring only)
         thresholds: Custom analysis thresholds
     
     Returns:
@@ -1487,57 +1489,58 @@ def run_oaxaca_analysis(
     # Step 5: Generate business insights using clean architecture
     narrative_decisions = {}
     
-    for region in regions:
-        if region in regional_gaps["region"].values:
-            # For Simpson's Paradox, allow all detection paths (subcategory, portfolio, or multi-axis rollups)
-            is_paradox_case = (
-                detect_edge_cases and
-                getattr(paradox_report, 'paradox_detected', False) and
-                region in getattr(paradox_report, 'affected_regions', [])
-            )
+    if generate_narratives:
+        for region in regions:
+            if region in regional_gaps["region"].values:
+                # For Simpson's Paradox, allow all detection paths (subcategory, portfolio, or multi-axis rollups)
+                is_paradox_case = (
+                    detect_edge_cases and
+                    getattr(paradox_report, 'paradox_detected', False) and
+                    region in getattr(paradox_report, 'affected_regions', [])
+                )
 
-            # Use early routing decision for single-category cases
-            is_single_category = (region in single_category_regions and subcategory_results is not None)
+                # Use early routing decision for single-category cases
+                is_single_category = (region in single_category_regions and subcategory_results is not None)
 
-            if is_paradox_case or is_single_category:
-                reason = "Simpson's Paradox" if is_paradox_case else "single category analysis (early routing detected)"
-                logger.info(f"🎯 COORDINATOR: Using HYBRID data for {reason} in {region}")
+                if is_paradox_case or is_single_category:
+                    reason = "Simpson's Paradox" if is_paradox_case else "single category analysis (early routing detected)"
+                    logger.info(f"🎯 COORDINATOR: Using HYBRID data for {reason} in {region}")
 
-                if subcategory_results:
-                    analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, enriched_regional_gaps, thresholds)
+                    if subcategory_results:
+                        analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, enriched_regional_gaps, thresholds)
+                    else:
+                        # paradox found without subcategory rerun (portfolio or multi-axis rollups)
+                        analysis_decomposition_df = enriched_decomposition_df
+
+                    analysis_regional_gaps = enriched_regional_gaps
                 else:
-                    # paradox found without subcategory rerun (portfolio or multi-axis rollups)
                     analysis_decomposition_df = enriched_decomposition_df
-
-                analysis_regional_gaps = enriched_regional_gaps
-            else:
-                analysis_decomposition_df = enriched_decomposition_df
-                analysis_regional_gaps = enriched_regional_gaps
-            
-            # CLEAN ARCHITECTURE: Generate narrative using enriched DataFrames
-            logger.info(f"🎯 COORDINATOR: Generating narrative for {region}")
-            narrative_decision = business_analyzer.generate_regional_narrative(
-                region=region,
-                decomposition_df=analysis_decomposition_df,
-                regional_gaps=analysis_regional_gaps,
-                baseline_type=baseline_type,
-                paradox_report=paradox_report if region in getattr(paradox_report, 'affected_regions', []) else None,
-                cancellation_report=cancellation_report if region in getattr(cancellation_report, 'affected_regions', []) else None
-            )
-            
-            # Store NarrativeDecision in narrative_decisions
-            narrative_decisions[region] = narrative_decision
-            
-            # ASSERT BUSINESS LOGIC CORRECTNESS (fail fast on wrong classifications)
-            region_totals = analysis_regional_gaps[analysis_regional_gaps["region"] == region].iloc[0]
-            total_gap = region_totals["total_net_gap"]
-            if abs(total_gap) > thresholds.near_zero_gap:  # Use proper threshold
-                expected_direction = PerformanceDirection.OUTPERFORMS if total_gap > 0 else PerformanceDirection.UNDERPERFORMS
-                actual_direction = narrative_decision.performance_direction
-                assert actual_direction == expected_direction, f"Wrong direction for {region}: gap={total_gap:.3f}, got {actual_direction.value}, expected {expected_direction.value}"
-            
-            logger.info(f"[ROUTING] COORDINATOR: Stored {narrative_decision.root_cause_type.value} analysis for {region}")
-            logger.info(f"[DECISION] FINAL_CLASSIFICATION: {region} → {narrative_decision.root_cause_type.value} + {narrative_decision.performance_direction.value}")
+                    analysis_regional_gaps = enriched_regional_gaps
+                
+                # CLEAN ARCHITECTURE: Generate narrative using enriched DataFrames
+                logger.info(f"🎯 COORDINATOR: Generating narrative for {region}")
+                narrative_decision = business_analyzer.generate_regional_narrative(
+                    region=region,
+                    decomposition_df=analysis_decomposition_df,
+                    regional_gaps=analysis_regional_gaps,
+                    baseline_type=baseline_type,
+                    paradox_report=paradox_report if region in getattr(paradox_report, 'affected_regions', []) else None,
+                    cancellation_report=cancellation_report if region in getattr(cancellation_report, 'affected_regions', []) else None
+                )
+                
+                # Store NarrativeDecision in narrative_decisions
+                narrative_decisions[region] = narrative_decision
+                
+                # ASSERT BUSINESS LOGIC CORRECTNESS (fail fast on wrong classifications)
+                region_totals = analysis_regional_gaps[analysis_regional_gaps["region"] == region].iloc[0]
+                total_gap = region_totals["total_net_gap"]
+                if abs(total_gap) > thresholds.near_zero_gap:  # Use proper threshold
+                    expected_direction = PerformanceDirection.OUTPERFORMS if total_gap > 0 else PerformanceDirection.UNDERPERFORMS
+                    actual_direction = narrative_decision.performance_direction
+                    assert actual_direction == expected_direction, f"Wrong direction for {region}: gap={total_gap:.3f}, got {actual_direction.value}, expected {expected_direction.value}"
+                
+                logger.info(f"[ROUTING] COORDINATOR: Stored {narrative_decision.root_cause_type.value} analysis for {region}")
+                logger.info(f"[DECISION] FINAL_CLASSIFICATION: {region} → {narrative_decision.root_cause_type.value} + {narrative_decision.performance_direction.value}")
     
     # Create analysis result with narrative_decisions
     logger.info("[ROUTING] COORDINATOR: Creating AnalysisResult with narrative decisions")
@@ -1848,7 +1851,8 @@ def _score_cut(
     numerator_column: str,
     denominator_column: str,
     decomposition_method: str,
-    region_column: str = "region" 
+    region_column: str = "region",
+    generate_narratives: bool = False
 ) -> Tuple[float, Dict[str, float], AnalysisResult, pd.DataFrame]:
     """
     Run Oaxaca for this cut, compute a single score, and return diagnostics.
@@ -1864,6 +1868,7 @@ def _score_cut(
         baseline_type=baseline_type,
         decomposition_method=decomposition_method,
         detect_edge_cases=True,             # keep paradox/cancellation signals
+        generate_narratives=generate_narratives,    # False for scoring, True for final rendering
         thresholds=thresholds
     )
 
@@ -1977,8 +1982,9 @@ def auto_find_best_slice(
         )
         target_region = str(gg.iloc[0]["region"])
 
-    # Evaluate all cuts
+    # Evaluate all cuts with generate_narratives=False
     best: Optional[BestSliceDecision] = None
+    errors = []  # collect reasons to help debug if nothing succeeds
     for cols in candidate_cuts:
         cols = tuple(cols)
         try:
@@ -1991,9 +1997,11 @@ def auto_find_best_slice(
                 numerator_column=numerator_column,
                 denominator_column=denominator_column,
                 decomposition_method=decomposition_method,
-                region_column=region_column                # pass through
+                region_column=region_column,               # pass through
+                generate_narratives=False                  # False for scoring
             )
         except Exception as e:
+            errors.append((tuple(cols), str(e)))
             logger.debug(f"[AUTO-SLICE] Skipping {cols}: {e}")
             continue
 
@@ -2003,12 +2011,34 @@ def auto_find_best_slice(
                 best_categories=cols,
                 score=score,
                 score_breakdown=breakdown,
-                top_segments=topk[["category","region_rate","rest_rate","net_gap","region_mix_pct"]],
+                top_segments=topk[["category","region_rate","rest_rate","display_net","region_mix_pct"]],
                 analysis_result=ar
             )
 
     if best is None:
-        raise RuntimeError("Auto slice failed to evaluate any candidate cuts.")
+        raise RuntimeError(f"Auto slice failed to evaluate any candidate cuts. Examples: {errors[:3]}")
+
+    # Re-run ONLY the winner with narratives for downstream slide rendering
+    ar_rich = run_oaxaca_analysis(
+        df=df,
+        region_column=region_column,
+        numerator_column=numerator_column,
+        denominator_column=denominator_column,
+        category_columns=list(best.best_categories),
+        baseline_type=baseline_type,
+        decomposition_method=decomposition_method,
+        detect_edge_cases=True,
+        generate_narratives=True,                          # narratives ON
+        thresholds=thresholds
+    )
+    best = BestSliceDecision(
+        focus_region=best.focus_region,
+        best_categories=best.best_categories,
+        score=best.score,
+        score_breakdown=best.score_breakdown,
+        top_segments=best.top_segments,
+        analysis_result=ar_rich
+    )
 
     return best
 
@@ -2154,6 +2184,15 @@ def build_oaxaca_exec_pack(
     region = best.focus_region
     title = _title_for_cut(best.best_categories, metric_name)
 
+    # Safety: if the best came without narratives, re-run (shouldn't happen with patch, but cheap)
+    if not best.analysis_result.narrative_decisions:
+        best.analysis_result = run_oaxaca_analysis(
+            df=df, region_column=region_column, numerator_column=numerator_column,
+            denominator_column=denominator_column, category_columns=list(best.best_categories),
+            baseline_type=baseline_type, decomposition_method=decomposition_method,
+            generate_narratives=True, thresholds=thresholds
+        )
+
     s, payload = _exec_from_result(best.analysis_result, region, title, best.best_categories, role="primary")
     # attach score info to the primary slide (no separate meta)
     s.update({"score": best.score, "score_breakdown": best.score_breakdown})
@@ -2180,7 +2219,7 @@ def build_oaxaca_exec_pack(
                     df=df, region=region, category_cols=cols, thresholds=thresholds,
                     baseline_type=baseline_type, numerator_column=numerator_column,
                     denominator_column=denominator_column, decomposition_method=decomposition_method,
-                    region_column=region_column
+                    region_column=region_column, generate_narratives=False
                 )
                 others.append((sc, br, ar, cols))
             except Exception as e:
@@ -2189,6 +2228,14 @@ def build_oaxaca_exec_pack(
 
         others.sort(key=lambda t: t[0], reverse=True)
         for sc, br, ar, cols in others[:alternatives]:
+            # Re-run alternatives with narratives before rendering
+            if not ar.narrative_decisions:
+                ar = run_oaxaca_analysis(
+                    df=df, region_column=region_column, numerator_column=numerator_column,
+                    denominator_column=denominator_column, category_columns=list(cols),
+                    baseline_type=baseline_type, decomposition_method=decomposition_method,
+                    generate_narratives=True, thresholds=thresholds
+                )
             alt_title = _title_for_cut(cols, metric_name)
             s_alt, _ = _exec_from_result(ar, region, alt_title, cols, role="alternative")
             s_alt.update({"score": sc, "score_breakdown": br})
