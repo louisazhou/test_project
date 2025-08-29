@@ -250,8 +250,8 @@ class AnalysisResult:
                 regional_summary.loc[regional_summary['region'] == region, 'performance_direction'] = dec.performance_direction.value
         regional_summary = regional_summary.sort_values('total_net_gap', ascending=False)
         
-        # top contributors (numeric)
-        top_contributors = self.decomposition_df[['region','category','net_gap','construct_gap_contribution','performance_gap_contribution','abs_gap']].copy()
+        # top contributors (numeric) - use display_net for ranking
+        top_contributors = self.decomposition_df[['region','category','display_net','construct_gap_contribution','performance_gap_contribution','abs_gap']].copy()
         top_contributors = top_contributors.nlargest(15, 'abs_gap')
 
         if format_for_display:
@@ -259,7 +259,7 @@ class AnalysisResult:
             rs = regional_summary.merge(self.regional_gaps[base_cols], on='region', how='left')
             rs = format_regional_gaps_for_display(rs)
             tc = top_contributors.copy()
-            tc['net_gap_pp'] = (tc['net_gap']*100).round(1).astype(str)+'pp'
+            tc['net_gap_pp'] = (tc['display_net']*100).round(1).astype(str)+'pp'
             tc['construct_gap_pp'] = (tc['construct_gap_contribution']*100).round(1).astype(str)+'pp'
             tc['performance_gap_pp'] = (tc['performance_gap_contribution']*100).round(1).astype(str)+'pp'
             tc = tc[['region','category','net_gap_pp','construct_gap_pp','performance_gap_pp']]
@@ -273,7 +273,7 @@ class AnalysisResult:
         # raw numeric by default
         return {
             "regional_performance_summary": regional_summary.reset_index(drop=True),
-            "top_category_contributors": top_contributors[['region','category','net_gap','construct_gap_contribution','performance_gap_contribution']].reset_index(drop=True),
+            "top_category_contributors": top_contributors[['region','category','display_net','construct_gap_contribution','performance_gap_contribution']].reset_index(drop=True),
             "paradox_regions": self.paradox_report.affected_regions if self.paradox_report.paradox_detected else [],
             "cancellation_regions": self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
         }
@@ -559,7 +559,7 @@ class NarrativeTemplateEngine:
             narrative_text += ", but note offsetting composition and performance effects at the category level (cancellation), which makes the topline fragile."
         
         # Create simplified supporting table with traffic light status
-        supporting_table = self._create_supporting_table(region, decomposition_df)
+        supporting_table = self._create_supporting_table(region, decomposition_df, regional_gaps)
         
         # Get contradiction segments
         rows = decomposition_df[decomposition_df["region"] == region]
@@ -659,9 +659,9 @@ class NarrativeTemplateEngine:
                 pretty_category(row.get('category'))
             )
                 # Calculate net gap in percentage points for display
-                net_gap_pp = f"{row['net_gap']*100:+.1f}pp"
+                net_gap_pp = f"{row['display_net']*100:+.1f}pp"
                 # Use minor_gap threshold for meaningful contributors
-                if abs(row['net_gap']) >= self.thresholds.minor_gap:
+                if abs(row['display_net']) >= self.thresholds.minor_gap:
                     contributing_segments.append(f"{category_name} ({net_gap_pp})")
             
             segments_text = ", ".join(contributing_segments[:3]) if contributing_segments else "complex dynamics"
@@ -798,42 +798,47 @@ class NarrativeTemplateEngine:
                 )
         return out
 
-    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame) -> pd.DataFrame:
+    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
         """Create simplified supporting table with traffic light status indicators."""
         # Get region data from enriched DataFrame
         region_data = decomposition_df[decomposition_df["region"] == region].copy()
-        
-        # Sort by absolute gap size so most important contributors appear first
-        region_data = region_data.sort_values('abs_gap_numeric', ascending=False)
+
+        if "display_net" not in region_data.columns:
+            region_data["display_net"] = (region_data["construct_gap_contribution"] +
+                                          region_data["performance_gap_contribution"])
+
+        # Use pre-computed explain_score for usefulness sorting
+        if "explain_score" in region_data.columns:
+            region_data["_abs_display"] = region_data["display_net"].abs()
+            region_data = region_data.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
+        elif regional_gaps is not None:
+            # Fallback calculation if not enriched
+            tot = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+            sign = 1.0 if tot >= 0 else -1.0
+            region_data["explain_score"] = sign * region_data["display_net"]
+            region_data["_abs_display"]  = region_data["display_net"].abs()
+            region_data = region_data.sort_values(["explain_score", "_abs_display"], ascending=[False, False])
+        else:
+            # final fallback to display_net sorting
+            region_data = region_data.sort_values('display_net', ascending=False)
         
         # Format columns inline from numeric values
-        region_data_display = region_data.copy()
-        region_data_display['Region%'] = (region_data['region_rate'] * 100).round(1).astype(str) + '%'
-        region_data_display['Baseline%'] = (region_data['rest_rate'] * 100).round(1).astype(str) + '%'
-        region_data_display['Gap_pp'] = (region_data['net_gap'] * 100).round(1).astype(str) + 'pp'
-        region_data_display['Mix%'] = (region_data['region_mix_pct'] * 100).round(1).astype(str) + '%'
-        
-        # Add status indicators with business insights and ranking
-        def get_status_with_rank(gap, rank):
-            # Use visual_indicator_threshold from centralized thresholds
-            threshold = self.thresholds.visual_indicator_threshold
-            if gap > threshold:
-                return f"🟢 Strength #{rank}"
-            elif gap < -threshold:
-                return f"🔴 Gap #{rank}"
-            else:
-                return "⚪ Neutral"
-        
-        # Add ranking to show which gaps matter most
-        region_data_display['rank'] = range(1, len(region_data_display) + 1)
-        region_data_display['Status'] = region_data_display.apply(
-            lambda row: get_status_with_rank(row['net_gap'], row['rank']), axis=1
-        )
-        
-        # Use category_clean for display (guaranteed to exist from enrichment)
-        region_data_display['Category'] = region_data['category_clean']
-        
-        return region_data_display[['Status', 'Category', 'Region%', 'Baseline%', 'Gap_pp', 'Mix%']]
+        out = region_data.copy()
+        out['Category']   = region_data['category_clean']
+        out['Region%']    = (region_data['region_rate'] * 100).round(1).astype(str) + '%'
+        out['Baseline%']  = (region_data['rest_rate']   * 100).round(1).astype(str) + '%'
+        out['Mix%']       = (region_data['region_mix_pct'] * 100).round(1).astype(str) + '%'
+        out['Impact_pp']  = (region_data['display_net'] * 100).round(1).astype(str) + 'pp'
+
+        thr = self.thresholds.visual_indicator_threshold
+        def status(x, rank):
+            if x >  thr:  return f"🟢 Strength #{rank}"
+            if x < -thr:  return f"🔴 Gap #{rank}"
+            return "⚪ Neutral"
+
+        out['rank']   = range(1, len(out) + 1)
+        out['Status'] = [status(v, r) for v, r in zip(region_data['display_net'], out['rank'])]
+        return out[['Status','Category','Region%','Baseline%','Impact_pp','Mix%']]
 
 
 class BusinessAnalyzer:
@@ -1326,6 +1331,10 @@ def run_oaxaca_analysis(
                 method=decomposition_method,
                 baseline_overall_rate=baseline_overall_rate
             )
+            
+            # Calculate business-centered display net and level-carry term
+            display_net = construct_gap + performance_gap
+            level_carry = net_gap - display_net  # = y_B * (w_R - w_B)
               
             # Create result record - store both tuple and string for consistency
             decomposition_results.append({
@@ -1337,7 +1346,9 @@ def run_oaxaca_analysis(
                 "rest_rate": baseline_rate_val,
                 "construct_gap_contribution": construct_gap,
                 "performance_gap_contribution": performance_gap,
-                "net_gap": net_gap,
+                "display_net": display_net,              # business-centered net for ranking/display
+                "level_carry": level_carry,              # level-carry term for audit
+                "net_gap": net_gap,                      # pooled net (keep for math validation)
 
             })
     
@@ -1429,7 +1440,7 @@ def run_oaxaca_analysis(
             paradox_report = _merge_paradox(paradox_report, p_axis1)
     
     # Enrich DataFrames with all computed columns needed downstream
-    enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, thresholds)
+    enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, regional_gaps, thresholds)
     enriched_regional_gaps = compute_derived_regional_gaps(regional_gaps)
     
     # Step 6: Mathematical cancellation detection
@@ -1471,7 +1482,7 @@ def run_oaxaca_analysis(
                 logger.info(f"🎯 COORDINATOR: Using HYBRID data for {reason} in {region}")
 
                 if subcategory_results:
-                    analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, thresholds)
+                    analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, enriched_regional_gaps, thresholds)
                 else:
                     # paradox found without subcategory rerun (portfolio or multi-axis rollups)
                     analysis_decomposition_df = enriched_decomposition_df
@@ -1533,15 +1544,37 @@ def run_oaxaca_analysis(
 # DATAFRAME ENRICHMENT UTILITIES
 # =============================================================================
 
-def compute_derived_metrics_df(decomposition_df: pd.DataFrame, thresholds: AnalysisThresholds = None) -> pd.DataFrame:
+def compute_derived_metrics_df(decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None, thresholds: AnalysisThresholds = None) -> pd.DataFrame:
     """Compute numeric derived metrics without display formatting."""
     thresholds = thresholds or AnalysisThresholds()
     enriched = decomposition_df.copy()
 
-    # NUMERIC helpers only
-    enriched['abs_gap'] = enriched['net_gap'].abs()
-    enriched['abs_gap_numeric'] = (enriched['net_gap'] * 100).abs()       # still numeric
+    # Ensure display_net exists
+    if "display_net" not in enriched.columns:
+        enriched["display_net"] = enriched["construct_gap_contribution"] + enriched["performance_gap_contribution"]
+
+    # NUMERIC helpers only - use display_net for ranking/impact
+    enriched['abs_gap'] = enriched['display_net'].abs()
+    enriched['abs_gap_numeric'] = (enriched['display_net'] * 100).abs()       # still numeric
     enriched['category_clean'] = enriched['category'].apply(pretty_category)
+
+    # Calculate explain_score for business-centered ranking
+    if regional_gaps is not None:
+        # Create a mapping from region to its total gap sign
+        region_signs = {}
+        for _, row in regional_gaps.iterrows():
+            region = row['region']
+            tot_gap = float(row['total_net_gap'])
+            region_signs[region] = 1.0 if tot_gap >= 0 else -1.0
+        
+        # Apply explain_score calculation
+        enriched['explain_score'] = enriched.apply(
+            lambda row: region_signs.get(row['region'], 1.0) * row['display_net'], 
+            axis=1
+        )
+    else:
+        # Fallback: assume positive gaps are good (no regional context)
+        enriched['explain_score'] = enriched['display_net']
 
     # cumsum_impact / is_top_contributor (numeric, no strings)
     for region in enriched['region'].unique():
@@ -2241,12 +2274,25 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     # ----------------------- data ------------------------
     df = result.decomposition_df
     rows = df[df["region"] == region].copy()
+
+    # Use pre-computed explain_score from enrichment
+    if "explain_score" not in rows.columns:
+        # Fallback calculation if not enriched
+        if "display_net" not in rows.columns:
+            rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
+        tot = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        sign = 1.0 if tot >= 0 else -1.0
+        rows["explain_score"] = sign * rows["display_net"]
+
     labels = rows["category_clean"].astype(str).values
     dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
     dy = (rows["region_rate"] - rows["rest_rate"]).values * 100.0
-    net = rows["net_gap"].values * 100.0
+    net = rows["display_net"].values * 100.0   # color/annotation by display impact
     sizes = np.clip(rows["region_mix_pct"].values * 3200.0, 40.0, 1600.0)
     colors = np.where(net >= 0, POS, NEG)
+
+    # Use pre-computed explain_score for ranking
+    explain_score = rows["explain_score"].values
 
     # ---------------- symmetric limits --------
     def nice_step(a):
@@ -2309,9 +2355,9 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     # bubbles
     ax.scatter(dx, dy, s=sizes, c=colors, ec="white", lw=1.1, alpha=0.96, zorder=3)
 
-    # annotations
+    # annotations → pick top-N by usefulness (explain_score), not by |net|
     if annotate_top_n and len(rows):
-        idx = np.argsort(np.abs(net))[::-1][:annotate_top_n]
+        idx = np.argsort(explain_score)[::-1][:annotate_top_n]
         for i in idx:
             text = f"{labels[i]}   {dx[i]:+0.1f}/{dy[i]:+0.1f}  →  {net[i]:+0.1f}"
             xoff = 18 if dx[i] >= 0 else -18
@@ -2388,7 +2434,7 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
 
     return fig
 
-def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str = "abs_gap", 
+def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str = "usefulness", 
                               metric_name: Optional[str] = None, category_name: Optional[str] = None):
     """
     Left: slopechart of success rates (Region vs Peers) per category.
@@ -2404,12 +2450,24 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
         category_name = meta.get("category_name")
 
     rows = result.decomposition_df[result.decomposition_df["region"] == region].copy()
+
+    # Use pre-computed explain_score from enrichment
+    if "explain_score" not in rows.columns:
+        # Fallback calculation if not enriched
+        if "display_net" not in rows.columns:
+            rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
+        tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        sign = 1.0 if tot_gap >= 0 else -1.0
+        rows["explain_score"] = sign * rows["display_net"]
+
+    rows["_abs_display"] = rows["display_net"].abs() if "display_net" in rows.columns else rows["explain_score"].abs()
+
+    # always sort by usefulness → strongest explainers on top, offsets at bottom
+    rows = rows.sort_values(["explain_score", "_abs_display"], ascending=[False, False]).head(top_n)
+    rows = rows.iloc[::-1].copy()  # biggest explainers appear at the TOP visually
+
     rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
     rows["mix_diff_pp"]  = (rows["region_mix_pct"] - rows["rest_mix_pct"]) * 100
-    rows["abs_gap"] = rows["net_gap"].abs()
-    rows = rows.sort_values("abs_gap" if sort_by=="abs_gap" else "mix_diff_pp", ascending=False).head(top_n)
-    rows = rows.iloc[::-1].copy()  # biggest at the top visually
-
     labels = rows["category_clean"]
     
     # Setup metric label
