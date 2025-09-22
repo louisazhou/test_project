@@ -106,6 +106,16 @@ def gap_direction_from(x: float, thresholds: 'AnalysisThresholds') -> 'Performan
         return PerformanceDirection.IN_LINE
     return PerformanceDirection.OUTPERFORMS if x > 0 else PerformanceDirection.UNDERPERFORMS
 
+def gap_significance_from(x: float, thresholds: 'AnalysisThresholds') -> 'GapSignificance':
+    """Determine gap significance from magnitude using thresholds."""
+    magnitude = abs(x)
+    if magnitude > thresholds.high_impact_gap:
+        return GapSignificance.HIGH
+    elif magnitude > thresholds.significant_gap:
+        return GapSignificance.MEDIUM
+    else:
+        return GapSignificance.LOW
+
 # =============================================================================
 # CORE CONSTANTS AND TYPES
 # =============================================================================
@@ -126,11 +136,6 @@ class PerformanceDirection(Enum):
     OUTPERFORMS = "outperforms"
     UNDERPERFORMS = "underperforms" 
     IN_LINE = "performs in line with"
-    
-class ParadoxType(Enum):
-    """Types of Simpson's Paradox detected."""
-    NONE = "none"                    # No paradox detected
-    MATHEMATICAL = "mathematical"    # Performance direction reversal
 
 @dataclass
 class AnalysisThresholds:
@@ -145,12 +150,13 @@ class AnalysisThresholds:
 
     minor_rate_diff: float = 0.005       # 0.5pp rate difference
     
-    # Narrative thresholds
-    visual_indicator_threshold: float = 0.01  # 1pp - for visual indicators (🟢/🔴)
-    cumulative_contribution_threshold: float = 0.6  # 60% - for ranking top contributors
+    # Ranking thresholds for categorization
+    meaningful_share_threshold: float = 0.05  # 5% - minimum share to be considered meaningful
+    high_performance_threshold: float = 0.05  # 5pp - minimum rate difference to be high-performing
+    negative_impact_threshold: float = 0.01   # 1pp - minimum negative impact to be a problem
     
     # PERCENT-POINT thresholds (explicitly in pp)
-    meaningful_allocation_diff_pp: float = 5.0   # 5pp - meaningful allocation difference
+    meaningful_allocation_diff_pp: float = meaningful_share_threshold * 100   # 5pp - meaningful allocation difference
     
     # Mathematical validation
     mathematical_tolerance: float = 1e-12  # Decomposition validation tolerance - make this tighter
@@ -163,7 +169,7 @@ class AnalysisThresholds:
     # Simpson direction policy
     # "under_only"  → flag only regions that UNDERperform overall but would OVERperform under common-mix
     # "over_only"   → flag only regions that OVERperform overall but would UNDERperform under common-mix
-    # "both"        → flag either direction (previous behavior)
+    # "both"        → flag either direction
     paradox_direction: str = "under_only"
 
 @dataclass 
@@ -192,7 +198,6 @@ class ParadoxReport:
     """Simpson's paradox detection result - detection only, no narratives."""
     paradox_detected: bool
     affected_regions: List[str]
-    paradox_type: ParadoxType  # Enum-driven paradox classification
     business_impact: GapSignificance  # Impact level of the paradox
 
 @dataclass
@@ -209,7 +214,8 @@ class AnalysisResult:
     decomposition_df: pd.DataFrame
     regional_gaps: pd.DataFrame
     mathematical_validation: Dict[str, float]
-    
+    thresholds: AnalysisThresholds
+
     # New structured narrative system
     narrative_decisions: Dict[str, NarrativeDecision]  # region -> decision
     
@@ -250,19 +256,33 @@ class AnalysisResult:
                 regional_summary.loc[regional_summary['region'] == region, 'performance_direction'] = dec.performance_direction.value
         regional_summary = regional_summary.sort_values('total_net_gap', ascending=False)
         
-        # top contributors (numeric) - use display_net for ranking
-        top_contributors = self.decomposition_df[['region','category','display_net','construct_gap_contribution','performance_gap_contribution','abs_gap']].copy()
+        # top contributors (numeric) - ensure display columns exist for ranking
+        decomp = _ensure_display_columns(self.decomposition_df)
+        top_contributors = decomp[
+            [
+                'region',
+                'category',
+                'net_display',
+                'display_mix_contribution',
+                'display_rate_contribution',
+                'abs_gap',
+            ]
+        ].copy()
         top_contributors = top_contributors.nlargest(15, 'abs_gap')
 
         if format_for_display:
             base_cols = ['region','region_overall_rate','baseline_overall_rate']
             rs = regional_summary.merge(self.regional_gaps[base_cols], on='region', how='left')
-            rs = format_regional_gaps_for_display(rs)
+            # Inline display formatting
+            for col in ['total_net_gap','total_construct_gap','total_performance_gap']:
+                rs[col + '_pp'] = (rs[col] * 100).round(1).astype(str) + 'pp'
+            rs['region_overall_rate_pct'] = (rs['region_overall_rate'] * 100).round(1).astype(str) + '%'
+            rs['baseline_overall_rate_pct'] = (rs['baseline_overall_rate'] * 100).round(1).astype(str) + '%'
             tc = top_contributors.copy()
-            tc['net_gap_pp'] = (tc['display_net']*100).round(1).astype(str)+'pp'
-            tc['construct_gap_pp'] = (tc['construct_gap_contribution']*100).round(1).astype(str)+'pp'
-            tc['performance_gap_pp'] = (tc['performance_gap_contribution']*100).round(1).astype(str)+'pp'
-            tc = tc[['region','category','net_gap_pp','construct_gap_pp','performance_gap_pp']]
+            tc['net_gap_pp'] = (tc['net_display']*100).round(1).astype(str)+'pp'
+            tc['mix_gap_pp'] = (tc['display_mix_contribution']*100).round(1).astype(str)+'pp'
+            tc['rate_gap_pp'] = (tc['display_rate_contribution']*100).round(1).astype(str)+'pp'
+            tc = tc[['region','category','net_gap_pp','mix_gap_pp','rate_gap_pp']]
             return {
                 "regional_performance_summary": rs[['region','total_net_gap_pp','total_performance_gap_pp','total_construct_gap_pp','root_cause','performance_direction']],
                 "top_category_contributors": tc,
@@ -273,7 +293,9 @@ class AnalysisResult:
         # raw numeric by default
         return {
             "regional_performance_summary": regional_summary.reset_index(drop=True),
-            "top_category_contributors": top_contributors[['region','category','display_net','construct_gap_contribution','performance_gap_contribution']].reset_index(drop=True),
+            "top_category_contributors": top_contributors[
+                ['region','category','net_display','display_mix_contribution','display_rate_contribution']
+            ].reset_index(drop=True),
             "paradox_regions": self.paradox_report.affected_regions if self.paradox_report.paradox_detected else [],
             "cancellation_regions": self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
         }
@@ -363,8 +385,8 @@ class AnalysisResult:
             fn = chart_registry[name]
             cap = {
                 # Decision-grade visualizations only
-                "rates_and_mix":    "Left: Metric % comparison. Right: Exposure (% of total count) comparison.",
-                "quadrant_prompts": "Bubble chart showing gaps in exposure (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
+                "rates_and_mix":    "Left: Performance comparison showing actual rates (%) for region vs peers, with rate difference annotations (+/-pp). Right: Allocation comparison showing % share bars for region vs peers (labels shown when Δshare > 5pp). Net impact (+/-pp) is annotated on the right. Background bands distinguish Strengths (green), Rate problems (red), and Mix problems (amber) using a share- and driver-aware ranking aligned with the supporting table's Band column.",
+                "quadrant_prompts": "Bubble chart showing gaps in % share (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
             }.get(name, "")
             figure_generators.append({
                 "function": fn,
@@ -417,9 +439,21 @@ class AnalysisResult:
             "regional_gaps_row": region_gaps_row,
             "regional_gaps_full": self.regional_gaps.copy(),
             "mathematical_validation": self.mathematical_validation,
-            "impact_column_used": "display_net",
-            "sort_key_used": "usefulness_rank"
+            "impact_column_used": "net_display",
+            "sort_key_used": "bucketed_ranking"
         }
+        
+        # Generate math walkthrough for this specific region (following depth_spotter.py pattern)
+        if region in self.narrative_decisions:
+            tracebacks = _build_oaxaca_tracebacks(
+                decomposition_df=self.decomposition_df,
+                regional_gaps=self.regional_gaps,
+                paradox_report=self.paradox_report,
+                narrative_decisions=self.narrative_decisions,
+                thresholds=self.thresholds,
+                focus_region=region  # Use the specific region being analyzed
+            )
+            payload["tracebacks"] = tracebacks
 
         return slide_spec, payload
 
@@ -551,7 +585,8 @@ class NarrativeTemplateEngine:
         business_conclusion: BusinessConclusion,
         performance_direction: PerformanceDirection,
         gap_significance: GapSignificance,
-        cancellation_report=None
+        cancellation_report=None,
+        paradox_report: ParadoxReport = None
     ) -> NarrativeDecision:
         """Single method to create NarrativeDecision for ANY case."""
         
@@ -564,7 +599,7 @@ class NarrativeTemplateEngine:
         
         # Step 1: Generate narrative text using templates
         narrative_text = self._generate_template_text(
-            region, decomposition_df, regional_gaps, baseline_type, business_conclusion, performance_direction
+            region, decomposition_df, regional_gaps, baseline_type, business_conclusion, performance_direction, paradox_report
         )
         
         # Add cancellation warning for NO_SIGNIFICANT_GAP cases
@@ -574,7 +609,7 @@ class NarrativeTemplateEngine:
             narrative_text += ", but note offsetting composition and performance effects at the category level (cancellation), which makes the topline fragile."
         
         # Create simplified supporting table with traffic light status
-        supporting_table = self._create_supporting_table(region, decomposition_df, regional_gaps)
+        supporting_table = self._create_supporting_table(region, decomposition_df, regional_gaps, paradox_report)
         
         # Get contradiction segments
         rows = decomposition_df[decomposition_df["region"] == region]
@@ -604,7 +639,8 @@ class NarrativeTemplateEngine:
         regional_gaps: pd.DataFrame,
         baseline_type: str,
         conclusion: BusinessConclusion, 
-        direction: PerformanceDirection
+        direction: PerformanceDirection,
+        paradox_report: ParadoxReport = None
     ) -> str:
         """Template-driven narrative text generation for ALL cases."""
         
@@ -623,9 +659,9 @@ class NarrativeTemplateEngine:
         if conclusion == BusinessConclusion.SIMPSON_PARADOX:
             return self._paradox_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
         elif conclusion == BusinessConclusion.COMPOSITION_DRIVEN:
-            return self._composition_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
+            return self._composition_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude, paradox_report)
         elif conclusion == BusinessConclusion.PERFORMANCE_DRIVEN:
-            return self._performance_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
+            return self._performance_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude, paradox_report)
         else:  # NO_SIGNIFICANT_GAP
             return self._no_gap_template(region, regional_gaps, baseline_name)
     
@@ -649,42 +685,113 @@ class NarrativeTemplateEngine:
         actual_region_rate = region_totals["region_overall_rate"]
         actual_baseline_rate = region_totals["baseline_overall_rate"]
         
-        # Use centralized contradiction logic
-        region_rows = decomposition_df[decomposition_df["region"] == region]
+        region_rows = _ensure_display_columns(
+            decomposition_df[decomposition_df["region"] == region]
+        )
+        
+        # Use the single source of truth for ranking (same as supporting table and figures)
+        tot_gap = region_totals["total_net_gap"]
+        region_rows_sorted = _rank_segments_by_narrative_support(
+            region_rows,
+            total_gap=tot_gap,
+            thresholds=self.thresholds,
+            paradox_report=None,  # Will be passed when available
+            region=region
+        )
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
-        contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
+
+        # Use centralized contradiction logic to build despite/due to narrative
+        direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
+        contradicts, _, segs = self._contradiction_evidence(direction, region_rows_sorted)
         
-        # Use centralized allocation issues
-        allocation_issues = self._build_allocation_issues(region_rows)
-        allocation_text = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues that offset segment-level strengths"
+        # Build allocation issues using the new Simpson's columns
+        allocation_issues = []
+        for _, row in region_rows_sorted.iterrows():
+            name = row.get('category_clean', pretty_category(row.get('category')))
+            r_pct = row["region_mix_pct"] * 100
+            b_pct = row["rest_mix_pct"] * 100
+            dx_pp = r_pct - b_pct
+            
+            # Focus on meaningful allocation differences
+            if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
+                # For Simpson's paradox: use the net impact (donated + acquired)
+                if 'display_donated_mix' in row and 'display_acquired_mix' in row:
+                    donated_impact = row.get('display_donated_mix', 0.0) * 100
+                    acquired_impact = row.get('display_acquired_mix', 0.0) * 100
+                    impact_pp = donated_impact + acquired_impact  # Net impact is the sum
+                else:
+                    # Fallback to rate impact if Simpson's columns not available
+                    impact_pp = row.get('display_rate_contribution', 0) * 100
+                
+                if dx_pp > 0:  # Over-allocation
+                    allocation_issues.append(f"over-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
+                else:  # Under-allocation  
+                    allocation_issues.append(f"under-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
+
+        # Build despite clause (high performers with meaningful share)
+        despite_segments = []
+        for _, row in region_rows_sorted.iterrows():
+            rate_diff = (row['region_rate'] - row['rest_rate']) * 100
+            share_weight = row['region_mix_pct']
+            net_impact = row.get('net_display', 0.0) * 100
+            if rate_diff > (self.thresholds.high_performance_threshold * 100) and share_weight > self.thresholds.meaningful_share_threshold:  # High performance + meaningful share
+                name = row.get('category_clean', pretty_category(row.get('category')))
+                despite_segments.append(f"{name} ({row['region_rate']*100:.1f}% vs {row['rest_rate']*100:.1f}% rates, {net_impact:+.1f}pp impact)")
         
-        # Use the same contradiction block everywhere
-        if contradicts and segs and direction_text == PerformanceDirection.UNDERPERFORMS.value:
-            seg_text = " and ".join(segs[:3])
-            return (f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp "
-                   f"({actual_region_rate:.0%} vs {actual_baseline_rate:.0%}) despite "
-                   f"{seg_text} due to {allocation_text}.")
-        else:
-            # Fallback with actual data
-            contributing_segments = []
-            region_data = decomposition_df[decomposition_df["region"] == region]
-            for _, row in region_data.iterrows():
-                category_name = row.get(
-                'category_clean',
-                pretty_category(row.get('category'))
-            )
-                # Calculate net gap in percentage points for display
-                net_gap_pp = f"{row['display_net']*100:+.1f}pp"
-                # Use minor_gap threshold for meaningful contributors
-                if abs(row['display_net']) >= self.thresholds.minor_gap:
-                    contributing_segments.append(f"{category_name} ({net_gap_pp})")
+        # Build two-sentence narrative
+        sentence1 = f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({actual_region_rate:.0%} vs {actual_baseline_rate:.0%})"
+        
+        if despite_segments:
+            sentence1 += f" despite strong performance in {', '.join(despite_segments[:3])}"
+        
+        # Second sentence explaining the gap
+        sentence2 = ""
+        if allocation_issues:
+            # Find over-allocated poor performers and under-allocated good performers
+            over_allocated = []
+            under_allocated = []
             
-            segments_text = ", ".join(contributing_segments[:3]) if contributing_segments else "complex dynamics"
+            for _, row in region_rows_sorted.iterrows():
+                r_pct = row["region_mix_pct"] * 100
+                b_pct = row["rest_mix_pct"] * 100
+                dx_pp = r_pct - b_pct
+                
+                if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
+                    name = row.get('category_clean', pretty_category(row.get('category')))
+                    rate_r = row['region_rate'] * 100
+                    rate_b = row['rest_rate'] * 100
+                    
+                    # Determine performance level based on region's own rate spectrum
+                    region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
+                    low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
+                    high_threshold = np.percentile(region_rates, 67)   # Top 33%
+                    
+                    if rate_r/100 <= low_threshold:
+                        perf_desc = "low-performing"
+                    elif rate_r/100 >= high_threshold:
+                        perf_desc = "high-performing"
+                    else:
+                        perf_desc = "medium-performing"
+                    
+                    if dx_pp > 0:  # Over-allocated
+                        over_allocated.append(f"{perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                    else:  # Under-allocated
+                        under_allocated.append(f"{perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
             
-            return (f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp "
-                   f"({actual_region_rate:.0%} vs {actual_baseline_rate:.0%}) with {segments_text}.")
+            explanation_parts = []
+            if over_allocated:
+                explanation_parts.append(f"higher share in {over_allocated[0]}")
+            if under_allocated:
+                explanation_parts.append(f"lower share in {under_allocated[0]}")
+            
+            if explanation_parts:
+                sentence2 = f" This gap exists because {region} has {' and '.join(explanation_parts)}."
+        
+        narrative = sentence1 + "." + sentence2
+            
+        return narrative
     
-    def _composition_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
+    def _composition_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float, paradox_report: ParadoxReport = None) -> str:
         """Template for composition-driven narrative following gold standard pattern."""
         # Use overall rates from enriched DataFrames
         region_totals = regional_gaps[regional_gaps["region"] == region].iloc[0]
@@ -692,12 +799,19 @@ class NarrativeTemplateEngine:
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
         # Use centralized contradiction logic
-        region_rows = decomposition_df[decomposition_df["region"] == region]
+        region_rows = _ensure_display_columns(
+            decomposition_df[decomposition_df["region"] == region]
+        )
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
         contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
         
         # Use centralized allocation issues
-        allocation_issues = self._build_allocation_issues(region_rows)
+        allocation_issues = self._build_allocation_issues(
+            region_rows,
+            total_gap=region_totals["total_net_gap"],
+            paradox_report=paradox_report,
+            region=region
+        )
         due_to_clause = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues"
         
         # Use the same contradiction block everywhere
@@ -708,7 +822,7 @@ class NarrativeTemplateEngine:
             # straight driver
             return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), driven by {due_to_clause}."
     
-    def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
+    def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float, paradox_report: ParadoxReport = None) -> str:
         """Template for performance-driven narrative - using backup logic."""
         
         # Use overall rates from enriched DataFrames
@@ -716,23 +830,39 @@ class NarrativeTemplateEngine:
         overall_region_rate = region_totals["region_overall_rate"]
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
-        region_data = decomposition_df[decomposition_df["region"] == region].copy()
+        region_rows = decomposition_df[decomposition_df["region"] == region]
 
-        # sort & show impacts using the same column as visuals
-        rank_key = "usefulness_rank" if "usefulness_rank" in region_data.columns else None
-        if rank_key:
-            top = (region_data.sort_values(rank_key).head(3)
-                [["category_clean","region_rate","rest_rate","display_net"]])
-        else:
-            top = (region_data.assign(_abs=region_data["display_net"].abs())
-                .sort_values("_abs", ascending=False)
-                .head(3)[["category_clean","region_rate","rest_rate","display_net"]])
+        tot_gap = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        sorted_rows = _rank_segments_by_narrative_support(
+            region_rows,
+            total_gap=tot_gap,
+            thresholds=self.thresholds,
+            paradox_report=paradox_report,
+            region=region
+        )
 
-        drivers = ", ".join(
-            f"{r.category_clean} ({r.region_rate*100:.1f}% vs {r.rest_rate*100:.1f}%, "
-            f"{r.display_net*100:+.1f}pp impact)"
+        # Use the ranking directly - the ranking function already prioritizes narrative-relevant items
+        top_rows = sorted_rows.head(3)
+
+        top = top_rows[[
+            "category_clean",
+            "region_rate",
+            "rest_rate",
+            "net_display",
+            "display_rate_contribution",
+            "display_mix_contribution",
+        ]]
+
+        # For PERFORMANCE_DRIVEN: Focus on rates, minimize share context, keep impact PP
+        drivers = (
+            ", ".join(
+                f"{r.category_clean} (rate: {r.region_rate*100:.1f}% vs {r.rest_rate*100:.1f}%, "
+                f"impact: {r.net_display*100:+.1f}pp)"
             for r in top.itertuples()
-        ) if len(top) else "various factors"
+            )
+            if len(top)
+            else "various factors"
+        )
 
         return (f"{region} {direction_text} the {baseline_name} by {gap_magnitude:.1f}pp "
                 f"({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), "
@@ -759,7 +889,7 @@ class NarrativeTemplateEngine:
         """
         Returns: (contradicts, disagree_share, segments_list)
           - contradicts: True iff weighted share of segments that go against the overall direction is material
-          - disagree_share: 0..1 of exposure pulling opposite to headline (same definition as detector)
+          - disagree_share: 0..1 of % share pulling opposite to headline (same definition as detector)
           - segments_list: ["Cat A (+1.2pp)", ...] top few contradicting segments
         """
         
@@ -769,8 +899,8 @@ class NarrativeTemplateEngine:
             
         # Use centralized thresholds - no bespoke constants
         min_rate_pp = self.thresholds.minor_rate_diff * 100.0  # convert to pp
-        # default exposure cutoff ≈ 2% derived from visual indicator (1pp) × 2
-        min_exposure = self.thresholds.visual_indicator_threshold * 2.0
+        # default exposure cutoff ≈ 2% - use meaningful share threshold
+        min_exposure = self.thresholds.meaningful_share_threshold * 0.4  # 2% from 5%
 
         # Use shared weight computation (same as detector)
         w = _weights_common(rows)
@@ -804,68 +934,129 @@ class NarrativeTemplateEngine:
 
         return contradicts, disagree_share, segments
 
-    def _build_allocation_issues(self, rows: pd.DataFrame) -> List[str]:
-        """Allocation phrases with unlabeled % and pp impact."""
+    def _build_allocation_issues(self, rows: pd.DataFrame, *, total_gap: float, paradox_report: ParadoxReport = None, region: str = None) -> List[str]:
+        """Allocation phrases aligned to the topline direction."""
+        ranked = _rank_segments_by_narrative_support(
+            rows,
+            total_gap=total_gap,
+            thresholds=self.thresholds,
+            paradox_report=paradox_report,
+            region=region
+        )
+        # Use the ranking directly - the ranking function already prioritizes narrative-relevant items
+        candidates = ranked
         out = []
-        for _, r in rows.iterrows():
+        for _, r in candidates.iterrows():
             dx_pp = (r["region_mix_pct"] - r["rest_mix_pct"]) * 100
             if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
                 name = r["category_clean"]
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
-                impact_pp = r.get("construct_gap_contribution", 0.0) * 100
+                
+                # Use Simpson's columns if available, otherwise standard mix
+                if 'display_donated_mix' in r and 'display_acquired_mix' in r:
+                    # For Simpson's paradox: use the net impact (donated + acquired)
+                    donated_impact = r.get('display_donated_mix', 0.0) * 100
+                    acquired_impact = r.get('display_acquired_mix', 0.0) * 100
+                    impact_pp = donated_impact + acquired_impact  # Net impact is the sum
+                else:
+                    # Standard case: use mix contribution
+                    display_mix = r.get("display_mix_contribution", 0.0)
+                    impact_pp = display_mix * 100
+                
                 out.append(
                     f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
                     f"({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)"
                 )
         return out
 
-    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
-        region_data = decomposition_df[decomposition_df["region"] == region].copy()
+    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None, paradox_report: ParadoxReport = None) -> pd.DataFrame:
+        region_rows = decomposition_df[decomposition_df["region"] == region]
 
-        # Single source of truth for display impact
-        if "display_net" not in region_data.columns:
-            region_data["display_net"] = (region_data["construct_gap_contribution"] +
-                                          region_data["performance_gap_contribution"])
+        # Check if this region has Simpson's paradox detected
+        # Only apply Simpson's logic if we have a meaningful paradox impact
+        is_simpson_region = (
+            paradox_report and 
+            paradox_report.paradox_detected and 
+            paradox_report.business_impact in {GapSignificance.HIGH, GapSignificance.MEDIUM} and
+            region in paradox_report.affected_regions
+        )
+        
 
-        # ----- NEW: deterministic ranking buckets -----
-        # topline direction for the region
+        # ----- NEW: deterministic ranking via shared helper -----
         tot_gap = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-        dir_sign = 1.0 if tot_gap >= 0 else -1.0
+        thr = self.thresholds.negative_impact_threshold  # threshold for problems (decimal, e.g., 0.01 = 1pp)
+        
+        # Use shared ranking function for consistency with visualizations
+        region_data = _rank_segments_by_narrative_support(
+            region_rows,
+            total_gap=tot_gap,
+            thresholds=self.thresholds,
+            paradox_report=paradox_report,
+            region=region
+        )
+        # Always use net_display for impact (unified rebalancer handles all cases)
+        impact_sorted = region_data["net_display"].fillna(region_data["net_gap"])
 
-        thr = self.thresholds.visual_indicator_threshold  # "neutral" cutoff (decimal, e.g., 0.01 = 1pp)
-        region_data["_abs_display"] = region_data["display_net"].abs()
-        region_data["_neutral"] = region_data["_abs_display"] < thr
-        region_data["_same_dir"] = (np.sign(region_data["display_net"]) == dir_sign) & (~region_data["_neutral"])
-
-        # bucket order: 0 = same direction, 1 = opposite, 2 = neutral (always last)
-        region_data["_bucket"] = np.where(region_data["_neutral"], 2,
-                                  np.where(region_data["_same_dir"], 0, 1))
-
-        # final ordering: bucket asc, |impact| desc
-        region_data = region_data.sort_values(["_bucket", "_abs_display"], ascending=[True, False]).reset_index(drop=True)
+        # Common formatter for pp values
+        fmt_pp = lambda s: (s * 100).round(1).astype(str) + "pp"
 
         # ----- Output columns (all from the same truth set) -----
+        # Ensure consistent sort using extended fields when present
+        if {'group_order','priority_score'}.issubset(region_data.columns):
+            region_data = region_data.sort_values(['group_order','priority_score'], ascending=[True, False]).reset_index(drop=True)
         out = region_data.copy()
-        out["Category"]            = region_data["category_clean"]
-        out["Region Rate %"]       = (region_data["region_rate"] * 100).round(1).astype(str) + "%"
-        out["Baseline Rate %"]     = (region_data["rest_rate"]   * 100).round(1).astype(str) + "%"
-        out["Region Share %"]      = (region_data["region_mix_pct"] * 100).round(1).astype(str) + "%"
-        out["Baseline Share %"]    = (region_data["rest_mix_pct"]   * 100).round(1).astype(str) + "%"
-        # Impact_pp == display_pp (single source of truth)
-        out["Impact_pp"]           = (region_data["display_net"] * 100).round(1).astype(str) + "pp"
+        out["Category"] = region_data["category_clean"]
+        out["Region Rate %"] = (region_data["region_rate"] * 100).round(1).astype(str) + "%"
+        out["Baseline Rate %"] = (region_data["rest_rate"] * 100).round(1).astype(str) + "%"
+        out["Region Share %"] = (region_data["region_mix_pct"] * 100).round(1).astype(str) + "%"
+        out["Baseline Share %"] = (region_data["rest_mix_pct"] * 100).round(1).astype(str) + "%"
+        out["Net Impact_pp"] = fmt_pp(impact_sorted)
+        out["Rate Impact_pp"] = fmt_pp(region_data["display_rate_contribution"])
+        
+        # Use display mix contribution (no special logic needed for Simpson's cases)
+        out["Mix Impact_pp"] = fmt_pp(region_data["display_mix_contribution"])
+            
+        # Optional band type for grouping in downstream visuals/tables
+        if 'category_type2' in region_data.columns:
+            out['Band'] = region_data['category_type2']
+        else:
+            # Fallback to coarse type
+            out['Band'] = np.where(region_data.get('category_type','Neutral')=='Problem', 'Problem (Rate/Mix)', region_data.get('category_type','Neutral'))
+        
+        # Column order (same for both cases now)
+        # Keep legacy 'Status' for downstream consumers; 'Band' provides finer granularity
+        base_columns = [
+            "Status",
+            "Band",
+            "Category",
+            "Region Rate %", 
+            "Baseline Rate %",
+            "Region Share %",
+            "Baseline Share %", 
+            "Net Impact_pp",
+            "Rate Impact_pp",
+            "Mix Impact_pp"
+        ]
 
-        # status pills use the same threshold as ranking
-        def status(val, rank):
-            if val >  thr:  return f"🟢 Strength #{rank}"
-            if val < -thr:  return f"🔴 Gap #{rank}"
-            return "⚪ Neutral"
-
-        out["rank"]   = range(1, len(out) + 1)
-        out["Status"] = [status(v, r) for v, r in zip(region_data["display_net"], out["rank"])]
+        # Status assignment driven directly by Band (threshold-free, consistent with ranking)
+        counters = {"Problem": 0, "Strength": 0, "Neutral": 0}
+        status_list = []
+        for _, r in out.iterrows():
+            band = str(r.get('Band', 'Neutral'))
+            if band.startswith('Problem'):
+                counters['Problem'] += 1
+                status_list.append(f"🔴 Problem #{counters['Problem']}")
+            elif band.startswith('Strength'):
+                counters['Strength'] += 1
+                status_list.append(f"🟢 Strength #{counters['Strength']}")
+            else:
+                counters['Neutral'] += 1
+                status_list.append(f"⚪ Neutral #{counters['Neutral']}")
+        out['Status'] = status_list
 
         # Present only the business-facing columns in the supporting table
-        return out[["Status","Category","Region Rate %","Baseline Rate %","Region Share %","Baseline Share %","Impact_pp"]]
+        return out[base_columns]
 
 
 class BusinessAnalyzer:
@@ -876,15 +1067,8 @@ class BusinessAnalyzer:
         self.template_engine = NarrativeTemplateEngine(thresholds)
     
     def assess_gap_significance(self, gap_magnitude: float) -> GapSignificance:
-        """Assess business significance of gap magnitude."""
-        g = abs(gap_magnitude)  # decimal; no *100 here
-        
-        if g > self.thresholds.high_impact_gap:
-            return GapSignificance.HIGH
-        elif g > self.thresholds.significant_gap:
-            return GapSignificance.MEDIUM
-        else:
-            return GapSignificance.LOW
+        """Assess business significance of gap magnitude using centralized function."""
+        return gap_significance_from(gap_magnitude, self.thresholds)
     
     def generate_regional_narrative(
         self,
@@ -921,7 +1105,7 @@ class BusinessAnalyzer:
         
         # Step 4: Use template engine to create NarrativeDecision (single path for everything)
         narrative_decision = self.template_engine.create_narrative_decision(
-            region, decomposition_df, regional_gaps, baseline_type, business_conclusion, performance_direction, gap_significance, cancellation_report
+            region, decomposition_df, regional_gaps, baseline_type, business_conclusion, performance_direction, gap_significance, cancellation_report, paradox_report
         )
         
         logger.info(f"[CLEAN] FINAL CLASSIFICATION: {business_conclusion.value} + {performance_direction.value}")
@@ -1122,7 +1306,7 @@ class EdgeCaseDetector:
 
                 # Materiality gating under unified thresholds
                 # Use consolidated helper methods
-                disagree_share = _disagree_share_common(detailed_subset, pooled, self.thresholds)
+                disagree_share = self._disagree_share_common(detailed_subset, pooled)
                 impact_change = abs(abs(common) - abs(pooled))
 
                 flip = self._paradox_direction_ok(pooled, common)
@@ -1136,7 +1320,6 @@ class EdgeCaseDetector:
                     paradox_cases.append({
                         "region": region,
                         "category": parent_label,
-                        "paradox_type": ParadoxType.MATHEMATICAL,
                         "aggregate_rate_gap": pooled,
                         "common_mix_rate_gap": common,
                         "disagree_share": disagree_share,
@@ -1145,11 +1328,11 @@ class EdgeCaseDetector:
                     affected_regions.add(region)
         
         if not paradox_cases:
-            return ParadoxReport(False, [], ParadoxType.NONE, GapSignificance.LOW)
+            return ParadoxReport(False, [], GapSignificance.LOW)
 
         max_gap = max(max(abs(c["aggregate_rate_gap"]), abs(c["common_mix_rate_gap"])) for c in paradox_cases)
         business_impact = BusinessAnalyzer(self.thresholds).assess_gap_significance(max_gap)
-        return ParadoxReport(True, list(affected_regions), ParadoxType.MATHEMATICAL, business_impact)
+        return ParadoxReport(True, list(affected_regions), business_impact)
 
     def detect_portfolio_simpson(self, product_rows: pd.DataFrame) -> ParadoxReport:
         """
@@ -1166,7 +1349,7 @@ class EdgeCaseDetector:
 
             # Use consolidated helper methods
             pooled, common = EdgeCaseDetector._pair_gap_vs_common_mix(rows)
-            disagree_share = _disagree_share_common(rows, pooled, self.thresholds)
+            disagree_share = self._disagree_share_common(rows, pooled)
             impact_change = abs(abs(common) - abs(pooled))
             flip = self._paradox_direction_ok(pooled, common)
             material = self._material_gate(pooled, common, disagree_share, impact_change)
@@ -1174,7 +1357,6 @@ class EdgeCaseDetector:
             if flip and material:
                 cases.append({
                     "region": region,
-                    "paradox_type": ParadoxType.MATHEMATICAL,
                     "aggregate_rate_gap": pooled,
                     "common_mix_rate_gap": common,
                     "disagree_share": disagree_share,
@@ -1183,14 +1365,23 @@ class EdgeCaseDetector:
                 affected.add(region)
 
         if not cases:
-            return ParadoxReport(False, [], ParadoxType.NONE, GapSignificance.LOW)
+            return ParadoxReport(False, [], GapSignificance.LOW)
 
         max_mag = max(max(abs(c["aggregate_rate_gap"]), abs(c["common_mix_rate_gap"])) for c in cases)
         impact = (GapSignificance.HIGH if max_mag >= self.thresholds.high_impact_gap
                   else GapSignificance.MEDIUM if max_mag >= self.thresholds.significant_gap
                   else GapSignificance.LOW)
 
-        return ParadoxReport(True, list(affected), ParadoxType.MATHEMATICAL, impact)
+        return ParadoxReport(True, list(affected), impact)
+    
+    def _disagree_share_common(self, rows: pd.DataFrame, pooled: float) -> float:
+        """Compute disagree share consistently within EdgeCaseDetector."""
+        w = _weights_common(rows)
+        diff = (rows['region_rate'] - rows['rest_rate']).fillna(0.0)
+        material = diff.abs() >= self.thresholds.minor_rate_diff  # treat tiny deltas as zero
+        if pooled == 0:
+            return float(w[material].sum())
+        return float(w[material & (np.sign(diff) == -np.sign(pooled))].sum())
 
 # =============================================================================
 # HELPER FUNCTIONS FOR MULTI-AXIS PARADOX DETECTION
@@ -1228,14 +1419,273 @@ def _rollup_by_axis(df_rows: pd.DataFrame, parent_index: int) -> pd.DataFrame:
 def _merge_paradox(p1: ParadoxReport, p2: ParadoxReport) -> ParadoxReport:
     order = {GapSignificance.LOW: 0, GapSignificance.MEDIUM: 1, GapSignificance.HIGH: 2}
     if not p1.paradox_detected and not p2.paradox_detected:
-        return ParadoxReport(False, [], ParadoxType.NONE, GapSignificance.LOW)
+        return ParadoxReport(False, [], GapSignificance.LOW)
     regions = list(set(p1.affected_regions) | set(p2.affected_regions))
     impact = p1.business_impact if order[p1.business_impact] >= order[p2.business_impact] else p2.business_impact
-    return ParadoxReport(True, regions, ParadoxType.MATHEMATICAL, impact)
+    return ParadoxReport(True, regions, impact)
 
 # =============================================================================
 # MAIN ORCHESTRATION
 # =============================================================================
+
+def _build_oaxaca_tracebacks(
+    decomposition_df: pd.DataFrame,
+    regional_gaps: pd.DataFrame, 
+    paradox_report: ParadoxReport,
+    narrative_decisions: Dict[str, NarrativeDecision],
+    thresholds: AnalysisThresholds,
+    focus_region: str = None
+) -> Dict[str, Any]:
+    """
+    Build detailed walkthrough tables showing key Oaxaca-Blinder decisions and calculations.
+    
+    Creates transparency into:
+    - Decomposition method choices (rate vs mix vs Simpson's)
+    - Simpson's paradox detection logic and thresholds
+    - Business conclusion classification reasoning
+    - Category ranking and prioritization logic
+    
+    Returns:
+        Dict with 'formulas_walkthrough' and 'formulas_summary' keys
+    """
+    try:
+        # Focus on one region for detailed walkthrough
+        if focus_region is None:
+            focus_region = regional_gaps.iloc[0]['region']
+            
+        region_data = decomposition_df[decomposition_df['region'] == focus_region].copy()
+        
+        # === WALKTHROUGH TABLE: Per-category calculations ===
+        walkthrough_rows = []
+        for _, row in region_data.iterrows():
+            # Basic decomposition formulas (keep formulas readable, just change column headers)
+            rate_formula = f"w_R × (r_R - r_B) = {row['region_mix_pct']:.3f} × ({row['region_rate']:.3f} - {row['rest_rate']:.3f})"
+            mix_formula = f"(w_R - w_B) × r_B = ({row['region_mix_pct']:.3f} - {row['rest_mix_pct']:.3f}) × {row['rest_rate']:.3f}"
+            
+            # Show how net_impact is calculated (the key question!)
+            rate_contrib = row.get('rate_contribution_raw', 0)
+            mix_contrib = row.get('mix_contribution_raw', 0)
+            
+            # Get the final net impact first
+            net_impact = row.get('net_display', row.get('net_gap', 0))
+            
+            # Get redistribution information
+            adjustment = row.get('net_adjustment', 0)
+
+            
+            # Both Simpson's and Standard cases now use the same transparent pipeline
+            simpson_method = "Constrained share-aware rebalancer (anchored mix)"
+            
+            # Show the transparent pipeline with actual numbers
+            offender_delta = row.get('rebalance_offender_delta', 0)
+            pool_delta = row.get('rebalance_pool_delta', 0)
+            signcap_delta = row.get('rebalance_signcap_delta', 0)
+            pool_group = row.get('pool_group', 'unknown')
+            
+            # Concise numeric pipeline (scan-friendly) in pp units
+            raw_impact = rate_contrib + mix_contrib
+            pipeline = (
+                f"Iraw({raw_impact*100:+.3f}pp) → guard({offender_delta*100:+.3f}pp) "
+                f"→ pool({pool_delta*100:+.3f}pp) → cap({signcap_delta*100:+.3f}pp) = Ifinal({net_impact*100:+.3f}pp)"
+            )
+            
+            # Categorization logic  
+            rate_diff = row['region_rate'] - row['rest_rate']
+            share_weight = row['region_mix_pct']
+            dw = row['region_mix_pct'] - row['rest_mix_pct']
+            
+            is_strength = (rate_diff > thresholds.high_performance_threshold) & (share_weight > thresholds.meaningful_share_threshold)
+            is_problem = (net_impact < -thresholds.negative_impact_threshold) & (share_weight > thresholds.meaningful_share_threshold)
+            
+            category_logic = f"Strength: rate_diff>{thresholds.high_performance_threshold} & share>{thresholds.meaningful_share_threshold} = {is_strength}"
+            if not is_strength:
+                category_logic += f"; Problem: impact<-{thresholds.negative_impact_threshold} & share>{thresholds.meaningful_share_threshold} = {is_problem}"
+            
+            # Short reason tags (terse narrative)
+            reason_tags = []
+            if (rate_diff < 0 and dw > 0) or (rate_diff > 0 and dw < 0):
+                reason_tags.append('oppose(dr,dw)')
+            if row.get('signcap_applied', False):
+                reason_tags.append('cap')
+            reason = '; '.join(reason_tags) if reason_tags else ''
+            
+            walkthrough_rows.append({
+                # Base inputs (rates/shares)
+                "category": row['category'],
+                "r_R (region_rate)": round(row['region_rate'], 3),
+                "r_B (rest_rate)": round(row['rest_rate'], 3), 
+                "w_R (region_mix_pct)": round(row['region_mix_pct'], 3),
+                "w_B (rest_mix_pct)": round(row['rest_mix_pct'], 3),
+                
+                # Raw Oaxaca components
+                "rate_contribution_formula": rate_formula,
+                "rate_contribution_value": round(row.get('rate_contribution_raw', 0), 3),
+                "mix_contribution_formula": mix_formula,
+                "mix_contribution_value": round(row.get('mix_contribution_raw', 0), 3),
+                "Iraw": round(raw_impact, 3),
+                # Consistent pp display for readability
+                "rate_contribution_pp": round(row.get('rate_contribution_raw', 0) * 100, 3),
+                "mix_contribution_pp": round(row.get('mix_contribution_raw', 0) * 100, 3),
+                "Iraw_pp": round(raw_impact * 100, 3),
+                
+                # Rebalancer steps (as columns)
+                "E_pp": round(row.get('rate_contribution_raw', 0) * 100, 3),
+                "M_before_pp": round(row.get('M_before_pp', 0), 3),
+                "guardrail_delta_pp": round(offender_delta * 100, 3),
+                "M_after_offender_pp": round(row.get('M_after_offender_pp', 0), 3),
+                "pool_weight": round(row.get('pool_weight', 0), 4),
+                "pool_mass_pp": round(row.get('pool_mass_pp', 0), 3),
+                "M_after_pool_pp": round(row.get('M_after_pool_pp', 0), 3),
+                "cap_need_pp": round(row.get('cap_need_pp', 0), 3),
+                "pool_delta_pp": round(pool_delta * 100, 3),
+                "cap_delta_pp": round(signcap_delta * 100, 3),
+                "M_after_cap_pp": round(row.get('M_after_cap_pp', 0), 3),
+                "Ifinal": round(net_impact, 3),
+                "Ifinal_pp": round(net_impact * 100, 3),
+                
+                # Step-by-step flags
+                "guardrail_violation": row.get('guardrail_violation', False),
+                "pool_group": pool_group,
+                "signcap_applied": row.get('signcap_applied', False),
+                "cap_donor_scope": row.get('cap_donor_scope', ''),
+                
+                # Redistribution formula and reason
+                "redistribution_formula": pipeline,
+                "reason": reason
+            })
+            
+        walkthrough_df = pd.DataFrame(walkthrough_rows)
+        
+        # Add per-step totals row for conservation reassurance
+        if walkthrough_rows:
+            # Totals computed from raw region_data (avoid double rounding), with pp variants
+            tot_E = float(region_data.get('rate_contribution_raw', pd.Series(0)).sum())
+            tot_M = float(region_data.get('mix_contribution_raw', pd.Series(0)).sum())
+            tot_Iraw = tot_E + tot_M
+            tot_guard = float(region_data.get('rebalance_offender_delta', pd.Series(0)).sum())
+            tot_pool  = float(region_data.get('rebalance_pool_delta', pd.Series(0)).sum())
+            tot_cap   = float(region_data.get('rebalance_signcap_delta', pd.Series(0)).sum())
+            tot_Ifinal= float(region_data.get('net_display', pd.Series(0)).sum())
+            # Stage totals in pp
+            tot_M_before_pp = float(region_data.get('M_before_pp', pd.Series(0)).sum())
+            tot_M_after_off_pp = float(region_data.get('M_after_offender_pp', pd.Series(0)).sum())
+            tot_M_after_pool_pp = float(region_data.get('M_after_pool_pp', pd.Series(0)).sum())
+            tot_M_after_cap_pp = float(region_data.get('M_after_cap_pp', pd.Series(0)).sum())
+            tot_pool_mass_pp = float(region_data.get('pool_mass_pp', pd.Series(0)).sum())
+            tot_cap_need_pp = float(region_data.get('cap_need_pp', pd.Series(0)).sum())
+
+            totals_row = {
+                "category": "=== TOTALS ===",
+                "r_R (region_rate)": "",
+                "r_B (rest_rate)": "",
+                "w_R (region_mix_pct)": "",
+                "w_B (rest_mix_pct)": "",
+                "rate_contribution_formula": "Σ(E)",
+                "rate_contribution_value": round(tot_E, 3),
+                "mix_contribution_formula": "Σ(M_raw)",
+                "mix_contribution_value": round(tot_M, 3),
+                "Iraw": round(tot_Iraw, 3),
+                "guardrail_delta_pp": round(tot_guard * 100, 3),
+                "pool_delta_pp": round(tot_pool * 100, 3),
+                "cap_delta_pp": round(tot_cap * 100, 3),
+                # stage totals for M (already in pp)
+                "E_pp": round(tot_E * 100, 3),
+                "M_before_pp": round(tot_M_before_pp, 3),
+                "M_after_offender_pp": round(tot_M_after_off_pp, 3),
+                "pool_weight": "",
+                "pool_mass_pp": round(tot_pool_mass_pp, 3),
+                "M_after_pool_pp": round(tot_M_after_pool_pp, 3),
+                "cap_need_pp": round(tot_cap_need_pp, 3),
+                "M_after_cap_pp": round(tot_M_after_cap_pp, 3),
+                "Ifinal": round(tot_Ifinal, 3),
+                # pp display
+                "rate_contribution_pp": round(tot_E * 100, 3),
+                "mix_contribution_pp": round(tot_M * 100, 3),
+                "Iraw_pp": round(tot_Iraw * 100, 3),
+                "Ifinal_pp": round(tot_Ifinal * 100, 3),
+                "guardrail_violation": "",
+                "pool_group": "",
+                "signcap_applied": "",
+                "cap_donor_scope": "",
+                "redistribution_formula": "Conservation check",
+                "reason": ""
+            }
+            walkthrough_rows.append(totals_row)
+            walkthrough_df = pd.DataFrame(walkthrough_rows)
+        
+        # === SUMMARY TABLE: High-level decisions and parameters ===
+        # Calculate totals from the same formula components used in walkthrough for perfect consistency
+        region_data = decomposition_df[decomposition_df['region'] == focus_region]
+        rate_gap = region_data['rate_contribution_raw'].sum()
+        mix_gap = region_data['mix_contribution_raw'].sum()
+        
+        # Use the same calculation logic as walkthrough
+        # Both Simpson's and standard cases now use the same calculation: sum of net_display
+        total_gap = region_data['net_display'].sum()
+        
+        # Business conclusion logic
+        decision = narrative_decisions.get(focus_region)
+        conclusion = decision.root_cause_type.value if decision else "unknown"
+        
+        # Simpson's detection summary
+        simpson_detected = paradox_report.paradox_detected and focus_region in paradox_report.affected_regions
+        simpson_criteria = f"material_gap≥{thresholds.paradox_material_gap}, disagree_share≥{thresholds.paradox_disagree_share}, impact_swing≥{thresholds.paradox_impact_swing}"
+        
+        # Get more meaningful data from narrative decision and paradox report
+        gap_significance = decision.gap_significance.value if decision else "unknown"
+        performance_direction = decision.performance_direction.value if decision else "unknown"
+        key_metrics = decision.key_metrics if decision else {}
+        
+        # Get actual threshold values for formulas (readable English using total_gap terminology)
+        perf_thresholds = f"outperforms when total_gap > {thresholds.near_zero_gap}, underperforms when total_gap < -{thresholds.near_zero_gap}, otherwise in_line"
+        gap_thresholds = f"high when |total_gap| > {thresholds.high_impact_gap}, medium when |total_gap| > {thresholds.significant_gap}, otherwise low"
+        
+        summary_rows = [
+            {"Component": "focus_region", "Formula": "-", "Value": focus_region},
+            {"Component": "total_gap", "Formula": "Σ(net_impact_value)", "Value": f"{total_gap:.6f}"},
+            {"Component": "rate_gap", "Formula": "Σ(rate_contrib)", "Value": f"{rate_gap:.6f}"},  
+            {"Component": "mix_gap", "Formula": "Σ(mix_contrib)", "Value": f"{mix_gap:.6f}"},
+            {"Component": "performance_direction", "Formula": perf_thresholds, "Value": performance_direction},
+            {"Component": "gap_significance", "Formula": gap_thresholds, "Value": gap_significance},
+            {"Component": "business_conclusion", "Formula": "simpson_paradox if detected, else performance_driven if |rate|>|mix| else composition_driven", "Value": conclusion},
+            {"Component": "simpson_detected", "Formula": simpson_criteria, "Value": simpson_detected},
+        ]
+        
+        # Add redistribution and ranking details (unified, share- and driver-aware)
+        summary_rows.extend([
+            {"Component": "ranking_method", "Formula": "Percentile-driven, share- and driver-aware grouping with priority scores (see below)", "Value": "Unified"},
+            {"Component": "group_order_rule", "Formula": "If topline≥0: Strength → Problem (Mix) → Problem (Rate) → Neutral; else: Problem (Rate) → Problem (Mix) → Strength → Neutral", "Value": ("topline≥0" if total_gap >= 0 else "topline<0")},
+            {"Component": "priority_score_rules", "Formula": "Strength: (rate_pp)*share; Problem(Mix): (-mix_pp)*share; Problem(Rate): (-rate_pp)*share; Neutral: |net_pp|*share", "Value": "per row"},
+            {"Component": "dominant_driver_def", "Formula": "dominant_driver = 'Rate' if |rate_pp| ≥ |mix_pp| else 'Mix'", "Value": "per row"},
+            {"Component": "percentile_rules", "Formula": "meaningful share = median(share); low-share flag = P25(share); material positive/negative = medians within sign buckets; execution gate = median(dr>0)", "Value": "computed per region"},
+        ])
+        if simpson_detected:
+            summary_rows.append({"Component": "simpson_affected_regions", "Formula": "-", "Value": str(paradox_report.affected_regions)})
+            
+        # Add key metrics if available (exclude redundant ones that duplicate total_gap)
+        redundant_metrics = {"gap_magnitude", "total_gap", "construct_gap", "performance_gap"}
+        if key_metrics:
+            for metric_name, metric_value in key_metrics.items():
+                if metric_name not in redundant_metrics:  # Skip redundant metrics
+                    if isinstance(metric_value, (int, float)):
+                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": "-", "Value": f"{metric_value:.4f}"})
+                    else:
+                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": "-", "Value": str(metric_value)})
+        
+        summary_df = pd.DataFrame(summary_rows)
+        
+        return {
+            "formulas_walkthrough": walkthrough_df.to_dict('records'),
+            "formulas_summary": summary_df.to_dict('records')
+        }
+        
+    except Exception as e:
+        # Graceful fallback
+        return {
+            "formulas_walkthrough": [{"error": f"Traceback generation failed: {str(e)}"}],
+            "formulas_summary": [{"error": f"Summary generation failed: {str(e)}"}]
+        }
+
 
 def run_oaxaca_analysis(
     df: pd.DataFrame,
@@ -1353,18 +1803,11 @@ def run_oaxaca_analysis(
             region_rate_val = region_rates.get(category, 0)
             baseline_rate_val = baseline_rates.get(category, 0)
             
-            # Decompose gap
-            construct_gap, performance_gap, net_gap = OaxacaCore.decompose_gap(
-                region_mix_val, region_rate_val,
-                baseline_mix_val, baseline_rate_val,
-                method=decomposition_method,
-                baseline_overall_rate=baseline_overall_rate
-            )
-            
-            # Calculate business-centered display net and level-carry term
-            display_net = construct_gap + performance_gap
-            level_carry = net_gap - display_net  # = y_B * (w_R - w_B)
-              
+            # Two-part decomposition (rate first, then mix reallocation later)
+            rate_component = region_mix_val * (region_rate_val - baseline_rate_val)
+            mix_component = (region_mix_val - baseline_mix_val) * baseline_rate_val
+            net_gap = rate_component + mix_component
+
             # Create result record - store both tuple and string for consistency
             decomposition_results.append({
                 "region": region,
@@ -1373,17 +1816,17 @@ def run_oaxaca_analysis(
                 "rest_mix_pct": baseline_mix_val,
                 "region_rate": region_rate_val,
                 "rest_rate": baseline_rate_val,
-                "construct_gap_contribution": construct_gap,
-                "performance_gap_contribution": performance_gap,
-                "display_net": display_net,              # business-centered net for ranking/display
-                "level_carry": level_carry,              # level-carry term for audit
-                "net_gap": net_gap,                      # pooled net (keep for math validation)
+                "construct_gap_contribution": mix_component,
+                "performance_gap_contribution": rate_component,
+                "net_gap": net_gap,
+                "baseline_overall_rate": baseline_overall_rate,
 
             })
     
     # Convert to DataFrame
     decomposition_df = pd.DataFrame(decomposition_results)
-    
+    decomposition_df = _ensure_display_columns(decomposition_df)
+
     # Step 2: Calculate regional aggregates
     regional_gaps = _calculate_regional_aggregates(decomposition_df, regional_overall_rates)
     
@@ -1415,7 +1858,7 @@ def run_oaxaca_analysis(
             logger.debug(f"[MATH] DECOMPOSITION: {region}-{row['category']}: construct={row['construct_gap_contribution']:+.3f}, performance={row['performance_gap_contribution']:+.3f}, net={row['net_gap']:+.3f}")
     
     # Step 4: Edge case detection (BEFORE business insights)
-    paradox_report = ParadoxReport(False, [], ParadoxType.NONE, GapSignificance.LOW)
+    paradox_report = ParadoxReport(False, [], GapSignificance.LOW)
     subcategory_results = None
     edge_detector = EdgeCaseDetector(thresholds)
 
@@ -1469,7 +1912,7 @@ def run_oaxaca_analysis(
             paradox_report = _merge_paradox(paradox_report, p_axis1)
     
     # Enrich DataFrames with all computed columns needed downstream
-    enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, regional_gaps, thresholds)
+    enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, thresholds, paradox_report)
     enriched_regional_gaps = compute_derived_regional_gaps(regional_gaps)
     
     # Step 6: Mathematical cancellation detection
@@ -1512,7 +1955,12 @@ def run_oaxaca_analysis(
                     logger.info(f"🎯 COORDINATOR: Using HYBRID data for {reason} in {region}")
 
                     if subcategory_results:
-                        analysis_decomposition_df = compute_derived_metrics_df(subcategory_results.decomposition_df, enriched_regional_gaps, thresholds)
+                        # Re-enrich the subcategory decomposition with the same thresholds and paradox report
+                        analysis_decomposition_df = compute_derived_metrics_df(
+                            subcategory_results.decomposition_df,
+                            thresholds,
+                            paradox_report
+                        )
                     else:
                         # paradox found without subcategory rerun (portfolio or multi-axis rollups)
                         analysis_decomposition_df = enriched_decomposition_df
@@ -1561,51 +2009,499 @@ def run_oaxaca_analysis(
         decomposition_df=enriched_decomposition_df,
         regional_gaps=enriched_regional_gaps,
         mathematical_validation=mathematical_validation,
+        thresholds=thresholds,
         narrative_decisions=narrative_decisions,  # Clean enum-driven narrative system
         paradox_report=paradox_report,
         cancellation_report=cancellation_report,
         baseline_type=baseline_type,
-        viz_meta={}  # initialize
+        viz_meta={}  # Math walkthrough will be added per-region during slide generation
     )
     
     return analysis_result
 
+
 # =============================================================================
 # DATAFRAME ENRICHMENT UTILITIES
+
+def _safe_weights(series: pd.Series, eps=1e-12):
+    Z = float(series.sum())
+    ok = np.isfinite(Z) and (Z > eps)
+    return (series / Z if ok else None), ok
+
+def _safe_norm(w, eps=1e-12):
+    Z = w.sum()
+    ok = (Z is not None) and np.isfinite(Z) and (abs(Z) > eps)
+    return (w / Z if ok else None), ok
+
+def enforce_sign_caps(E, M, dr, base_w, eps, eta):
+    """
+    Enforce sign caps: dr>eta → I≥eps, dr<-eta → I≤-eps
+    Zero-sum at region level, with stage-and-revert if no donors found
+    
+    Single-category regions are skipped to preserve conservation.
+    """
+    # Skip single-category regions - no donors available
+    if len(M) <= 1:
+        logger.debug("Sign caps skipped - single category region")
+        return M, "none"
+        
+    # Stage-and-revert: keep original for rollback if redistribution fails
+    M_orig = M.copy()
+        
+    I = E + M
+    Ppos = dr >  eta
+    Pneg = dr < -eta
+    
+    # Check if any caps needed
+    neg_violators = Pneg & (I > -eps)
+    pos_violators = Ppos & (I < eps)
+    
+    if not (neg_violators.any() or pos_violators.any()):
+        return M, "none"  # No caps needed
+    
+    # Check if donors exist before forcing caps
+    all_categories = pd.Series(True, index=M.index)
+    capped_categories = neg_violators | pos_violators
+    candidates = all_categories & ~capped_categories
+    
+    # Check if any caps needed
+    if not (neg_violators.any() or pos_violators.any()):
+        return M  # No caps needed
+    
+    # Pre-check donors before forcing any caps
+    w_norm, ok = _safe_norm(base_w.where(candidates, 0.0))
+    if not ok and candidates.any():
+        # Fallback to uniform weights
+        logger.debug("Sign caps using uniform weights (group donors empty)")
+        w_norm = pd.Series(1.0/candidates.sum(), index=M.index).where(candidates, 0.0)
+        ok = True
+    
+    if not ok:
+        # No donors available - skip caps entirely to preserve conservation
+        logger.debug("Sign caps skipped - no valid donors found, preserving conservation")
+        return M_orig, "none"
+    
+    # Stage caps in scratch copy - only proceed if we have donors
+    M_scratch = M.copy()
+    total_adjustment = 0.0
+    applied = False
+    scope_label = "region"
+    
+    # Apply neg ceiling
+    if neg_violators.any():
+        reduction_per_violator = I.loc[neg_violators] + eps
+        M_scratch.loc[neg_violators] -= reduction_per_violator
+        total_adjustment += reduction_per_violator.sum()
+        applied = True
+
+    # Apply pos floor (recalculate I after neg changes)
+    I_scratch = E + M_scratch
+    pos_violators = Ppos & (I_scratch < eps)  # Recalculate after neg changes
+    if pos_violators.any():
+        increase_per_violator = eps - I_scratch.loc[pos_violators]
+        M_scratch.loc[pos_violators] += increase_per_violator
+        total_adjustment -= increase_per_violator.sum()
+        applied = True
+
+    # Only return modified result if we successfully applied caps AND redistribution
+    if applied:
+        pool_eps = eps / 100  # Use a fraction of eps for pooling threshold
+        if abs(total_adjustment) > pool_eps:
+            try:
+                M_scratch.loc[candidates] += total_adjustment * w_norm.fillna(0.0)
+                # Verify redistribution succeeded (no NaN/inf values)
+                if not np.all(np.isfinite(M_scratch)):
+                    logger.debug("Sign caps redistribution failed - returning original M")
+                    return M_orig, "none"
+            except Exception as e:
+                logger.debug(f"Sign caps redistribution error: {e} - returning original M")
+                return M_orig, "none"
+        # Label uniform scope if weights are equal
+        try:
+            if np.isclose(w_norm.fillna(0.0).std(), 0.0):
+                scope_label = "uniform"
+        except Exception:
+            pass
+        return M_scratch, scope_label
+    else:
+        # No caps were applied
+        return M_orig, "none"
+
+def _apply_constrained_rebalance(df: pd.DataFrame,
+                                 *, thresholds: AnalysisThresholds,
+                                 alpha=1.0, beta=1.0, gamma=0.0,
+                                 share_floor=0.02, small_share_damp=0.5,
+                                 eps_floor=0.0) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    # Compute per-region anchored mix, then rebalance
+    for region in out['region'].unique():
+        g = out['region'] == region
+        rows = out.loc[g].copy()
+        
+        # Single-category safeguard - skip rebalancing to preserve conservation
+        if len(rows) <= 1:
+            logger.debug(f"Single-category region {region} - skipping rebalancing")
+            # Copy core Oaxaca values directly to display columns
+            out.loc[g, 'display_rate_contribution'] = rows.get('performance_gap_contribution', 0)
+            out.loc[g, 'display_mix_contribution'] = rows.get('construct_gap_contribution', 0)  
+            out.loc[g, 'net_display'] = rows.get('net_gap', 0)
+            out.loc[g, 'net_adjustment'] = 0
+            out.loc[g, 'net_adjustment_role'] = 'baseline'
+            # Zero out all deltas
+            for col in ['rebalance_offender_delta', 'rebalance_pool_delta', 'rebalance_signcap_delta', 'rebalance_total_delta']:
+                out.loc[g, col] = 0
+            for col in ['guardrail_violation', 'signcap_applied']:
+                out.loc[g, col] = False
+            out.loc[g, 'pool_group'] = 'single_category'
+            continue
+
+        # Inputs
+        wR = rows['region_mix_pct'].clip(lower=0.0)
+        wB = rows['rest_mix_pct'].clip(lower=0.0)
+        rR = rows['region_rate'].fillna(0.0)
+        rB = rows['rest_rate'].fillna(0.0)
+
+        # Baseline overall from the data (same for all rows of region)
+        if 'baseline_overall_rate' in rows.columns and rows['baseline_overall_rate'].notna().any():
+            rB_overall = float(rows['baseline_overall_rate'].iloc[0])
+        else:
+            wB_sum = wB.sum()
+            z_eps = thresholds.mathematical_tolerance
+            if wB_sum <= z_eps:
+                logger.warning(f"Region {region}: wB.sum() ≤ {z_eps:.0e}, skipping rebalancing to avoid odd anchors")
+                # Skip rebalancing, copy core Oaxaca values directly
+                out.loc[g, 'display_rate_contribution'] = rows.get('performance_gap_contribution', 0)
+                out.loc[g, 'display_mix_contribution'] = rows.get('construct_gap_contribution', 0)
+                out.loc[g, 'net_display'] = rows.get('net_gap', 0)
+                out.loc[g, 'net_adjustment'] = 0
+                out.loc[g, 'net_adjustment_role'] = 'baseline'
+                # Zero out all deltas
+                for col in ['rebalance_offender_delta', 'rebalance_pool_delta', 'rebalance_signcap_delta', 'rebalance_total_delta']:
+                    out.loc[g, col] = 0
+                for col in ['guardrail_violation', 'signcap_applied']:
+                    out.loc[g, col] = False
+                out.loc[g, 'pool_group'] = 'skipped_wB_zero'
+                continue
+            else:
+                rB_overall = float((wB * rB).sum() / wB_sum)
+
+        # Core Oaxaca with anchored mix (display space)
+        E  = wR * (rR - rB)
+        M  = (wR - wB) * (rB - rB_overall)
+        I  = E + M
+        dr = (rR - rB)
+        dw = (wR - wB)
+
+        # Minimal offender fix (sign guardrails) — zero-sum
+        should_neg = (dr < 0) & (dw > 0)   # must have I <= 0
+        should_pos = (dr > 0) & (dw < 0)   # must have I >= 0
+        viol_pos = should_neg & (I > 0)
+        viol_neg = should_pos & (I < 0)
+
+        delta_off = pd.Series(0.0, index=rows.index)
+        delta_off.loc[viol_pos] = -I.loc[viol_pos]
+        delta_off.loc[viol_neg] = -I.loc[viol_neg]
+        s = float(delta_off.sum())
+
+        # Unified weights
+        damp = np.where(wR < share_floor, small_share_damp, 1.0)
+        leverage = (rB - rB_overall).abs() ** beta
+        perf     = dr.abs() ** gamma
+        base_w   = (wR ** alpha) * leverage * perf * damp
+
+        delta_rec = pd.Series(0.0, index=rows.index)
+        pool_eps = (eps_floor if eps_floor > 0 else thresholds.near_zero_gap) / 100
+        if not np.isclose(s, 0.0, atol=pool_eps):
+            if s > 0:
+                recv_mask = ((dr < 0) | ((rB < rB_overall) & (dw <= 0)))
+            else:
+                recv_mask = ((dr > 0) | ((rB > rB_overall) & (dw >= 0)))
+
+            recipients = recv_mask & (~viol_pos) & (~viol_neg)
+
+            w = pd.Series(base_w, index=rows.index).where(recipients, 0.0)
+            w_norm, ok = _safe_weights(w)
+            if not ok:
+                w_f1 = (wR ** alpha).where(~(viol_pos | viol_neg), 0.0)
+                w_norm, ok = _safe_weights(w_f1)
+            if not ok:
+                w_f2 = delta_off.abs()
+                w_norm, ok = _safe_weights(w_f2)
+            if ok:
+                delta_rec = (-s) * w_norm.fillna(0.0)
+
+        M0 = M + delta_off + delta_rec
+
+        # Symmetric share-aware pooling (zero-sum inside each group)
+        base_w_series = pd.Series(base_w, index=rows.index)
+
+        def pool(M_in: pd.Series, mask: pd.Series, positive: bool) -> pd.Series:
+            w = base_w_series.where(mask, 0.0)
+            w_norm, ok = _safe_weights(w, eps=pool_eps)
+            if not ok:
+                return M_in
+            if positive:
+                mass = float(M_in.where(mask & (M_in > 0)).sum())
+                if np.isclose(mass, 0.0, atol=pool_eps):
+                    return M_in
+                target = pd.Series(0.0, index=M_in.index)
+                target.loc[mask] = mass * w_norm
+                delta = (target - M_in.clip(lower=0.0).where(mask, 0.0)).fillna(0.0)
+                return M_in + delta
+            else:
+                mass_mag = float((-M_in.where(mask & (M_in < 0))).sum())
+                if np.isclose(mass_mag, 0.0, atol=pool_eps):
+                    return M_in
+                target_mag = pd.Series(0.0, index=M_in.index)
+                target_mag.loc[mask] = mass_mag * w_norm
+                target_signed = -target_mag
+                delta = (target_signed - M_in.clip(upper=0.0).where(mask, 0.0)).fillna(0.0)
+                return M_in + delta
+
+        # Symmetric share-aware pooling - ignore near-ties
+        Ppos = (dr > thresholds.minor_rate_diff)
+        Pneg = (dr < -thresholds.minor_rate_diff)
+        M1 = pool(M0, Ppos, positive=True)
+        M1 = pool(M1, Pneg, positive=False)
+
+        # Keep snapshots for transparency
+        M_before = M.copy()
+        M_after_offender = M0.copy()
+        M_after_pool = M1.copy()
+        
+        # Final universal sign caps (zero-sum inside each dr group)
+        # Wire eps/eta from thresholds - no hardcoded constants
+        cap_eta = thresholds.minor_rate_diff
+        cap_eps = eps_floor if eps_floor > 0 else thresholds.near_zero_gap
+        # Pre-cap need per row (for diagnostics), decimals
+        I1 = E + M1
+        cap_need = pd.Series(0.0, index=rows.index)
+        cap_need.loc[(dr > cap_eta) & (I1 < cap_eps)] = (cap_eps - I1.loc[(dr > cap_eta) & (I1 < cap_eps)])
+        cap_need.loc[(dr < -cap_eta) & (I1 > -cap_eps)] = ((-cap_eps) - I1.loc[(dr < -cap_eta) & (I1 > -cap_eps)])
+
+        M2, cap_scope = enforce_sign_caps(E, M1.copy(), dr, base_w_series, eps=cap_eps, eta=cap_eta)
+        
+        # Compute deltas for diagnostics
+        delta_guardrail = M_after_offender - M_before
+        delta_pool = M_after_pool - M_after_offender
+        delta_cap = M2 - M_after_pool
+        delta_total = M2 - M_before
+        
+        I2 = E + M2
+
+        # Write display columns with final values
+        out.loc[g, 'display_rate_contribution'] = E
+        out.loc[g, 'net_display'] = I2
+        out.loc[g, 'display_mix_contribution'] = I2 - E
+        out.loc[g, 'net_adjustment'] = (I2 - (rows.get('net_gap', I).fillna(I)))
+        out.loc[g, 'net_adjustment_role'] = np.where(out.loc[g, 'net_adjustment'] > 0, 'absorber',
+                                              np.where(out.loc[g, 'net_adjustment'] < 0, 'donor', 'baseline'))
+        
+        # Write diagnostic columns for transparency
+        out.loc[g, 'rebalance_offender_delta'] = delta_guardrail
+        out.loc[g, 'rebalance_pool_delta'] = delta_pool
+        out.loc[g, 'rebalance_signcap_delta'] = delta_cap
+        out.loc[g, 'rebalance_total_delta'] = delta_total
+        # Stage values (pp) for de-obfuscated walkthrough
+        out.loc[g, 'M_before_pp'] = M_before * 100.0
+        out.loc[g, 'M_after_offender_pp'] = M_after_offender * 100.0
+        out.loc[g, 'M_after_pool_pp'] = M_after_pool * 100.0
+        out.loc[g, 'M_after_cap_pp'] = M2 * 100.0
+        out.loc[g, 'pool_mass_pp'] = (M_after_pool - M_after_offender) * 100.0
+        out.loc[g, 'cap_need_pp'] = cap_need * 100.0
+        
+        # Diagnostic flags for walkthrough transparency
+        guardrail_violation = ((dr < 0) & (dw > 0) & (I > 0)) | ((dr > 0) & (dw < 0) & (I < 0))
+        pool_group = np.where(dr > cap_eta, 'dr>0', np.where(dr < -cap_eta, 'dr<0', f'|dr|≤{cap_eta:.3f}'))
+        signcap_applied = (np.abs(delta_cap) > pool_eps)
+        
+        out.loc[g, 'guardrail_violation'] = guardrail_violation
+        out.loc[g, 'pool_group'] = pool_group
+        out.loc[g, 'signcap_applied'] = signcap_applied
+        out.loc[g, 'cap_donor_scope'] = cap_scope
+
+        # Pool diagnostics: per-mask normalized weight and scope
+        # Compute normalized weights within Ppos/Pneg masks
+        w_pos_norm, ok_pos = _safe_weights(base_w_series.where(Ppos, 0.0))
+        w_neg_norm, ok_neg = _safe_weights(base_w_series.where(Pneg, 0.0))
+        pool_weight = pd.Series(0.0, index=rows.index)
+        pool_scope = np.where(Ppos, 'dr>0', np.where(Pneg, 'dr<0', ''))
+        if ok_pos and w_pos_norm is not None:
+            pool_weight.loc[Ppos] = w_pos_norm.loc[Ppos].fillna(0.0)
+        if ok_neg and w_neg_norm is not None:
+            pool_weight.loc[Pneg] = w_neg_norm.loc[Pneg].fillna(0.0)
+        out.loc[g, 'pool_weight'] = pool_weight
+        out.loc[g, 'pool_scope'] = pool_scope
+        
+        # Cheap runtime invariant checks per region - verify conservation
+        E_sum = float(E.sum())
+        M2_sum = float(M2.sum()) 
+        I2_sum = float((E + M2).sum())
+        coreE = float(rows['performance_gap_contribution'].sum())
+        coreM = float(rows['construct_gap_contribution'].sum())
+        coreNet = float(rows['net_gap'].sum())
+        
+        # Three key Oaxaca invariants with tolerance checks
+        if not np.isclose(E_sum, coreE, atol=1e-10):
+            logger.warning(f"Region {region} rate invariant violation: |ΣE - Σperformance_gap| = {abs(E_sum - coreE):.2e}")
+        if not np.isclose(M2_sum, coreM, atol=1e-10):
+            logger.warning(f"Region {region} mix invariant violation: |ΣM2 - Σconstruct_gap| = {abs(M2_sum - coreM):.2e}")
+        if not np.isclose(I2_sum, coreNet, atol=1e-10):
+            logger.warning(f"Region {region} net invariant violation: |Σ(E+M2) - Σnet_gap| = {abs(I2_sum - coreNet):.2e}")
+
+    # Keep numeric helpers
+    if 'net_gap' not in out.columns:
+        out['net_gap'] = out.get('construct_gap_contribution', 0) + out.get('performance_gap_contribution', 0)
+
+    return out
 # =============================================================================
 
-def compute_derived_metrics_df(decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None, thresholds: AnalysisThresholds = None) -> pd.DataFrame:
+
+def _ensure_display_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a DataFrame with consistent display columns for mix/rate/net."""
+    if df is None:
+        return pd.DataFrame()
+
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Expected DataFrame for display enrichment")
+
+    out = df.copy()
+
+    out["rate_contribution_raw"] = out.get("performance_gap_contribution", out.get("rate_contribution_raw", 0.0))
+    out["mix_contribution_raw"]  = out.get("construct_gap_contribution",  out.get("mix_contribution_raw",  0.0))
+    
+    if "net_gap" not in out.columns:
+        out["net_gap"] = out["rate_contribution_raw"] + out["mix_contribution_raw"]
+    
+    if "display_rate_contribution" not in out.columns:
+        out["display_rate_contribution"] = out["rate_contribution_raw"]
+    if "display_mix_contribution" not in out.columns:
+        out["display_mix_contribution"] = out["mix_contribution_raw"]
+    if "net_display" not in out.columns:
+        out["net_display"] = out["net_gap"]
+
+    return out
+
+
+
+def _rank_segments_by_narrative_support(
+    rows: pd.DataFrame,
+    *,
+    total_gap: float,
+    thresholds: AnalysisThresholds,
+    paradox_report: Optional[ParadoxReport] = None,
+    region: str = None
+) -> pd.DataFrame:
+    """Rank segments to support the narrative structure with share- and driver-aware grouping.
+
+    Adds:
+      - category_type2: Strength, Problem (Rate), Problem (Mix), Neutral
+      - dominant_driver: Rate/Mix (by absolute contribution)
+      - priority_score: share-weighted magnitude per group rule
+      - group_order: integer for band order depending on topline sign
+    """
+    ranked = _ensure_display_columns(rows)
+    ranked = ranked.copy()
+    
+    # Ensure required columns exist for compatibility
+    if "display_net" not in ranked.columns:
+        ranked["display_net"] = ranked.get("net_display", ranked.get("net_gap", 0.0))
+    ranked["net_display"] = ranked.get("net_display", ranked["display_net"])
+    
+    # Compute primitives
+    rate = ranked.get('display_rate_contribution', ranked.get('rate_contribution_raw', 0.0)).fillna(0.0)
+    mix  = ranked.get('display_mix_contribution', ranked.get('mix_contribution_raw', 0.0)).fillna(0.0)
+    net  = ranked.get('net_display', ranked.get('net_gap', 0.0)).fillna(0.0)
+    dr   = (ranked['region_rate'] - ranked['rest_rate']).fillna(0.0)
+    share= ranked['region_mix_pct'].fillna(0.0)
+
+    rate_pp = rate * 100.0
+    mix_pp  = mix  * 100.0
+    net_pp  = net  * 100.0
+
+    # Dominant driver label
+    ranked['dominant_driver'] = np.where(abs(rate_pp) >= abs(mix_pp), 'Rate', 'Mix')
+
+    # Percentile-driven grouping (data-profile aware)
+    def _q(s: pd.Series, q: float, default: float) -> float:
+        s = s.dropna()
+        return float(np.quantile(s, q)) if len(s) else default
+
+    share_meaningful = _q(share, 0.50, float(share.mean()) if len(share) else 0.0)  # median share
+    share_low_cut    = _q(share, 0.25, 0.0)  # P25 for low-share flag
+
+    neg_vals = net_pp[net_pp < 0]
+    pos_vals = net_pp[net_pp > 0]
+    net_neg_thr = _q(neg_vals, 0.50, 0.0)   # median of negatives (≤0)
+    net_pos_thr = _q(pos_vals, 0.50, 0.0)   # median of positives (≥0)
+
+    dr_pos_vals = dr[dr > 0]
+    dr_pos_med  = _q(dr_pos_vals, 0.50, 0.0)  # median positive dr (decimal)
+
+    cat2 = np.array(['Neutral'] * len(ranked), dtype=object)
+    # Problems: materially negative vs peers + meaningful share (split by dominant driver)
+    problem_mask = (net_pp <= net_neg_thr) & (share >= share_meaningful)
+    prob_rate = problem_mask & (abs(rate_pp) >= abs(mix_pp))
+    prob_mix  = problem_mask & (abs(mix_pp) >  abs(rate_pp))
+    cat2[prob_rate] = 'Problem (Rate)'
+    cat2[prob_mix]  = 'Problem (Mix)'
+    # Strengths: materially positive + good execution + meaningful share
+    strength_mask = (net_pp >= net_pos_thr) & (dr >= dr_pos_med) & (share >= share_meaningful)
+    cat2[strength_mask] = 'Strength'
+    ranked['category_type2'] = cat2
+    ranked['low_share_flag'] = (share < share_low_cut)
+
+    # Priority score per group
+    prio = np.zeros(len(ranked))
+    prio[cat2 == 'Strength'] = (rate_pp[cat2 == 'Strength'] * share[cat2 == 'Strength'])
+    prio[cat2 == 'Problem (Mix)'] = ((-mix_pp[cat2 == 'Problem (Mix)']) * share[cat2 == 'Problem (Mix)'])
+    prio[cat2 == 'Problem (Rate)'] = ((-rate_pp[cat2 == 'Problem (Rate)']) * share[cat2 == 'Problem (Rate)'])
+    # Neutral: abs(net) * share
+    neutral_mask = (cat2 == 'Neutral')
+    prio[neutral_mask] = (abs(net_pp[neutral_mask]) * share[neutral_mask])
+    ranked['priority_score'] = prio
+
+    # Group order depends on topline
+    if total_gap < 0:
+        order_map = {'Problem (Rate)': 0, 'Problem (Mix)': 1, 'Strength': 2, 'Neutral': 3}
+    else:
+        order_map = {'Strength': 0, 'Problem (Mix)': 1, 'Problem (Rate)': 2, 'Neutral': 3}
+    ranked['group_order'] = ranked['category_type2'].map(order_map).fillna(3)
+
+    # Final sort: group_order asc, priority desc, low_share last, then share desc for ties
+    ranked = ranked.sort_values(
+        ['group_order', 'priority_score', 'low_share_flag', 'region_mix_pct'],
+        ascending=[True, False, True, False]
+    ).reset_index(drop=True)
+
+    return ranked
+
+
+def compute_derived_metrics_df(decomposition_df: pd.DataFrame, thresholds: AnalysisThresholds = None, paradox_report: ParadoxReport = None, 
+                               alpha=1.0, beta=1.0, gamma=0.0, share_floor=0.02, small_share_damp=0.5, eps_floor=None) -> pd.DataFrame:
     """Compute numeric derived metrics without display formatting."""
     thresholds = thresholds or AnalysisThresholds()
-    enriched = decomposition_df.copy()
+    enriched = _ensure_display_columns(decomposition_df)
 
-    # Ensure display_net exists
-    if "display_net" not in enriched.columns:
-        enriched["display_net"] = enriched["construct_gap_contribution"] + enriched["performance_gap_contribution"]
+    # Single, uniform constrained rebalancer for all regions
+    # All parameters from thresholds - no hardcoded constants
+    enriched = _apply_constrained_rebalance(
+        enriched,
+        thresholds=thresholds,
+        alpha=alpha, beta=beta, gamma=gamma,
+        share_floor=share_floor, small_share_damp=small_share_damp,
+        eps_floor=eps_floor or thresholds.near_zero_gap
+    )
 
-    # NUMERIC helpers only - use display_net for ranking/impact
-    enriched['abs_gap'] = enriched['display_net'].abs()
-    enriched['abs_gap_numeric'] = (enriched['display_net'] * 100).abs()       # still numeric
+    # NUMERIC helpers only - use pooled net for ranking/impact
+    impact_series = enriched["net_display"].fillna(enriched["net_gap"])
+    enriched['abs_gap'] = impact_series.abs()
+    enriched['abs_gap_numeric'] = (impact_series * 100).abs()
     enriched['category_clean'] = enriched['category'].apply(pretty_category)
-
-
-
-    # cumsum_impact / is_top_contributor (numeric, no strings)
-    for region in enriched['region'].unique():
-        m = enriched['region'] == region
-        r = enriched[m].sort_values('abs_gap_numeric', ascending=False)
-        if len(r) == 1:
-            enriched.loc[m, 'cumsum_impact'] = r['abs_gap_numeric'].iloc[0]
-            enriched.loc[m, 'is_top_contributor'] = True
-        else:
-            tot = r['abs_gap_numeric'].sum()
-            thr = tot * thresholds.cumulative_contribution_threshold
-            cs = r['abs_gap_numeric'].cumsum()
-            for idx, v in zip(r.index, cs):
-                enriched.loc[idx, 'cumsum_impact'] = v
-                enriched.loc[idx, 'is_top_contributor'] = v <= thr
-            if enriched[m]['is_top_contributor'].sum() == 0 and len(r) > 0:
-                enriched.loc[r['abs_gap_numeric'].idxmax(), 'is_top_contributor'] = True
 
     return enriched
 
@@ -1618,10 +2514,6 @@ def compute_derived_regional_gaps(regional_gaps: pd.DataFrame) -> pd.DataFrame:
     )
     return enriched
 
-# ================================
-# SHARED SIMPSON PARADOX HELPERS
-# ================================
-
 def _weights_common(rows: pd.DataFrame) -> pd.Series:
     """Compute exposure weights consistently across EdgeCaseDetector and NarrativeTemplateEngine."""
     if {'region_trials','rest_trials'}.issubset(rows.columns):
@@ -1630,28 +2522,10 @@ def _weights_common(rows: pd.DataFrame) -> pd.Series:
         w = rows['region_mix_pct'].fillna(0) + rows['rest_mix_pct'].fillna(0)
     return w / w.sum() if w.sum() else w
 
-def _disagree_share_common(rows: pd.DataFrame, pooled: float, thresholds: AnalysisThresholds = None) -> float:
-    """Compute disagree share consistently across EdgeCaseDetector and NarrativeTemplateEngine."""
-    t = thresholds or AnalysisThresholds()
-    w = _weights_common(rows)
-    diff = (rows['region_rate'] - rows['rest_rate']).fillna(0.0)
-    material = diff.abs() >= t.minor_rate_diff  # treat tiny deltas as zero
-    if pooled == 0:
-        return float(w[material].sum())
-    return float(w[material & (np.sign(diff) == -np.sign(pooled))].sum())
-
 # ================================
 # DISPLAY FORMATTING FUNCTIONS  
 # ================================
 
-def format_regional_gaps_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Add display formatting to regional gaps DataFrame."""
-    d = df.copy()
-    for col in ['total_net_gap','total_construct_gap','total_performance_gap']:
-        d[col + '_pp'] = (d[col] * 100).round(1).astype(str) + 'pp'
-    d['region_overall_rate_pct'] = (d['region_overall_rate'] * 100).round(1).astype(str) + '%'
-    d['baseline_overall_rate_pct'] = (d['baseline_overall_rate'] * 100).round(1).astype(str) + '%'
-    return d
 
 def _calculate_regional_aggregates(
     decomposition_df: pd.DataFrame, 
@@ -1789,7 +2663,9 @@ def get_baseline_data(
     
     return baseline_mix, baseline_rates
 
-# --- AUTO SLICE SELECTION ---
+# ================================
+# AUTO SLICE SELECTION
+# ================================
 
 @dataclass
 class BestSliceDecision:
@@ -1817,8 +2693,8 @@ def _topk_evidence(decomp_region_df: pd.DataFrame, thresholds: AnalysisThreshold
     concentration = float(topk["abs_gap_numeric"].sum() / (d["abs_gap_numeric"].sum() or 1.0))
     exposure_share = float(topk["region_mix_pct"].sum())  # 0..1
     # Penalize tiny segments among top-k
-    # derive 3% from visual indicator (1pp) × 3 to avoid a new constant
-    tiny_cutoff = thresholds.visual_indicator_threshold * 3.0
+    # use meaningful share threshold for tiny segment detection
+    tiny_cutoff = thresholds.meaningful_share_threshold * 0.6  # 3% from 5%
     tiny_rate = float((topk["region_mix_pct"] < tiny_cutoff).mean())
     return topk, concentration, exposure_share, tiny_rate
 
@@ -1992,7 +2868,17 @@ def auto_find_best_slice(
                 best_categories=cols,
                 score=score,
                 score_breakdown=breakdown,
-                top_segments=topk[["category","region_rate","rest_rate","display_net","region_mix_pct"]],
+                top_segments=topk[[
+                    "category",
+                    "region_rate",
+                    "rest_rate",
+                    "net_display",
+                    "display_mix_contribution",
+                    "display_rate_contribution",
+                    "net_adjustment",
+                    "net_adjustment_role",
+                    "region_mix_pct"
+                ]],
                 analysis_result=ar
             )
 
@@ -2082,24 +2968,13 @@ def build_oaxaca_exec_pack(
 
         # Build the supporting evidence table with deterministic bucketed ranking
         # Same logic as _create_supporting_table: same-direction → opposite → neutral, then by |impact|
-        tmp = dreg.copy()
-        
-        # Get topline direction and apply bucketed ranking
         tot_gap = float(ar.regional_gaps.loc[ar.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-        dir_sign = 1.0 if tot_gap >= 0 else -1.0
-        
-        # Use same threshold as in _create_supporting_table - get from analysis thresholds
-        thr = 0.01  # Default visual_indicator_threshold - should match AnalysisThresholds.visual_indicator_threshold
-        tmp["_abs_display"] = tmp["display_net"].abs()
-        tmp["_neutral"] = tmp["_abs_display"] < thr
-        tmp["_same_dir"] = (np.sign(tmp["display_net"]) == dir_sign) & (~tmp["_neutral"])
-        
-        # bucket order: 0 = same direction, 1 = opposite, 2 = neutral (always last)
-        tmp["_bucket"] = np.where(tmp["_neutral"], 2,
-                          np.where(tmp["_same_dir"], 0, 1))
-        
-        # final ordering: bucket asc, |impact| desc
-        tmp = tmp.sort_values(["_bucket", "_abs_display"], ascending=[True, False])
+        tmp = _rank_segments_by_narrative_support(
+            dreg,
+            total_gap=tot_gap,
+            thresholds=thresholds,
+        )
+        impact_sorted = tmp.get("display_net", tmp.get("net_display", tmp["net_gap"]))
 
         support = pd.DataFrame({
             "Category": tmp.get("category_clean", tmp["category"]),
@@ -2107,8 +2982,9 @@ def build_oaxaca_exec_pack(
             "Baseline Rate %":(tmp["rest_rate"]   * 100).round(1).astype(str) + "%",
             "Region Share %": (tmp["region_mix_pct"] * 100).round(1).astype(str) + "%",
             "Baseline Share %":(tmp["rest_mix_pct"]   * 100).round(1).astype(str) + "%",
-            # Impact is what you display: construct + performance, never pooled net
-            "Impact_pp":      (tmp["display_net"] * 100).round(1).astype(str) + "pp",
+            "Net Impact_pp":  (impact_sorted * 100).round(1).astype(str) + "pp",
+            "Rate Impact_pp": (tmp["display_rate_contribution"] * 100).round(1).astype(str) + "pp",
+            "Mix Impact_pp":  (tmp["display_mix_contribution"] * 100).round(1).astype(str) + "pp",
         })
 
         # Regional topline row (for quick checks)
@@ -2121,7 +2997,7 @@ def build_oaxaca_exec_pack(
             "score": score,
             "score_breakdown": score_breakdown or {},
             "narrative": (decision.narrative_text if decision else None),
-            # full region-only rows incl. display_net, level_carry, net_gap for audit trail
+            # full region-only rows incl. mix/rate splits and net gap for audit trail
             "decomposition_df": dreg.reset_index(drop=True),
             "regional_row": reg_row,
             "supporting_evidence": support,
@@ -2407,35 +3283,20 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
 
     # ----------------------- data ------------------------
     df = result.decomposition_df
-    rows = df[df["region"] == region].copy()
-
-    # Use bucketed ranking instead of explain_score
-    if "display_net" not in rows.columns:
-        rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
-    
-    # Apply same bucketed ranking as in _create_supporting_table
     tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-    dir_sign = 1.0 if tot_gap >= 0 else -1.0
-    thr = 0.01  # visual_indicator_threshold
-    
-    rows["_abs_display"] = rows["display_net"].abs()
-    rows["_neutral"] = rows["_abs_display"] < thr
-    rows["_same_dir"] = (np.sign(rows["display_net"]) == dir_sign) & (~rows["_neutral"])
-    rows["_bucket"] = np.where(rows["_neutral"], 2,
-                      np.where(rows["_same_dir"], 0, 1))
-    
-    # Sort by bucketed ranking for consistent annotation order
-    rows = rows.sort_values(["_bucket", "_abs_display"], ascending=[True, False])
+    thresholds = getattr(result, "thresholds", AnalysisThresholds())
+    rows = _rank_segments_by_narrative_support(
+        df[df["region"] == region],
+        total_gap=tot_gap,
+        thresholds=thresholds,
+    )
 
     labels = rows["category_clean"].astype(str).values
     dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
     dy = (rows["region_rate"] - rows["rest_rate"]).values * 100.0
-    net = rows["display_net"].values * 100.0   # color/annotation by display impact
+    net = rows["display_net"].fillna(rows["net_gap"]).values * 100.0   # color/annotation by pooled impact
     sizes = np.clip(rows["region_mix_pct"].values * 3200.0, 40.0, 1600.0)
     colors = np.where(net >= 0, POS, NEG)
-
-    # Use display_net directly for ranking (same direction as business table)
-    ranking_values = rows["display_net"].values
 
     # ---------------- symmetric limits --------
     def nice_step(a):
@@ -2486,9 +3347,9 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     ax.yaxis.set_major_locator(MultipleLocator(ystep))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:+.0f}"))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, p: f"{v:+.0f}"))
-    ax.set_xlabel("Exposure Δ (pp)", labelpad=6)
+    ax.set_xlabel("Share Δ (pp)", labelpad=6)
     ax.set_ylabel("Performance Δ (pp)", labelpad=6)
-    title = "Compared to Peers: Exposure vs Performance"
+    title = "Compared to Peers: Share vs Performance"
     if metric_name:
         title = f"{title} — {metric_name}"
     if category_name:
@@ -2571,15 +3432,14 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     ]
     ax_leg2.legend(
         handles=handles_mix, ncol=3,
-        title="Exposure (% share)",
+        title="% Share",
         loc="center", frameon=True,
         facecolor="white", edgecolor="#bdbdbd"
     )
 
     return fig
 
-def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str = "usefulness", 
-                              metric_name: Optional[str] = None, category_name: Optional[str] = None):
+def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, metric_name: Optional[str] = None, category_name: Optional[str] = None, pre_ranked_data: Optional[pd.DataFrame] = None):
     """
     Left: slopechart of success rates (Region vs Peers) per category.
     Right: barh of mix % (Region vs Peers) for the same categories (aligned).
@@ -2593,30 +3453,74 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
         # prefer the formatted name from the chosen cut; fall back only if missing
         category_name = meta.get("category_name")
 
-    rows = result.decomposition_df[result.decomposition_df["region"] == region].copy()
+    # Use pre-ranked data if available, otherwise rank on-demand
+    if pre_ranked_data is not None:
+        ranked = pre_ranked_data.copy()
+    else:
+        tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
+        thresholds = getattr(result, "thresholds", AnalysisThresholds())
+        
+        ranked = _rank_segments_by_narrative_support(
+            result.decomposition_df[result.decomposition_df["region"] == region],
+            total_gap=tot_gap,
+            thresholds=thresholds,
+            paradox_report=getattr(result, 'paradox_report', None),
+            region=region
+        )
 
-    # Use bucketed ranking instead of explain_score 
-    if "display_net" not in rows.columns:
-        rows["display_net"] = rows["construct_gap_contribution"] + rows["performance_gap_contribution"]
-    
-    # Apply same bucketed ranking as in _create_supporting_table
-    tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-    dir_sign = 1.0 if tot_gap >= 0 else -1.0
-    thr = 0.01  # visual_indicator_threshold
-    
-    rows["_abs_display"] = rows["display_net"].abs()
-    rows["_neutral"] = rows["_abs_display"] < thr
-    rows["_same_dir"] = (np.sign(rows["display_net"]) == dir_sign) & (~rows["_neutral"])
-    rows["_bucket"] = np.where(rows["_neutral"], 2,
-                      np.where(rows["_same_dir"], 0, 1))
-
-    # Sort by bucketed ranking → strongest explainers on top, offsets at bottom
-    rows = rows.sort_values(["_bucket", "_abs_display"], ascending=[True, False]).head(top_n)
-    rows = rows.iloc[::-1].copy()  # biggest explainers appear at the TOP visually
+    # Ensure grouping/priority sort is honored
+    sort_cols = [c for c in ['group_order','priority_score'] if c in ranked.columns]
+    if sort_cols:
+        ranked = ranked.sort_values(sort_cols, ascending=[True, False]).reset_index(drop=True)
+    rows = ranked.head(top_n).copy()
+    rows["category_display"] = rows["category_clean"]
 
     rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
     rows["mix_diff_pp"]  = (rows["region_mix_pct"] - rows["rest_mix_pct"]) * 100
-    labels = rows["category_clean"]
+    labels = rows["category_display"]
+    
+    # Prepare category groupings for annotations with rate/mix problem distinction (reversed for display)
+    category_groups = []
+    if 'category_type' in rows.columns or 'category_type2' in rows.columns:
+        # Derive a more granular band type to distinguish Problem (Rate) vs Problem (Mix)
+        def _band_type(r):
+            # Prefer the extended type if available
+            base = r.get('category_type2', r.get('category_type', 'Neutral'))
+            if base != 'Problem':
+                return base
+            rate = float(r.get('display_rate_contribution', 0.0))
+            mix  = float(r.get('display_mix_contribution', 0.0))
+            # Default to the dominant negative contributor
+            if abs(rate) >= abs(mix) and rate < 0:
+                return 'Problem (Rate)'
+            elif abs(mix) > abs(rate) and mix < 0:
+                return 'Problem (Mix)'
+            # Fallback if signs are mixed: choose the one driving the net sign
+            return 'Problem (Rate)' if rate < mix else 'Problem (Mix)'
+
+        rows['band_type'] = [ _band_type(r) for _, r in rows.iterrows() ]
+
+        current_type = None
+        group_start = 0
+        for i, t in enumerate(rows['band_type']):
+            if t != current_type:
+                if current_type is not None:
+                    category_groups.append({
+                        'type': current_type,
+                        'start': group_start,
+                        'end': i - 1,
+                        'count': i - group_start
+                    })
+                current_type = t
+                group_start = i
+        # Add the last group
+        if current_type is not None:
+            category_groups.append({
+                'type': current_type,
+                'start': group_start,
+                'end': len(rows) - 1,
+                'count': len(rows) - group_start
+            })
     
     # Setup metric label
     rate_label = f"{metric_name} %" if metric_name else "Metric (%)"
@@ -2633,6 +3537,23 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
 
     y = range(len(rows))
 
+    # Add colored background bands for category groups
+    if category_groups:
+        for group in category_groups:
+            gt = group['type']
+            if gt == 'Strength':
+                color = '#d4edda'  # light green
+            elif gt == 'Problem (Rate)':
+                color = '#f8d7da'  # light red
+            elif gt == 'Problem (Mix)':
+                color = '#fff3cd'  # light amber/yellow
+            else:  # Neutral or others
+                color = '#e9ecef'  # light gray
+            
+            # Add background bands to both subplots with stronger visibility
+            axL.axhspan(group['start'] - 0.4, group['end'] + 0.4, alpha=0.6, color=color, zorder=0)
+            axR.axhspan(group['start'] - 0.4, group['end'] + 0.4, alpha=0.6, color=color, zorder=0)
+
     # Left: slopechart of rates
     for i, (_, r) in enumerate(rows.iterrows()):
         start = r["rest_rate"] * 100
@@ -2644,12 +3565,19 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
     for i, (_, r) in enumerate(rows.iterrows()):
         dx = r["rate_diff_pp"]
         axL.text((r["rest_rate"]*100 + r["region_rate"]*100)/2, i+0.05,
-                 f"{dx:+.1f}pp", color=pos_color if dx > 0 else neg_color, va="center", ha="center", fontsize=9)
+                 f"{dx:+.1f}pp", color=pos_color if dx > 0 else neg_color,
+                 va="center", ha="center", fontsize=9)
     axL.set_yticks(y, labels)
-    axL.set_xlabel(rate_label)
+    # Remove x-axis label to avoid repetition with title
+    # axL.set_xlabel(rate_label)
     axL.set_title(f"{rate_label} in {region}: by {category_name}", fontsize=11)
     axL.grid(True, axis="x", alpha=0.3)
+    # Add % signs to x-axis tick labels
+    import matplotlib.ticker as ticker
+    axL.xaxis.set_major_formatter(ticker.PercentFormatter(decimals=0))
     axL.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=2)
+    # Ensure the first row appears at the top (no manual reversal)
+    axL.invert_yaxis()
 
     # Right: aligned mix percentages (barh, side-by-side)
     w = 0.4
@@ -2679,11 +3607,34 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, sort_by: str 
                 axR.text(peers_val + 1, i + w/2, f"{peers_val:.1f}%", va="center", ha="left",
                         fontsize=9, color=peers_color)
     
+    # Add impact magnitude annotations on the right side
+    max_share = max(max(region_vals), max(peers_vals)) if len(region_vals) > 0 and len(peers_vals) > 0 else 10
+    for i, (_, r) in enumerate(rows.iterrows()):
+        # Get impact from net_display or net_gap
+        impact = r.get('net_display', r.get('net_gap', 0)) * 100  # Convert to pp
+        
+        # Determine color from extended or coarse type
+        cat2 = r.get('category_type2', r.get('category_type', 'Neutral'))
+        if isinstance(cat2, str) and cat2.startswith('Strength'):
+            text_color = pos_color  # Green for strengths
+        elif isinstance(cat2, str) and cat2.startswith('Problem'):
+            text_color = neg_color  # Red for problems
+        else:  # Neutral or missing category_type
+            text_color = peers_color  # Gray for neutral
+            
+        axR.text(max_share + max_share * 0.15, i, f"{impact:+.1f}pp", 
+                va="center", ha="left", fontsize=9, color=text_color, fontweight="bold")
+    
     axR.set_yticks(y, [""]*len(rows))  # align with left
-    axR.set_xlabel("Exposure (% Share)")
-    axR.set_title(f"Exposure (% of Total Count) by {category_name}", fontsize=11)
+    # Remove x-axis label to avoid repetition with title  
+    # axR.set_xlabel("Exposure (% Share)")
+    axR.set_title(f"Share (% of Total Count) by {category_name}", fontsize=11)
     axR.grid(True, axis="x", alpha=0.3)
+    # Add % signs to x-axis tick labels  
+    axR.xaxis.set_major_formatter(ticker.PercentFormatter(decimals=0))
     axR.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=2)
+    # Match y-axis direction with left panel
+    axR.invert_yaxis()
 
     fig.tight_layout()
     return fig, (axL, axR)
@@ -2814,5 +3765,3 @@ def create_oaxaca_synthetic_data(target_region: str = "North America", target_ga
     print(f"   Gap: {actual_gap_pp:+.1f}pp (target: {target_gap_pp:+.1f}pp)")
     
     return df
-
-
