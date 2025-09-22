@@ -385,7 +385,7 @@ class AnalysisResult:
             fn = chart_registry[name]
             cap = {
                 # Decision-grade visualizations only
-                "rates_and_mix":    "Left: Performance comparison showing actual rates (%) for region vs peers, with rate difference annotations (+/-pp). Right: Allocation comparison showing % share bars for region vs peers (labels shown when Δshare > 5pp). Net impact (+/-pp) is annotated on the right. Background bands distinguish Strengths (green), Rate problems (red), and Mix problems (amber) using a share- and driver-aware ranking aligned with the supporting table's Band column.",
+                "rates_and_mix":    "Left: Performance comparison showing actual rates (%) for region vs peers, with rate difference annotations (+/-pp). Right: Allocation comparison showing % share bars for region vs peers (labels shown when Δshare > 5pp). Net impact (+/-pp) is annotated on the right. Background bands distinguish Strengths (green), Rate problems (red), and Share problems (amber).",
                 "quadrant_prompts": "Bubble chart showing gaps in % share (% of total count) vs performance (KPI metric itself) with strategic action prompts for each quadrant.",
             }.get(name, "")
             figure_generators.append({
@@ -609,7 +609,7 @@ class NarrativeTemplateEngine:
             narrative_text += ", but note offsetting composition and performance effects at the category level (cancellation), which makes the topline fragile."
         
         # Create simplified supporting table with traffic light status
-        supporting_table = self._create_supporting_table(region, decomposition_df, regional_gaps, paradox_report)
+        supporting_table = self._create_supporting_table(region, decomposition_df, regional_gaps)
         
         # Get contradiction segments
         rows = decomposition_df[decomposition_df["region"] == region]
@@ -694,15 +694,13 @@ class NarrativeTemplateEngine:
         region_rows_sorted = _rank_segments_by_narrative_support(
             region_rows,
             total_gap=tot_gap,
-            thresholds=self.thresholds,
-            paradox_report=None,  # Will be passed when available
-            region=region
+            thresholds=self.thresholds
         )
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
 
         # Use centralized contradiction logic to build despite/due to narrative
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
-        contradicts, _, segs = self._contradiction_evidence(direction, region_rows_sorted)
+        _contradicts, _, segs = self._contradiction_evidence(direction, region_rows_sorted)
         
         # Build allocation issues using the new Simpson's columns
         allocation_issues = []
@@ -759,7 +757,6 @@ class NarrativeTemplateEngine:
                 if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
                     name = row.get('category_clean', pretty_category(row.get('category')))
                     rate_r = row['region_rate'] * 100
-                    rate_b = row['rest_rate'] * 100
                     
                     # Determine performance level based on region's own rate spectrum
                     region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
@@ -808,9 +805,7 @@ class NarrativeTemplateEngine:
         # Use centralized allocation issues
         allocation_issues = self._build_allocation_issues(
             region_rows,
-            total_gap=region_totals["total_net_gap"],
-            paradox_report=paradox_report,
-            region=region
+            total_gap=region_totals["total_net_gap"]
         )
         due_to_clause = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues"
         
@@ -836,9 +831,7 @@ class NarrativeTemplateEngine:
         sorted_rows = _rank_segments_by_narrative_support(
             region_rows,
             total_gap=tot_gap,
-            thresholds=self.thresholds,
-            paradox_report=paradox_report,
-            region=region
+            thresholds=self.thresholds
         )
 
         # Use the ranking directly - the ranking function already prioritizes narrative-relevant items
@@ -934,14 +927,12 @@ class NarrativeTemplateEngine:
 
         return contradicts, disagree_share, segments
 
-    def _build_allocation_issues(self, rows: pd.DataFrame, *, total_gap: float, paradox_report: ParadoxReport = None, region: str = None) -> List[str]:
+    def _build_allocation_issues(self, rows: pd.DataFrame, *, total_gap: float) -> List[str]:
         """Allocation phrases aligned to the topline direction."""
         ranked = _rank_segments_by_narrative_support(
             rows,
             total_gap=total_gap,
-            thresholds=self.thresholds,
-            paradox_report=paradox_report,
-            region=region
+            thresholds=self.thresholds
         )
         # Use the ranking directly - the ranking function already prioritizes narrative-relevant items
         candidates = ranked
@@ -953,16 +944,8 @@ class NarrativeTemplateEngine:
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
                 
-                # Use Simpson's columns if available, otherwise standard mix
-                if 'display_donated_mix' in r and 'display_acquired_mix' in r:
-                    # For Simpson's paradox: use the net impact (donated + acquired)
-                    donated_impact = r.get('display_donated_mix', 0.0) * 100
-                    acquired_impact = r.get('display_acquired_mix', 0.0) * 100
-                    impact_pp = donated_impact + acquired_impact  # Net impact is the sum
-                else:
-                    # Standard case: use mix contribution
-                    display_mix = r.get("display_mix_contribution", 0.0)
-                    impact_pp = display_mix * 100
+                # Use unified net display impact (works for both Simpson's and standard cases)
+                impact_pp = r.get('net_display', r.get('net_gap', 0)) * 100
                 
                 out.append(
                     f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
@@ -970,30 +953,17 @@ class NarrativeTemplateEngine:
                 )
         return out
 
-    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None, paradox_report: ParadoxReport = None) -> pd.DataFrame:
+    def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
         region_rows = decomposition_df[decomposition_df["region"] == region]
 
-        # Check if this region has Simpson's paradox detected
-        # Only apply Simpson's logic if we have a meaningful paradox impact
-        is_simpson_region = (
-            paradox_report and 
-            paradox_report.paradox_detected and 
-            paradox_report.business_impact in {GapSignificance.HIGH, GapSignificance.MEDIUM} and
-            region in paradox_report.affected_regions
-        )
-        
-
-        # ----- NEW: deterministic ranking via shared helper -----
+        # ----- Deterministic ranking via shared helper -----
         tot_gap = float(regional_gaps.loc[regional_gaps["region"] == region, "total_net_gap"].iloc[0])
-        thr = self.thresholds.negative_impact_threshold  # threshold for problems (decimal, e.g., 0.01 = 1pp)
         
         # Use shared ranking function for consistency with visualizations
         region_data = _rank_segments_by_narrative_support(
             region_rows,
             total_gap=tot_gap,
-            thresholds=self.thresholds,
-            paradox_report=paradox_report,
-            region=region
+            thresholds=self.thresholds
         )
         # Always use net_display for impact (unified rebalancer handles all cases)
         impact_sorted = region_data["net_display"].fillna(region_data["net_gap"])
@@ -1014,7 +984,7 @@ class NarrativeTemplateEngine:
         out["Net Impact_pp"] = fmt_pp(impact_sorted)
         out["Rate Impact_pp"] = fmt_pp(region_data["display_rate_contribution"])
         
-        # Use display mix contribution (no special logic needed for Simpson's cases)
+        # Use display mix contribution (unified rebalancer handles all cases)
         out["Mix Impact_pp"] = fmt_pp(region_data["display_mix_contribution"])
             
         # Optional band type for grouping in downstream visuals/tables
@@ -1458,36 +1428,30 @@ def _build_oaxaca_tracebacks(
         # === WALKTHROUGH TABLE: Per-category calculations ===
         walkthrough_rows = []
         for _, row in region_data.iterrows():
-            # Basic decomposition formulas (keep formulas readable, just change column headers)
-            rate_formula = f"w_R × (r_R - r_B) = {row['region_mix_pct']:.3f} × ({row['region_rate']:.3f} - {row['rest_rate']:.3f})"
-            mix_formula = f"(w_R - w_B) × r_B = ({row['region_mix_pct']:.3f} - {row['rest_mix_pct']:.3f}) × {row['rest_rate']:.3f}"
+          
+            rbar = row.get('baseline_overall_rate', np.nan)
             
             # Show how net_impact is calculated (the key question!)
             rate_contrib = row.get('rate_contribution_raw', 0)
-            mix_contrib = row.get('mix_contribution_raw', 0)
+            # Use anchored mix for walkthrough value: (w_R - w_B) * (r_B - r̄_B)
+            try:
+                mix_contrib = (
+                    (row['region_mix_pct'] - row['rest_mix_pct']) *
+                    (row['rest_rate'] - row.get('baseline_overall_rate', 0.0))
+                )
+            except Exception:
+                mix_contrib = row.get('mix_contribution_raw', 0)
             
             # Get the final net impact first
             net_impact = row.get('net_display', row.get('net_gap', 0))
             
-            # Get redistribution information
-            adjustment = row.get('net_adjustment', 0)
-
-            
-            # Both Simpson's and Standard cases now use the same transparent pipeline
-            simpson_method = "Constrained share-aware rebalancer (anchored mix)"
-            
             # Show the transparent pipeline with actual numbers
-            offender_delta = row.get('rebalance_offender_delta', 0)
             pool_delta = row.get('rebalance_pool_delta', 0)
-            signcap_delta = row.get('rebalance_signcap_delta', 0)
+            project_delta = row.get('rebalance_project_delta', row.get('rebalance_signcap_delta', 0))
             pool_group = row.get('pool_group', 'unknown')
             
-            # Concise numeric pipeline (scan-friendly) in pp units
+            # numeric pipeline (scan-friendly) in pp units 
             raw_impact = rate_contrib + mix_contrib
-            pipeline = (
-                f"Iraw({raw_impact*100:+.3f}pp) → guard({offender_delta*100:+.3f}pp) "
-                f"→ pool({pool_delta*100:+.3f}pp) → cap({signcap_delta*100:+.3f}pp) = Ifinal({net_impact*100:+.3f}pp)"
-            )
             
             # Categorization logic  
             rate_diff = row['region_rate'] - row['rest_rate']
@@ -1505,9 +1469,24 @@ def _build_oaxaca_tracebacks(
             reason_tags = []
             if (rate_diff < 0 and dw > 0) or (rate_diff > 0 and dw < 0):
                 reason_tags.append('oppose(dr,dw)')
-            if row.get('signcap_applied', False):
-                reason_tags.append('cap')
+            if row.get('project_applied', False):
+                reason_tags.append('project')
             reason = '; '.join(reason_tags) if reason_tags else ''
+            
+            # Pool group description using thresholds from config
+            pool_group_detailed = pool_group
+            if pool_group == 'dr>0':
+                pool_group_detailed = f"Better performers (Δr>+{thresholds.minor_rate_diff*100:.1f}pp)"
+            elif pool_group == 'dr<0':
+                pool_group_detailed = f"Worse performers (Δr<-{thresholds.minor_rate_diff*100:.1f}pp)"
+            elif '≤' in pool_group:
+                pool_group_detailed = f"Near-ties ({pool_group})"
+            
+            # Pipeline with proper notation
+            pipeline = (
+                f"I₀({raw_impact*100:+.3f}pp) → pool({pool_delta*100:+.3f}pp) "
+                f"→ project({project_delta*100:+.3f}pp) = I_final({net_impact*100:+.3f}pp)"
+            )
             
             walkthrough_rows.append({
                 # Base inputs (rates/shares)
@@ -1517,41 +1496,33 @@ def _build_oaxaca_tracebacks(
                 "w_R (region_mix_pct)": round(row['region_mix_pct'], 3),
                 "w_B (rest_mix_pct)": round(row['rest_mix_pct'], 3),
                 
-                # Raw Oaxaca components
-                "rate_contribution_formula": rate_formula,
-                "rate_contribution_value": round(row.get('rate_contribution_raw', 0), 3),
-                "mix_contribution_formula": mix_formula,
-                "mix_contribution_value": round(row.get('mix_contribution_raw', 0), 3),
-                "Iraw": round(raw_impact, 3),
-                # Consistent pp display for readability
-                "rate_contribution_pp": round(row.get('rate_contribution_raw', 0) * 100, 3),
-                "mix_contribution_pp": round(row.get('mix_contribution_raw', 0) * 100, 3),
-                "Iraw_pp": round(raw_impact * 100, 3),
+                # Formulas with documentation-consistent naming
+                "rate_contribution_formula": f"E = w_R × (r_R - r_B) = {row['region_mix_pct']:.3f} × ({row['region_rate']:.3f} - {row['rest_rate']:.3f})",
+                "E": round(row.get('rate_contribution_raw', 0), 3),
+                "mix_contribution_formula": f"M = (w_R - w_B) × (r_B - r̄_B) = ({row['region_mix_pct']:.3f} - {row['rest_mix_pct']:.3f}) × ({row['rest_rate']:.3f} - {rbar:.3f})",
+                "M₀": round(mix_contrib, 3),
+                "I₀": round(raw_impact, 3),
                 
+                # Documentation-consistent pp columns
+                "E (pp)": round(row.get('rate_contribution_raw', 0) * 100, 3),
+                "M₀ (pp)": round(mix_contrib * 100, 3),
+                "I₀ (pp)": round(raw_impact * 100, 3),
+
                 # Rebalancer steps (as columns)
-                "E_pp": round(row.get('rate_contribution_raw', 0) * 100, 3),
-                "M_before_pp": round(row.get('M_before_pp', 0), 3),
-                "guardrail_delta_pp": round(offender_delta * 100, 3),
-                "M_after_offender_pp": round(row.get('M_after_offender_pp', 0), 3),
                 "pool_weight": round(row.get('pool_weight', 0), 4),
                 "pool_mass_pp": round(row.get('pool_mass_pp', 0), 3),
-                "M_after_pool_pp": round(row.get('M_after_pool_pp', 0), 3),
-                "cap_need_pp": round(row.get('cap_need_pp', 0), 3),
+                "M_pool(pp)": round(row.get('M_after_pool_pp', 0), 3),
+                "project_need_pp": round(row.get('project_need_pp', row.get('cap_need_pp', 0)), 3),
                 "pool_delta_pp": round(pool_delta * 100, 3),
-                "cap_delta_pp": round(signcap_delta * 100, 3),
-                "M_after_cap_pp": round(row.get('M_after_cap_pp', 0), 3),
-                "Ifinal": round(net_impact, 3),
-                "Ifinal_pp": round(net_impact * 100, 3),
-                
-                # Step-by-step flags
-                "guardrail_violation": row.get('guardrail_violation', False),
-                "pool_group": pool_group,
-                "signcap_applied": row.get('signcap_applied', False),
-                "cap_donor_scope": row.get('cap_donor_scope', ''),
-                
-                # Redistribution formula and reason
-                "redistribution_formula": pipeline,
-                "reason": reason
+                "project_delta_pp": round(project_delta * 100, 3),
+                "M_project(pp)": round(row.get('M_after_project_pp', row.get('M_after_cap_pp', 0)), 3),
+                                "pool_group": pool_group_detailed,
+                "project_applied": row.get('project_applied', False),
+                "project_donor_scope": row.get('project_donor_scope', ''),
+                "reason": reason,
+                "I_final formula": pipeline,
+                "I_final": round(net_impact, 3),
+                "I_final (pp)": round(net_impact * 100, 3)    
             })
             
         walkthrough_df = pd.DataFrame(walkthrough_rows)
@@ -1562,17 +1533,14 @@ def _build_oaxaca_tracebacks(
             tot_E = float(region_data.get('rate_contribution_raw', pd.Series(0)).sum())
             tot_M = float(region_data.get('mix_contribution_raw', pd.Series(0)).sum())
             tot_Iraw = tot_E + tot_M
-            tot_guard = float(region_data.get('rebalance_offender_delta', pd.Series(0)).sum())
             tot_pool  = float(region_data.get('rebalance_pool_delta', pd.Series(0)).sum())
-            tot_cap   = float(region_data.get('rebalance_signcap_delta', pd.Series(0)).sum())
+            tot_cap   = float(region_data.get('rebalance_project_delta', region_data.get('rebalance_signcap_delta', pd.Series(0))).sum())
             tot_Ifinal= float(region_data.get('net_display', pd.Series(0)).sum())
             # Stage totals in pp
-            tot_M_before_pp = float(region_data.get('M_before_pp', pd.Series(0)).sum())
-            tot_M_after_off_pp = float(region_data.get('M_after_offender_pp', pd.Series(0)).sum())
             tot_M_after_pool_pp = float(region_data.get('M_after_pool_pp', pd.Series(0)).sum())
-            tot_M_after_cap_pp = float(region_data.get('M_after_cap_pp', pd.Series(0)).sum())
+            tot_M_after_cap_pp = float(region_data.get('M_after_project_pp', region_data.get('M_after_cap_pp', pd.Series(0))).sum())
             tot_pool_mass_pp = float(region_data.get('pool_mass_pp', pd.Series(0)).sum())
-            tot_cap_need_pp = float(region_data.get('cap_need_pp', pd.Series(0)).sum())
+            tot_cap_need_pp = float(region_data.get('project_need_pp', region_data.get('cap_need_pp', pd.Series(0))).sum())
 
             totals_row = {
                 "category": "=== TOTALS ===",
@@ -1581,34 +1549,27 @@ def _build_oaxaca_tracebacks(
                 "w_R (region_mix_pct)": "",
                 "w_B (rest_mix_pct)": "",
                 "rate_contribution_formula": "Σ(E)",
-                "rate_contribution_value": round(tot_E, 3),
+                "E": round(tot_E, 3),
                 "mix_contribution_formula": "Σ(M_raw)",
-                "mix_contribution_value": round(tot_M, 3),
-                "Iraw": round(tot_Iraw, 3),
-                "guardrail_delta_pp": round(tot_guard * 100, 3),
-                "pool_delta_pp": round(tot_pool * 100, 3),
-                "cap_delta_pp": round(tot_cap * 100, 3),
-                # stage totals for M (already in pp)
-                "E_pp": round(tot_E * 100, 3),
-                "M_before_pp": round(tot_M_before_pp, 3),
-                "M_after_offender_pp": round(tot_M_after_off_pp, 3),
+                "M₀": round(tot_M, 3),
+                "I₀": round(tot_Iraw, 3),
+                "E (pp)": round(tot_E * 100, 3),
+                "M₀ (pp)": round(tot_M * 100, 3),
+                "I₀ (pp)": round(tot_Iraw * 100, 3),
                 "pool_weight": "",
                 "pool_mass_pp": round(tot_pool_mass_pp, 3),
-                "M_after_pool_pp": round(tot_M_after_pool_pp, 3),
-                "cap_need_pp": round(tot_cap_need_pp, 3),
-                "M_after_cap_pp": round(tot_M_after_cap_pp, 3),
-                "Ifinal": round(tot_Ifinal, 3),
-                # pp display
-                "rate_contribution_pp": round(tot_E * 100, 3),
-                "mix_contribution_pp": round(tot_M * 100, 3),
-                "Iraw_pp": round(tot_Iraw * 100, 3),
-                "Ifinal_pp": round(tot_Ifinal * 100, 3),
-                "guardrail_violation": "",
+                "M_pool(pp)": round(tot_M_after_pool_pp, 3),
+                "project_need_pp": round(tot_cap_need_pp, 3),
+                "pool_delta_pp": round(tot_pool * 100, 3),
+                "project_delta_pp": round(tot_cap * 100, 3),
+                "M_project(pp)": round(tot_M_after_cap_pp, 3),
                 "pool_group": "",
-                "signcap_applied": "",
-                "cap_donor_scope": "",
-                "redistribution_formula": "Conservation check",
-                "reason": ""
+                "project_applied": "",
+                "project_donor_scope": "",
+                "reason": "",
+                "I_final formula": "Conservation check",
+                "I_final": round(tot_Ifinal, 3),
+                "I_final (pp)": round(tot_Ifinal * 100, 3)
             }
             walkthrough_rows.append(totals_row)
             walkthrough_df = pd.DataFrame(walkthrough_rows)
@@ -1620,7 +1581,7 @@ def _build_oaxaca_tracebacks(
         mix_gap = region_data['mix_contribution_raw'].sum()
         
         # Use the same calculation logic as walkthrough
-        # Both Simpson's and standard cases now use the same calculation: sum of net_display
+        # All cases now use the same calculation: sum of net_display
         total_gap = region_data['net_display'].sum()
         
         # Business conclusion logic
@@ -1653,9 +1614,10 @@ def _build_oaxaca_tracebacks(
         
         # Add redistribution and ranking details (unified, share- and driver-aware)
         summary_rows.extend([
-            {"Component": "ranking_method", "Formula": "Percentile-driven, share- and driver-aware grouping with priority scores (see below)", "Value": "Unified"},
+            {"Component": "ranking_method", "Formula": "Share-aware prioritization within category groups (Strength/Problem/Neutral)", "Value": "Unified"},
             {"Component": "group_order_rule", "Formula": "If topline≥0: Strength → Problem (Mix) → Problem (Rate) → Neutral; else: Problem (Rate) → Problem (Mix) → Strength → Neutral", "Value": ("topline≥0" if total_gap >= 0 else "topline<0")},
-            {"Component": "priority_score_rules", "Formula": "Strength: (rate_pp)*share; Problem(Mix): (-mix_pp)*share; Problem(Rate): (-rate_pp)*share; Neutral: |net_pp|*share", "Value": "per row"},
+            {"Component": "within_group_priority", "Formula": "Strength: priority = (rate_pp) × share; Problem(Rate): priority = (−rate_pp) × share; Problem(Mix): priority = (−mix_pp) × share; Neutral: priority = |net_pp| × share", "Value": "Higher priority = higher rank"},
+            {"Component": "low_share_deprioritization", "Formula": "Categories with Region Share % below P25 are deprioritized within their group (Strength/Problem/Neutral)", "Value": f"P25 threshold applied"},
             {"Component": "dominant_driver_def", "Formula": "dominant_driver = 'Rate' if |rate_pp| ≥ |mix_pp| else 'Mix'", "Value": "per row"},
             {"Component": "percentile_rules", "Formula": "meaningful share = median(share); low-share flag = P25(share); material positive/negative = medians within sign buckets; execution gate = median(dr>0)", "Value": "computed per region"},
         ])
@@ -1702,7 +1664,7 @@ def run_oaxaca_analysis(
     thresholds: AnalysisThresholds = None
 ) -> AnalysisResult:
     """
-    Enhanced Oaxaca-Blinder analysis with comprehensive edge case detection.
+    Oaxaca-Blinder analysis with comprehensive edge case detection.
     
     Args:
         df: Input DataFrame with regional performance data
@@ -2127,6 +2089,180 @@ def enforce_sign_caps(E, M, dr, base_w, eps, eta):
         # No caps were applied
         return M_orig, "none"
 
+def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: pd.Series,
+                            *, eps: float, eta: float, z_eps: float = 1e-12) -> Tuple[pd.Series, str]:
+    """
+    Capacity-aware sign projection after pooling.
+    Enforce dr>eta => I>=eps and dr<-eta => I<=-eps by adjusting only M, zero-sum.
+    Uses multi-pool donor search with capacity constraints to avoid relaxation.
+    Returns (M_new, scope_label).
+    """
+    if len(M) <= 1:
+        return M, 'single_category'
+        
+    I = E + M
+    tiny = z_eps
+    
+    # Check if any caps needed
+    neg_violators = (dr < -eta) & (I > -eps)
+    pos_violators = (dr > eta) & (I < eps)
+    
+    if not (neg_violators.any() or pos_violators.any()):
+        return M, 'none'
+    
+    M_work = M.copy()
+    donor_scope = 'none'
+    
+    def _norm_weights(w: pd.Series) -> Tuple[Optional[pd.Series], bool]:
+        Z = float(w.sum())
+        if np.isfinite(Z) and Z > tiny:
+            return (w / Z), True
+        return None, False
+    
+    # Apply negative ceiling first
+    if neg_violators.any():
+        need_row = (I.loc[neg_violators] + eps).clip(lower=0.0)
+        need = float(need_row.sum())
+        
+        if need > tiny:
+            # Multi-pool donor search with capacity constraints
+            # D1: Same group with headroom (preferred)
+            d1_mask = (dr < -eta) & (I < -eps)
+            d1_cap = pd.Series(0.0, index=M.index)
+            d1_cap.loc[d1_mask] = ((-eps) - I.loc[d1_mask]).clip(lower=0.0)
+            
+            # D2: Same-sign near-ties with soft headroom
+            d2_mask = (dr <= -eta/2) & (I <= -eps/2)
+            d2_cap = pd.Series(0.0, index=M.index)
+            d2_cap.loc[d2_mask] = ((-eps/2) - I.loc[d2_mask]).clip(lower=0.0)
+            
+            # D3: Opposite group strong positives
+            d3_mask = (dr > eta) & (I > eps)
+            d3_cap = pd.Series(0.0, index=M.index)
+            d3_cap.loc[d3_mask] = (I.loc[d3_mask] - eps).clip(lower=0.0)
+            
+            # D4: Near-ties (can donate down to 0 but not flip negative)
+            d4_mask = (dr.abs() <= eta) & (I > 0)
+            d4_cap = pd.Series(0.0, index=M.index)
+            d4_cap.loc[d4_mask] = I.loc[d4_mask].clip(lower=0.0)
+            
+            # Combine all donor pools
+            donors = d1_mask | d2_mask | d3_mask | d4_mask
+            cap = d1_cap + d2_cap + d3_cap + d4_cap
+            
+            cap_total = float(cap.sum())
+            rho = min(1.0, cap_total / need) if need > tiny else 1.0
+            
+            # Stage violator reduction (scaled if partial)
+            M_work.loc[neg_violators] -= rho * need_row
+            
+            # Allocate to donors by capacity-bounded weights
+            if cap_total > tiny and donors.any():
+                w_raw = base_w.where(donors, 0.0)
+                w_bounded = w_raw * cap.clip(lower=0.0)
+                w_bounded = w_bounded.replace([np.inf, -np.inf], 0.0)
+                
+                w_norm, ok = _norm_weights(w_bounded)
+                
+                if ok:
+                    M_work.loc[donors] += (rho * need) * w_norm.fillna(0.0)
+                    # Set donor scope based on which pools were used
+                    if d1_mask.any() and (w_norm.loc[d1_mask] > tiny).any():
+                        donor_scope = 'group'
+                    elif d3_mask.any() and (w_norm.loc[d3_mask] > tiny).any():
+                        donor_scope = 'region'
+                    else:
+                        donor_scope = 'uniform'
+                else:
+                    # Last resort: distribute uniformly across any positive headroom
+                    headroom_mask = (I > 0)
+                    if headroom_mask.any():
+                        uniform_take = (rho * need) / headroom_mask.sum()
+                        M_work.loc[headroom_mask] -= uniform_take
+                        donor_scope = 'uniform'
+            else:
+                # Extremely degenerate case: clamp violators to 0 (best possible without donors)
+                I_clamp = E + M_work
+                clamp_adjustment = -I_clamp.loc[neg_violators].clip(lower=-eps)
+                M_work.loc[neg_violators] += clamp_adjustment
+                donor_scope = 'clamped'
+    
+    # Recalculate I for positive floor
+    I_work = E + M_work
+    pos_violators = (dr > eta) & (I_work < eps)
+    
+    # Apply positive floor (mirror logic)
+    if pos_violators.any():
+        need_row = (eps - I_work.loc[pos_violators]).clip(lower=0.0)
+        need = float(need_row.sum())
+        
+        if need > tiny:
+            # D1: Same group with headroom (preferred)
+            d1_mask = (dr > eta) & (I_work > eps)
+            d1_cap = pd.Series(0.0, index=M.index)
+            d1_cap.loc[d1_mask] = (I_work.loc[d1_mask] - eps).clip(lower=0.0)
+            
+            # D2: Same-sign near-ties with soft headroom
+            d2_mask = (dr >= eta/2) & (I_work >= eps/2)
+            d2_cap = pd.Series(0.0, index=M.index)
+            d2_cap.loc[d2_mask] = (I_work.loc[d2_mask] - eps/2).clip(lower=0.0)
+            
+            # D3: Opposite group strong negatives
+            d3_mask = (dr < -eta) & (I_work < -eps)
+            d3_cap = pd.Series(0.0, index=M.index)
+            d3_cap.loc[d3_mask] = ((-eps) - I_work.loc[d3_mask]).clip(lower=0.0)
+            
+            # D4: Near-ties (can donate down to 0 but not flip positive)
+            d4_mask = (dr.abs() <= eta) & (I_work < 0)
+            d4_cap = pd.Series(0.0, index=M.index)
+            d4_cap.loc[d4_mask] = (-I_work.loc[d4_mask]).clip(lower=0.0)
+            
+            # Combine all donor pools
+            donors = d1_mask | d2_mask | d3_mask | d4_mask
+            cap = d1_cap + d2_cap + d3_cap + d4_cap
+            
+            cap_total = float(cap.sum())
+            rho = min(1.0, cap_total / need) if need > tiny else 1.0
+            
+            # Stage violator increase (scaled if partial)
+            M_work.loc[pos_violators] += rho * need_row
+            
+            # Allocate to donors by capacity-bounded weights
+            if cap_total > tiny and donors.any():
+                w_raw = base_w.where(donors, 0.0)
+                w_bounded = w_raw * cap.clip(lower=0.0)
+                w_bounded = w_bounded.replace([np.inf, -np.inf], 0.0)
+                
+                w_norm, ok = _norm_weights(w_bounded)
+                
+                if ok:
+                    M_work.loc[donors] -= (rho * need) * w_norm.fillna(0.0)
+                    # Update donor scope if not already set
+                    if donor_scope == 'none':
+                        if d1_mask.any() and (w_norm.loc[d1_mask] > tiny).any():
+                            donor_scope = 'group'
+                        elif d3_mask.any() and (w_norm.loc[d3_mask] > tiny).any():
+                            donor_scope = 'region'
+                        else:
+                            donor_scope = 'uniform'
+                else:
+                    # Last resort: distribute uniformly across any negative headroom
+                    headroom_mask = (I_work < 0)
+                    if headroom_mask.any():
+                        uniform_take = (rho * need) / headroom_mask.sum()
+                        M_work.loc[headroom_mask] += uniform_take
+                        if donor_scope == 'none':
+                            donor_scope = 'uniform'
+            else:
+                # Extremely degenerate case: clamp violators to 0 (best possible without donors)
+                I_clamp = E + M_work
+                clamp_adjustment = -I_clamp.loc[pos_violators].clip(upper=eps)
+                M_work.loc[pos_violators] += clamp_adjustment
+                if donor_scope == 'none':
+                    donor_scope = 'clamped'
+    
+    return M_work, donor_scope
+
 def _apply_constrained_rebalance(df: pd.DataFrame,
                                  *, thresholds: AnalysisThresholds,
                                  alpha=1.0, beta=1.0, gamma=0.0,
@@ -2195,46 +2331,14 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         I  = E + M
         dr = (rR - rB)
         dw = (wR - wB)
-
-        # Minimal offender fix (sign guardrails) — zero-sum
-        should_neg = (dr < 0) & (dw > 0)   # must have I <= 0
-        should_pos = (dr > 0) & (dw < 0)   # must have I >= 0
-        viol_pos = should_neg & (I > 0)
-        viol_neg = should_pos & (I < 0)
-
-        delta_off = pd.Series(0.0, index=rows.index)
-        delta_off.loc[viol_pos] = -I.loc[viol_pos]
-        delta_off.loc[viol_neg] = -I.loc[viol_neg]
-        s = float(delta_off.sum())
-
-        # Unified weights
+        
+        pool_eps = (eps_floor if eps_floor > 0 else thresholds.near_zero_gap) / 100
+        # Unified weights for pooling and projection
         damp = np.where(wR < share_floor, small_share_damp, 1.0)
         leverage = (rB - rB_overall).abs() ** beta
         perf     = dr.abs() ** gamma
         base_w   = (wR ** alpha) * leverage * perf * damp
-
-        delta_rec = pd.Series(0.0, index=rows.index)
-        pool_eps = (eps_floor if eps_floor > 0 else thresholds.near_zero_gap) / 100
-        if not np.isclose(s, 0.0, atol=pool_eps):
-            if s > 0:
-                recv_mask = ((dr < 0) | ((rB < rB_overall) & (dw <= 0)))
-            else:
-                recv_mask = ((dr > 0) | ((rB > rB_overall) & (dw >= 0)))
-
-            recipients = recv_mask & (~viol_pos) & (~viol_neg)
-
-            w = pd.Series(base_w, index=rows.index).where(recipients, 0.0)
-            w_norm, ok = _safe_weights(w)
-            if not ok:
-                w_f1 = (wR ** alpha).where(~(viol_pos | viol_neg), 0.0)
-                w_norm, ok = _safe_weights(w_f1)
-            if not ok:
-                w_f2 = delta_off.abs()
-                w_norm, ok = _safe_weights(w_f2)
-            if ok:
-                delta_rec = (-s) * w_norm.fillna(0.0)
-
-        M0 = M + delta_off + delta_rec
+        M0 = M.copy()
 
         # Symmetric share-aware pooling (zero-sum inside each group)
         base_w_series = pd.Series(base_w, index=rows.index)
@@ -2273,17 +2377,14 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         M_after_offender = M0.copy()
         M_after_pool = M1.copy()
         
-        # Final universal sign caps (zero-sum inside each dr group)
-        # Wire eps/eta from thresholds - no hardcoded constants
+        # Unified sign projection (single-step) after pooling
         cap_eta = thresholds.minor_rate_diff
         cap_eps = eps_floor if eps_floor > 0 else thresholds.near_zero_gap
-        # Pre-cap need per row (for diagnostics), decimals
         I1 = E + M1
         cap_need = pd.Series(0.0, index=rows.index)
         cap_need.loc[(dr > cap_eta) & (I1 < cap_eps)] = (cap_eps - I1.loc[(dr > cap_eta) & (I1 < cap_eps)])
         cap_need.loc[(dr < -cap_eta) & (I1 > -cap_eps)] = ((-cap_eps) - I1.loc[(dr < -cap_eta) & (I1 > -cap_eps)])
-
-        M2, cap_scope = enforce_sign_caps(E, M1.copy(), dr, base_w_series, eps=cap_eps, eta=cap_eta)
+        M2, cap_scope = unified_sign_projection(E, M1.copy(), dr, base_w_series, eps=cap_eps, eta=cap_eta)
         
         # Compute deltas for diagnostics
         delta_guardrail = M_after_offender - M_before
@@ -2304,25 +2405,34 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         # Write diagnostic columns for transparency
         out.loc[g, 'rebalance_offender_delta'] = delta_guardrail
         out.loc[g, 'rebalance_pool_delta'] = delta_pool
-        out.loc[g, 'rebalance_signcap_delta'] = delta_cap
+        out.loc[g, 'rebalance_project_delta'] = delta_cap
+        out.loc[g, 'rebalance_signcap_delta'] = delta_cap  # compatibility
         out.loc[g, 'rebalance_total_delta'] = delta_total
         # Stage values (pp) for de-obfuscated walkthrough
         out.loc[g, 'M_before_pp'] = M_before * 100.0
         out.loc[g, 'M_after_offender_pp'] = M_after_offender * 100.0
         out.loc[g, 'M_after_pool_pp'] = M_after_pool * 100.0
-        out.loc[g, 'M_after_cap_pp'] = M2 * 100.0
+        out.loc[g, 'M_after_project_pp'] = M2 * 100.0
+        out.loc[g, 'M_after_cap_pp'] = M2 * 100.0  # compatibility
         out.loc[g, 'pool_mass_pp'] = (M_after_pool - M_after_offender) * 100.0
-        out.loc[g, 'cap_need_pp'] = cap_need * 100.0
+        out.loc[g, 'project_need_pp'] = cap_need * 100.0
+        out.loc[g, 'cap_need_pp'] = cap_need * 100.0  # compatibility
         
-        # Diagnostic flags for walkthrough transparency
-        guardrail_violation = ((dr < 0) & (dw > 0) & (I > 0)) | ((dr > 0) & (dw < 0) & (I < 0))
+        # Diagnostic flags for walkthrough transparency (simplified)
         pool_group = np.where(dr > cap_eta, 'dr>0', np.where(dr < -cap_eta, 'dr<0', f'|dr|≤{cap_eta:.3f}'))
-        signcap_applied = (np.abs(delta_cap) > pool_eps)
-        
-        out.loc[g, 'guardrail_violation'] = guardrail_violation
+        project_applied = (np.abs(delta_cap) > pool_eps)
         out.loc[g, 'pool_group'] = pool_group
-        out.loc[g, 'signcap_applied'] = signcap_applied
-        out.loc[g, 'cap_donor_scope'] = cap_scope
+        out.loc[g, 'project_applied'] = project_applied
+        # Human-friendly donor scope: if projection used group donors, show the pool_group value; else label region/uniform
+        if cap_scope == 'group':
+            proj_scope = pd.Series(pool_group, index=rows.index)
+        elif cap_scope == 'region':
+            proj_scope = pd.Series('region-wide', index=rows.index)
+        elif cap_scope == 'uniform':
+            proj_scope = pd.Series('uniform region', index=rows.index)
+        else:
+            proj_scope = pd.Series('', index=rows.index)
+        out.loc[g, 'project_donor_scope'] = proj_scope
 
         # Pool diagnostics: per-mask normalized weight and scope
         # Compute normalized weights within Ppos/Pneg masks
@@ -2363,12 +2473,6 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
 
 def _ensure_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Return a DataFrame with consistent display columns for mix/rate/net."""
-    if df is None:
-        return pd.DataFrame()
-
-    if not isinstance(df, pd.DataFrame):
-        raise TypeError("Expected DataFrame for display enrichment")
-
     out = df.copy()
 
     out["rate_contribution_raw"] = out.get("performance_gap_contribution", out.get("rate_contribution_raw", 0.0))
@@ -2386,15 +2490,11 @@ def _ensure_display_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
-
 def _rank_segments_by_narrative_support(
     rows: pd.DataFrame,
     *,
     total_gap: float,
-    thresholds: AnalysisThresholds,
-    paradox_report: Optional[ParadoxReport] = None,
-    region: str = None
+    thresholds: AnalysisThresholds
 ) -> pd.DataFrame:
     """Rank segments to support the narrative structure with share- and driver-aware grouping.
 
@@ -2972,7 +3072,7 @@ def build_oaxaca_exec_pack(
         tmp = _rank_segments_by_narrative_support(
             dreg,
             total_gap=tot_gap,
-            thresholds=thresholds,
+            thresholds=thresholds
         )
         impact_sorted = tmp.get("display_net", tmp.get("net_display", tmp["net_gap"]))
 
@@ -3288,7 +3388,7 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     rows = _rank_segments_by_narrative_support(
         df[df["region"] == region],
         total_gap=tot_gap,
-        thresholds=thresholds,
+        thresholds=thresholds
     )
 
     labels = rows["category_clean"].astype(str).values
@@ -3463,9 +3563,7 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, metric_name: 
         ranked = _rank_segments_by_narrative_support(
             result.decomposition_df[result.decomposition_df["region"] == region],
             total_gap=tot_gap,
-            thresholds=thresholds,
-            paradox_report=getattr(result, 'paradox_report', None),
-            region=region
+            thresholds=thresholds
         )
 
     # Ensure grouping/priority sort is honored
