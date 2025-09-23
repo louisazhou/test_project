@@ -75,6 +75,30 @@ The "impact_pp" must:
 * Preserve totals exactly (sum of category impacts equals the observed region-vs-baseline gap, with a clear rate–vs–mix split).
 * If the reason for a region to under-perform is having an unfairly larger share of categories that inherently doesn't perform well, we surface that the main action items is to shift composition and move away from very weak baselines.
 
+### How this differs from Depth‑Spotter (and why we use both)
+
+Depth‑Spotter and Oaxaca‑Blinder answer two different questions and are intentionally used at different moments in the analysis:
+
+- Depth‑Spotter (market‑level drilldown — “where is the drag/lift?”)
+  - Ranks sub‑regions/slices (e.g., markets) by how much they pull the topline down or up relative to an expectation (e.g., “expected @ ROW rate”).
+  - Uses contribution normalization so positives/negatives are interpretable even when the headline gap is tiny or dominated by a single slice.
+  - Great to localize issues and focus attention (e.g., “Brazil is the primary drag”).
+  - Deliberately agnostic about mechanism — it does not tell you whether a drag comes from execution vs allocation.
+
+- Oaxaca‑Blinder (composition — “what to change within a region?”)
+  - Explains the region’s gap by explicitly separating execution (rate) from allocation (mix) per category, and guarantees additivity to the headline.
+  - Surfaces the two levers as actionable bands: 
+    - Problem (Rate) → fix execution, 
+    - Problem (Mix) → rebalance exposure, 
+    - Strength → scale/protect.
+  - Handles Simpson‑type cases cleanly (strong execution but poor allocation) and keeps the story aligned with share and direction.
+
+In practice we chain them:
+1) Use Depth‑Spotter to decide where to drill (markets/slices with largest contribution to the gap).
+2) Inside the chosen region, use Oaxaca‑Blinder to explain and prioritize actions on the composition itself (which categories to fix vs rebalance vs scale).
+
+This is why you’ll see a Depth‑Spotter exhibit in the market drilldown and an Oaxaca‑Blinder exhibit in the category composition — they are complementary: one is “where”, the other is “what and why”.
+
 ---
 
 ## Notation & Background
@@ -287,12 +311,12 @@ negative impact with mild rate\_pp but very negative mix\_pp → composition/cov
 * **Single-category regions or degenerate baseline shares:** We surface the unadjusted split (skip rebalancing) to avoid artifacts; totals obviously still match.
 * **Simpson’s paradox:** Discussed separately below  
 
-### Simpson’s Paradox 
+## Simpson’s Paradox
 
-What it means 
+### What it means 
 - The topline makes the region look worse, but if you level the playing field (give everyone the same mix), the region’s execution would look better. This happens when exposure is skewed toward low‑performing slices of the baseline, even if the team performs well within slices.
 
-How we detect it 
+### How we detect it 
 - Define, for categories $c$: region shares $w^R_c$, baseline shares $w^B_c$, region rates $r^R_c$, baseline rates $r^B_c$.
 - Pooled headlines (actual weighted averages):
 $$
@@ -317,41 +341,40 @@ We flag Simpson’s when all are true (thresholds are configurable in code):
 - Big swing between pooled and common‑mix: $\,|\Delta_{\text{common}}-\Delta_{\text{pooled}}|\;\ge\;\tau_{\text{swing}}$.
 - Optional policy (business choice): flag only when topline is underperforming (under_only), only overperforming (over_only), or both.
 
-Current thresholds (this analysis)
-- From vertical_LATAM_math_summary.csv:
+Current thresholds (this analysis):
   - $\tau_{\text{material}}=0.015$ (1.5pp)
   - $\tau_{\text{share}}=0.40$ (40% of the common‑mix footprint disagrees with the pooled direction)
   - $\tau_{\text{swing}}=0.010$ (1.0pp swing between pooled and common mix)
   - Near‑zero gap for direction: $\varepsilon_{\text{dir}}=0.005$ (0.5pp)
   - Gap significance cutoffs: high if $|\Delta|>0.020$ (2.0pp), medium if $|\Delta|>0.010$ (1.0pp), else low
 
-What we do when it’s detected
+### What we do when it’s detected
 - We call it out explicitly in the narrative: “despite strong performance in … the topline is driven by allocation.”
 - We do not branch the math — the redistribution is unified. Anchored mix + share‑aware pooling + single‑step sign projection already make Simpson cases read intuitively: high exposure to weak baseline areas shows up as Problem (Mix), while within‑slice strengths still surface as green rows.
 
-How to read a Simpson case on the slide
+### How to read a Simpson case on the slide
 - If $\Delta_{\text{pooled}}<0$ but $\Delta_{\text{common}}>0$, you’ll typically see several green rows (strong execution) co‑existing with large amber rows (allocation problems). The one‑liner will read “despite strong performance in …, the gap exists because exposure is higher in low‑performing baseline slices …”. The action is to rebalance exposure while protecting strengths.
 
-Worked example (Vertical — LATAM)
+### Worked example (Product — LATAM)
 
-Pooled (headline) gap from vertical_LATAM_math_summary.csv:
+Pooled (headline) gap:
 $$
-\Delta_{\text{pooled}}\;=\;-0.056536\;\text{(−5.6536pp)}\;\;<\;-\varepsilon_{\text{dir}}\;\Rightarrow\;\text{underperforms}
+\Delta_{\text{pooled}}\;=\;-0.056536\;\text{(−5.7pp)}\;\;<\;-\varepsilon_{\text{dir}}\;\Rightarrow\;\text{underperforms}
 $$
 
-Evidence rows (vertical_LATAM_supporting_table.csv):
+Evidence rows (showing top-5 for brevity):
 
-| Category                              | Region Rate % | Baseline Rate % | Rate vs Peers | Region Share % | Baseline Share % | Share vs Peers | Net Impact_pp |
-| ------------------------------------- | ------------- | ---------------- | ------------- | -------------- | ---------------- | -------------- | ------------- |
-| Creative (Strength)                   | 82.5%         | 68.7%            | +13.8pp       | 14.1%          | 19.8%            | −5.7pp         | +2.0pp        |
-| Advantage+ (Strength)                 | 74.4%         | 67.6%            | +6.8pp        | 14.4%          | 16.9%            | −2.5pp         | +1.1pp        |
-| Scale partnership ads in more campaigns (Strength) | 33.1% | 27.4% | +5.7pp | 14.5% | 14.6% | −0.1pp | +2.3pp |
-| Marketing Messages (Problem — Mix)    | 0.0%          | 0.0%             | 0.0pp         | 14.8%          | 3.2%             | +11.6pp        | −7.2pp        |
-| Non‑Marketing Messages (Problem — Mix)| 0.0%          | 0.0%             | 0.0pp         | 8.2%           | 1.8%             | +6.4pp         | −3.8pp        |
+| Category                                           | Region Rate % | Baseline Rate % | Rate vs Peers | Region Share % | Baseline Share % | Share vs Peers | Net Impact_pp |
+| -------------------------------------------------- | ------------- | --------------- | ------------- | -------------- | ---------------- | -------------- | ------------- |
+| Creative (Strength)                                | 82.5%         | 68.7%           | +13.8pp       | 14.1%          | 19.8%            | −5.7pp         | +2.0pp        |
+| Advantage+ (Strength)                              | 74.4%         | 67.6%           | +6.8pp        | 14.4%          | 16.9%            | −2.5pp         | +1.1pp        |
+| Scale partnership ads in more campaigns (Strength) | 33.1%         | 27.4%           | +5.7pp        | 14.5%          | 14.6%            | −0.1pp         | +2.3pp        |
+| Marketing Messages (Problem — Mix)                 | 0.0%          | 0.0%            | 0.0pp         | 14.8%          | 3.2%             | +11.6pp        | −7.2pp        |
+| Non‑Marketing Messages (Problem — Mix)             | 0.0%          | 0.0%            | 0.0pp         | 8.2%           | 1.8%             | +6.4pp         | −3.8pp        |
 
 Reading this:
-- Execution is strong in Creative/Advantage+/Scale partnership (large positive rate gaps) — these are the green rows in the left chart and the positives on the right.
-- Allocation drags the topline: Marketing/Non‑Marketing Messages have much higher exposure but contribute no conversion (0% vs 0%), showing up as large amber negatives on the right.
+- Execution is strong in Creative/Advantage+/Scale partnership (large positive rate gaps) — these are the green rows in the chart and the green positives on the right.
+- Allocation drags the topline: Marketing/Non‑Marketing Messages have much higher exposure but contribute no conversion (0% vs 0%), showing up as amber rows with red negatives on the right.
 - The pooled headline is negative even though many slices execute well — that’s the hallmark of a Simpson case. Under a common mix (same weighting), the green execution lifts would dominate and the execution‑only gap would be materially less negative (often positive). In code, the gates above were met, so we label this as Simpson’s paradox.
 
 This is exactly what the one‑liner explains:
