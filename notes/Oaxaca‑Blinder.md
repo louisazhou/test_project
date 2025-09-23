@@ -1,5 +1,66 @@
 # Business-Safe Category Impact Decomposition
 
+## Executive Narrative (Examples)
+- Product slide 
+  “LATAM underperforms rest of world by 5.7pp (50% vs 55%) despite strong performance in Creative (82.5% vs 68.7% rates, +2.0pp impact), Advantage+ (74.4% vs 67.6% rates, +1.1pp impact), Scale partnership ads in more campaigns (33.1% vs 27.4% rates, +2.3pp impact). This gap exists because LATAM has higher share in low‑performing products like Marketing Messages (14.8% vs 3.2% share, 0.0% rate; −7.2pp impact) and lower share in high‑performing products like Creative (14.1% vs 19.8% share, 82.5% rate).”
+
+- Vertical slide 
+  “LATAM underperforms the rest of world by 6.0pp (50% vs 56%), driven by Retail (49.1% vs 54.5% rates, −1.0pp impact), Ecommerce (49.1% vs 60.3% rates, −0.8pp impact), Education (49.5% vs 55.1% rates, −0.9pp impact).”
+
+## How to Read the Output
+
+### The one‑liner text narrative on top
+- For Product, the core reason is allocation: It states the size of the gap (pp), calls out the biggest positives (“what works”), and the core allocation issues (“where we’re over/under‑allocating % share” compared to the peer).
+- For Vertical, the core reason is performance: It states the size of the gap (pp), calls out the biggest negatives ("what is dragging"), and show their impacts. 
+### Read the figure left‑to‑right
+- Left chart (Rates). For each row (category): region rate vs peer rate, lengths are difference labels (+/−pp). Red/green lines indicate weaker/stronger performer compared to peers.
+- Right chart (Shares). The same rows in the same order: region % share vs peer % share; labels appear when the share difference is large (>5pp), guiding audience to pay extra focus on.
+- The number printed at far right is the Net Impact (+/−pp) for that row.
+- Background colors indicate the story of each row at a glance:
+  - Green = Strength (strong execution at meaningful share)
+  - Red = Problem (Rate), performing worse than the peer
+  - Amber = Problem (Share), having a higher % share on a weak executor 
+  - Gray = Neutral, smaller impact to the top-line
+### Where the numbers come from 
+The underlying data reads like this:
+
+|                    |                |                                         |                   |                     |                    |                      |                   |                    |                   |
+| ------------------ | -------------- | --------------------------------------- | ----------------- | ------------------- | ------------------ | -------------------- | ----------------- | ------------------ | ----------------- |
+| **Status**         | **Band**       | **Category**                            | **Region Rate %** | **Baseline Rate %** | **Region Share %** | **Baseline Share %** | **Net Impact_pp** | **Rate Impact_pp** | **Mix Impact_pp** |
+| 🔴 **Problem #1**  | Problem (Mix)  | Marketing Messages                      | 0.0%              | 0.0%                | 14.8%              | 3.2%                 | -7.2pp            | 0.0pp              | -7.2pp            |
+| 🔴 **Problem #2**  | Problem (Mix)  | Non-Marketing Messages                  | 0.0%              | 0.0%                | 8.2%               | 1.8%                 | -3.8pp            | 0.0pp              | -3.8pp            |
+| 🟢 **Strength #1** | Strength       | Creative                                | 82.5%             | 68.7%               | 14.1%              | 19.8%                | 2.0pp             | 2.0pp              | -0.0pp            |
+| 🟢 **Strength #2** | Strength       | Advantage+                              | 74.4%             | 67.6%               | 14.4%              | 16.9%                | 1.1pp             | 1.0pp              | 0.2pp             |
+| 🟢 **Strength #3** | Strength       | Scale partnership ads in more campaigns | 33.1%             | 27.4%               | 14.5%              | 14.6%                | 2.3pp             | 0.8pp              | 1.5pp             |
+| ⚪ **Neutral #1**   | Neutral        | Reels                                   | 91.4%             | 87.7%               | 7.2%               | 9.2%                 | 0.5pp             | 0.3pp              | 0.2pp             |
+|                    |                |                                         |                   |                     |                    |                      |                   |                    |                   |
+| **Status**         | **Band**       | **Category**                            | **Region Rate %** | **Baseline Rate %** | **Region Share %** | **Baseline Share %** | **Net Impact_pp** | **Rate Impact_pp** | **Mix Impact_pp** |
+| 🔴 **Problem #1**  | Problem (Rate) | Retail                                  | 49.1%             | 54.5%               | 15.0%              | 11.9%                | -1.0pp            | -0.8pp             | -0.2pp            |
+| 🔴 **Problem #2**  | Problem (Rate) | Ecommerce                               | 49.1%             | 60.3%               | 10.2%              | 17.9%                | -0.8pp            | -1.1pp             | 0.4pp             |
+| 🔴 **Problem #3**  | Problem (Rate) | Education                               | 49.5%             | 55.1%               | 14.0%              | 4.8%                 | -0.9pp            | -0.8pp             | -0.1pp            |
+| 🔴 **Problem #4**  | Problem (Rate) | Consumer Packaged Goods                 | 51.7%             | 57.9%               | 11.9%              | 22.3%                | -0.9pp            | -0.7pp             | -0.1pp            |
+| 🔴 **Problem #5**  | Problem (Rate) | Professional Services                   | 43.8%             | 50.9%               | 8.6%               | 7.4%                 | -0.6pp            | -0.6pp             | 0.0pp             |
+| ⚪ **Neutral #1**   | Neutral        | Banking and Credit Cards                | 44.6%             | 46.3%               | 8.7%               | 3.9%                 | -0.3pp            | -0.1pp             | -0.2pp            |
+> Showing top-6 rows only for brevity. 
+
+Based on the "Region Rate %, Baseline Rate %, Region Share %, Baseline Share %", we developed an algorithm that assigns `impact_pp` due to gaps in performance (rate) and issues in composition (share). Summarizing the row-level `impact_pp` equals the total gap compared to the baseline (in our case, the rest-of-world) performance.  
+
+### Two concrete examples (reading the row)
+- Product / Marketing Messages:
+  - Rates: 0.0% (Region) vs 0.0% (Peers) → Rate gap 0.0pp; Shares: 14.8% vs 3.2% (over‑exposed to a weak executor)
+  - Net Impact_pp = −7.2pp (largest negative on the slide)
+  - Interpretation: pure allocation problem — large exposure to a category that does not convert; action item: rebalance exposure.
+- Vertical / Retail vs Ecommerce vs Education:
+  - Retail: Net −1.0pp; Rates 49.1% vs 54.5% (−5.4pp); Shares 15.0% vs 11.9% (+3.1pp)
+  - Ecommerce: Net −0.8pp; Rates 49.1% vs 60.3% (−11.2pp); Shares 10.2% vs 17.9% (−7.7pp)
+  - Education: Net −0.9pp; Rates 49.5% vs 55.1% (−5.6pp); Shares 14.0% vs 4.8% (+9.2pp)
+  - Why Retail appears above Ecommerce/Education: all three are “Problem (Rate)” rows; within that band, we prioritize larger rate shortfalls where we actually have exposure. A share‑weighted rate priority puts Retail first (0.8pp×15.0%), then Ecommerce (~1.1pp×10.2%), then Education (~0.8pp×14.0%).
+### How to use it (decision guidance)
+- Green (Strength): scale where possible (or protect if capacity‑constrained).
+- Red (Problem—Rate): fix execution before scaling.
+- Amber (Problem—Mix): rebalance exposure away from low‑converting slices.
+- Gray (Neutral): lower priority.
+
 ## What We’re Ranking — and Why
 
 We rank categories by **their contribution (impact\_pp)** to the region’s overall performance gap vs. a baseline (e.g. rest of world rate). Each category’s contribution should reflect:
@@ -224,7 +285,78 @@ negative impact with mild rate\_pp but very negative mix\_pp → composition/cov
 * **Near-ties in rate:** $|\Delta r_c|\le \eta$ treated as ties; we don’t force a sign.
 * **No donors for caps:** We widen donors to the region; if still none, cap relaxes to 0 (no change) to preserve totals.
 * **Single-category regions or degenerate baseline shares:** We surface the unadjusted split (skip rebalancing) to avoid artifacts; totals obviously still match.
-* **Simpson’s paradox:** Discussed separately in a Section  
+* **Simpson’s paradox:** Discussed separately below  
+
+### Simpson’s Paradox 
+
+What it means 
+- The topline makes the region look worse, but if you level the playing field (give everyone the same mix), the region’s execution would look better. This happens when exposure is skewed toward low‑performing slices of the baseline, even if the team performs well within slices.
+
+How we detect it 
+- Define, for categories $c$: region shares $w^R_c$, baseline shares $w^B_c$, region rates $r^R_c$, baseline rates $r^B_c$.
+- Pooled headlines (actual weighted averages):
+$$
+\Delta_{\text{pooled}}\;=\;\sum_c w^R_c\,r^R_c\;\; -\;\;\sum_c w^B_c\,r^B_c
+$$
+- Common‑mix (execution at the same mix): pick fixed weights $\tilde w_c$ using trials (if available) or the exposure sum, then normalize:
+$$
+\tilde w_c\;=\;\frac{t^R_c+t^B_c}{\sum_j (t^R_j+t^B_j)}\quad\text{or}\quad\tilde w_c\;=\;\frac{w^R_c+w^B_c}{\sum_j (w^R_j+w^B_j)}
+$$
+The common‑mix gap is execution only:
+$$
+\Delta_{\text{common}}\;=\;\sum_c \tilde w_c\,\big(r^R_c - r^B_c\big)
+$$
+- Disagreeing exposure share (how much of the footprint pushes against the pooled direction):
+$$
+S_{\text{disagree}}\;=\;\sum_{\;c:\;\operatorname{sign}(r^R_c-r^B_c)\;\neq\;\operatorname{sign}(\Delta_{\text{pooled}})} \tilde w_c
+$$
+
+We flag Simpson’s when all are true (thresholds are configurable in code):
+- Material headlines: $\max\{\,|\Delta_{\text{pooled}}|,\;|\Delta_{\text{common}}|\,\}\;\ge\;\tau_{\text{material}}$.
+- Large disagreeing share: $S_{\text{disagree}}\;\ge\;\tau_{\text{share}}$.
+- Big swing between pooled and common‑mix: $\,|\Delta_{\text{common}}-\Delta_{\text{pooled}}|\;\ge\;\tau_{\text{swing}}$.
+- Optional policy (business choice): flag only when topline is underperforming (under_only), only overperforming (over_only), or both.
+
+Current thresholds (this analysis)
+- From vertical_LATAM_math_summary.csv:
+  - $\tau_{\text{material}}=0.015$ (1.5pp)
+  - $\tau_{\text{share}}=0.40$ (40% of the common‑mix footprint disagrees with the pooled direction)
+  - $\tau_{\text{swing}}=0.010$ (1.0pp swing between pooled and common mix)
+  - Near‑zero gap for direction: $\varepsilon_{\text{dir}}=0.005$ (0.5pp)
+  - Gap significance cutoffs: high if $|\Delta|>0.020$ (2.0pp), medium if $|\Delta|>0.010$ (1.0pp), else low
+
+What we do when it’s detected
+- We call it out explicitly in the narrative: “despite strong performance in … the topline is driven by allocation.”
+- We do not branch the math — the redistribution is unified. Anchored mix + share‑aware pooling + single‑step sign projection already make Simpson cases read intuitively: high exposure to weak baseline areas shows up as Problem (Mix), while within‑slice strengths still surface as green rows.
+
+How to read a Simpson case on the slide
+- If $\Delta_{\text{pooled}}<0$ but $\Delta_{\text{common}}>0$, you’ll typically see several green rows (strong execution) co‑existing with large amber rows (allocation problems). The one‑liner will read “despite strong performance in …, the gap exists because exposure is higher in low‑performing baseline slices …”. The action is to rebalance exposure while protecting strengths.
+
+Worked example (Vertical — LATAM)
+
+Pooled (headline) gap from vertical_LATAM_math_summary.csv:
+$$
+\Delta_{\text{pooled}}\;=\;-0.056536\;\text{(−5.6536pp)}\;\;<\;-\varepsilon_{\text{dir}}\;\Rightarrow\;\text{underperforms}
+$$
+
+Evidence rows (vertical_LATAM_supporting_table.csv):
+
+| Category                              | Region Rate % | Baseline Rate % | Rate vs Peers | Region Share % | Baseline Share % | Share vs Peers | Net Impact_pp |
+| ------------------------------------- | ------------- | ---------------- | ------------- | -------------- | ---------------- | -------------- | ------------- |
+| Creative (Strength)                   | 82.5%         | 68.7%            | +13.8pp       | 14.1%          | 19.8%            | −5.7pp         | +2.0pp        |
+| Advantage+ (Strength)                 | 74.4%         | 67.6%            | +6.8pp        | 14.4%          | 16.9%            | −2.5pp         | +1.1pp        |
+| Scale partnership ads in more campaigns (Strength) | 33.1% | 27.4% | +5.7pp | 14.5% | 14.6% | −0.1pp | +2.3pp |
+| Marketing Messages (Problem — Mix)    | 0.0%          | 0.0%             | 0.0pp         | 14.8%          | 3.2%             | +11.6pp        | −7.2pp        |
+| Non‑Marketing Messages (Problem — Mix)| 0.0%          | 0.0%             | 0.0pp         | 8.2%           | 1.8%             | +6.4pp         | −3.8pp        |
+
+Reading this:
+- Execution is strong in Creative/Advantage+/Scale partnership (large positive rate gaps) — these are the green rows in the left chart and the positives on the right.
+- Allocation drags the topline: Marketing/Non‑Marketing Messages have much higher exposure but contribute no conversion (0% vs 0%), showing up as large amber negatives on the right.
+- The pooled headline is negative even though many slices execute well — that’s the hallmark of a Simpson case. Under a common mix (same weighting), the green execution lifts would dominate and the execution‑only gap would be materially less negative (often positive). In code, the gates above were met, so we label this as Simpson’s paradox.
+
+This is exactly what the one‑liner explains:
+“LATAM underperforms rest of world by 5.7pp (50% vs 55%) despite strong performance in Creative (82.5% vs 68.7% rates, +2.0pp impact), Advantage+ (74.4% vs 67.6% rates, +1.1pp impact), Scale partnership ads in more campaigns (33.1% vs 27.4% rates, +2.3pp impact). This gap exists because LATAM has higher share in low‑performing products like Marketing Messages (14.8% vs 3.2% share, 0.0% rate; −7.2pp impact) and lower share in high‑performing products like Creative (14.1% vs 19.8% share, 82.5% rate).”
+
 
 ---
 
@@ -315,15 +447,14 @@ Single-category regions or degenerate baselines $(\sum w^B\approx 0)$ bypass reb
 **How others address these issues (and where our approach fits)**
 
 * **Standardization choices (Kitagawa / Das Gupta)**: Use an agreed anchor (e.g., baseline overall) for composition—our **anchored mix** $M=(w^R-w^B)\,(r^B-\bar r^B)$ follows this playbook to stabilize signs relative to a single, interpretable reference.
-* **Allocation of interaction & path independence:** Variants allocate the interaction symmetrically or adopt **Shapley-value–based decompositions** to ensure **order-invariance and aggregation consistency** (see applications in productivity and inequality accounting). Shapley OB is principled but heavier to communicate and compute at scale; it also doesn’t directly encode the **“bigger share ⇒ bigger magnitude”** business rule inside a rate group.
-* **Reweighting counterfactuals (DiNardo–Fortin–Lemieux / Fortin–Lemieux–Firpo):** Build a counterfactual distribution for rates or composition by propensity reweighting, then read the gap. These methods are strong for distributional analysis, but they **replace** rather than **reshape** the category ledger your users consume.
+* **Allocation of interaction & path independence:** Variants allocate the interaction symmetrically or adopt **Shapley-value–based decompositions** to ensure **order-invariance and aggregation consistency**. Shapley OB is principled but heavier to communicate and compute at scale; it also doesn’t directly encode the **“bigger share ⇒ bigger magnitude”** business rule inside a rate group.
+* **Reweighting counterfactuals (DiNardo–Fortin–Lemieux / Fortin–Lemieux–Firpo):** Build a counterfactual distribution for rates or composition by propensity reweighting, then read the gap. These methods are strong for distributional analysis, but they **replace** rather than **reshape** the category ledger our users consume.
 * **Index-number fixes (Bennett, Fisher, Törnqvist)**: Use symmetric means/indices to reduce base bias; again, principled but less transparent for non-technical readers and still not a guarantee of **category-level sign intuition**.
 
 **What we add (constrained, zero-sum redistribution)**
 
 * **Share-aware pooling inside rate groups** makes magnitudes scale with business impact drivers: **share**, **baseline leverage**, and (optionally) **how much better/worse** the rate is. It’s **zero-sum within the group**, so totals and the OB split are preserved.
 * **Sign projection** is a **minimal, zero-sum correction** that enforces:
-
   * if a category is **better** than baseline (beyond $\eta$), its net is **non-negative (≥ε)**;
   * if **worse**, its net is **non-positive (≤−ε)**;
   * near-ties untouched.
@@ -344,6 +475,3 @@ all **without** sacrificing mathematical conservation.
 * DiNardo, J., Fortin, N.M., & Lemieux, T. (1996). *Labor Market Institutions and the Distribution of Wages*. **Econometrica**.
 * Fortin, N., Lemieux, T., & Firpo, S. (2011). *Decomposition Methods in Economics*. **Handbook of Labor Economics**.
 * Shapley-based decompositions in productivity/inequality accounting (order-invariant attribution background).
-
-
-
