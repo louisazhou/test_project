@@ -363,7 +363,7 @@ class AnalysisResult:
         root = getattr(decision.root_cause_type, "value", str(decision.root_cause_type))
         evidence_df = decision.supporting_table_df.head(table_rows).copy()
         
-        template_text = f"""{decision.narrative_text}""".strip()
+        template_text = decision.narrative_text.strip()
 
         # 4) Decide which charts to show (driver logic lives here)
         chart_names: List[str]
@@ -1263,7 +1263,7 @@ class EdgeCaseDetector:
                 parent_label = agg_row["category"]
                 detailed_subset = detailed_results[
                     (detailed_results["region"] == region) & 
-                    detailed_results["category"].apply(lambda x: _match_parent(parent_label, x, parent_index))
+                    detailed_results["category"].apply(lambda x, parent_label=parent_label: _match_parent(parent_label, x, parent_index))
                 ]
                 if len(detailed_subset) <= 1:
                     continue
@@ -1617,7 +1617,7 @@ def _build_oaxaca_tracebacks(
             {"Component": "ranking_method", "Formula": "Share-aware prioritization within category groups (Strength/Problem/Neutral)", "Value": "Unified"},
             {"Component": "group_order_rule", "Formula": "If topline≥0: Strength → Problem (Mix) → Problem (Rate) → Neutral; else: Problem (Rate) → Problem (Mix) → Strength → Neutral", "Value": ("topline≥0" if total_gap >= 0 else "topline<0")},
             {"Component": "within_group_priority", "Formula": "Strength: priority = (rate_pp) × share; Problem(Rate): priority = (−rate_pp) × share; Problem(Mix): priority = (−mix_pp) × share; Neutral: priority = |net_pp| × share", "Value": "Higher priority = higher rank"},
-            {"Component": "low_share_deprioritization", "Formula": "Categories with Region Share % below P25 are deprioritized within their group (Strength/Problem/Neutral)", "Value": f"P25 threshold applied"},
+            {"Component": "low_share_deprioritization", "Formula": "Categories with Region Share % below P25 are deprioritized within their group (Strength/Problem/Neutral)", "Value": "P25 threshold applied"},
             {"Component": "dominant_driver_def", "Formula": "dominant_driver = 'Rate' if |rate_pp| ≥ |mix_pp| else 'Mix'", "Value": "per row"},
             {"Component": "percentile_rules", "Formula": "meaningful share = median(share); low-share flag = P25(share); material positive/negative = medians within sign buckets; execution gate = median(dr>0)", "Value": "computed per region"},
         ])
@@ -2010,13 +2010,13 @@ def enforce_sign_caps(E, M, dr, base_w, eps, eta):
     # Stage-and-revert: keep original for rollback if redistribution fails
     M_orig = M.copy()
         
-    I = E + M
+    total_impact = E + M
     Ppos = dr >  eta
     Pneg = dr < -eta
     
     # Check if any caps needed
-    neg_violators = Pneg & (I > -eps)
-    pos_violators = Ppos & (I < eps)
+    neg_violators = Pneg & (total_impact > -eps)
+    pos_violators = Ppos & (total_impact < eps)
     
     if not (neg_violators.any() or pos_violators.any()):
         return M, "none"  # No caps needed
@@ -2051,7 +2051,7 @@ def enforce_sign_caps(E, M, dr, base_w, eps, eta):
     
     # Apply neg ceiling
     if neg_violators.any():
-        reduction_per_violator = I.loc[neg_violators] + eps
+        reduction_per_violator = total_impact.loc[neg_violators] + eps
         M_scratch.loc[neg_violators] -= reduction_per_violator
         total_adjustment += reduction_per_violator.sum()
         applied = True
@@ -2100,12 +2100,12 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
     if len(M) <= 1:
         return M, 'single_category'
         
-    I = E + M
+    total_impact = E + M
     tiny = z_eps
     
     # Check if any caps needed
-    neg_violators = (dr < -eta) & (I > -eps)
-    pos_violators = (dr > eta) & (I < eps)
+    neg_violators = (dr < -eta) & (total_impact > -eps)
+    pos_violators = (dr > eta) & (total_impact < eps)
     
     if not (neg_violators.any() or pos_violators.any()):
         return M, 'none'
@@ -2113,38 +2113,38 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
     M_work = M.copy()
     donor_scope = 'none'
     
-    def _norm_weights(w: pd.Series) -> Tuple[Optional[pd.Series], bool]:
+    def _norm_weights(w: pd.Series, z_threshold: float) -> Tuple[Optional[pd.Series], bool]:
         Z = float(w.sum())
-        if np.isfinite(Z) and Z > tiny:
+        if np.isfinite(Z) and Z > z_threshold:
             return (w / Z), True
         return None, False
     
     # Apply negative ceiling first
     if neg_violators.any():
-        need_row = (I.loc[neg_violators] + eps).clip(lower=0.0)
+        need_row = (total_impact.loc[neg_violators] + eps).clip(lower=0.0)
         need = float(need_row.sum())
         
         if need > tiny:
             # Multi-pool donor search with capacity constraints
             # D1: Same group with headroom (preferred)
-            d1_mask = (dr < -eta) & (I < -eps)
+            d1_mask = (dr < -eta) & (total_impact < -eps)
             d1_cap = pd.Series(0.0, index=M.index)
-            d1_cap.loc[d1_mask] = ((-eps) - I.loc[d1_mask]).clip(lower=0.0)
+            d1_cap.loc[d1_mask] = ((-eps) - total_impact.loc[d1_mask]).clip(lower=0.0)
             
             # D2: Same-sign near-ties with soft headroom
-            d2_mask = (dr <= -eta/2) & (I <= -eps/2)
+            d2_mask = (dr <= -eta/2) & (total_impact <= -eps/2)
             d2_cap = pd.Series(0.0, index=M.index)
-            d2_cap.loc[d2_mask] = ((-eps/2) - I.loc[d2_mask]).clip(lower=0.0)
+            d2_cap.loc[d2_mask] = ((-eps/2) - total_impact.loc[d2_mask]).clip(lower=0.0)
             
             # D3: Opposite group strong positives
-            d3_mask = (dr > eta) & (I > eps)
+            d3_mask = (dr > eta) & (total_impact > eps)
             d3_cap = pd.Series(0.0, index=M.index)
-            d3_cap.loc[d3_mask] = (I.loc[d3_mask] - eps).clip(lower=0.0)
+            d3_cap.loc[d3_mask] = (total_impact.loc[d3_mask] - eps).clip(lower=0.0)
             
             # D4: Near-ties (can donate down to 0 but not flip negative)
-            d4_mask = (dr.abs() <= eta) & (I > 0)
+            d4_mask = (dr.abs() <= eta) & (total_impact > 0)
             d4_cap = pd.Series(0.0, index=M.index)
-            d4_cap.loc[d4_mask] = I.loc[d4_mask].clip(lower=0.0)
+            d4_cap.loc[d4_mask] = total_impact.loc[d4_mask].clip(lower=0.0)
             
             # Combine all donor pools
             donors = d1_mask | d2_mask | d3_mask | d4_mask
@@ -2162,7 +2162,7 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
                 w_bounded = w_raw * cap.clip(lower=0.0)
                 w_bounded = w_bounded.replace([np.inf, -np.inf], 0.0)
                 
-                w_norm, ok = _norm_weights(w_bounded)
+                w_norm, ok = _norm_weights(w_bounded, tiny)
                 
                 if ok:
                     M_work.loc[donors] += (rho * need) * w_norm.fillna(0.0)
@@ -2175,7 +2175,7 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
                         donor_scope = 'uniform'
                 else:
                     # Last resort: distribute uniformly across any positive headroom
-                    headroom_mask = (I > 0)
+                    headroom_mask = (total_impact > 0)
                     if headroom_mask.any():
                         uniform_take = (rho * need) / headroom_mask.sum()
                         M_work.loc[headroom_mask] -= uniform_take
@@ -2233,7 +2233,7 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
                 w_bounded = w_raw * cap.clip(lower=0.0)
                 w_bounded = w_bounded.replace([np.inf, -np.inf], 0.0)
                 
-                w_norm, ok = _norm_weights(w_bounded)
+                w_norm, ok = _norm_weights(w_bounded, tiny)
                 
                 if ok:
                     M_work.loc[donors] -= (rho * need) * w_norm.fillna(0.0)
@@ -2328,7 +2328,7 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         # Core Oaxaca with anchored mix (display space)
         E  = wR * (rR - rB)
         M  = (wR - wB) * (rB - rB_overall)
-        I  = E + M
+        total_impact  = E + M
         dr = (rR - rB)
         dw = (wR - wB)
         
@@ -2343,14 +2343,14 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         # Symmetric share-aware pooling (zero-sum inside each group)
         base_w_series = pd.Series(base_w, index=rows.index)
 
-        def pool(M_in: pd.Series, mask: pd.Series, positive: bool) -> pd.Series:
-            w = base_w_series.where(mask, 0.0)
-            w_norm, ok = _safe_weights(w, eps=pool_eps)
+        def pool(M_in: pd.Series, mask: pd.Series, positive: bool, weights_series: pd.Series, eps_threshold: float) -> pd.Series:
+            w = weights_series.where(mask, 0.0)
+            w_norm, ok = _safe_weights(w, eps=eps_threshold)
             if not ok:
                 return M_in
             if positive:
                 mass = float(M_in.where(mask & (M_in > 0)).sum())
-                if np.isclose(mass, 0.0, atol=pool_eps):
+                if np.isclose(mass, 0.0, atol=eps_threshold):
                     return M_in
                 target = pd.Series(0.0, index=M_in.index)
                 target.loc[mask] = mass * w_norm
@@ -2358,7 +2358,7 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
                 return M_in + delta
             else:
                 mass_mag = float((-M_in.where(mask & (M_in < 0))).sum())
-                if np.isclose(mass_mag, 0.0, atol=pool_eps):
+                if np.isclose(mass_mag, 0.0, atol=eps_threshold):
                     return M_in
                 target_mag = pd.Series(0.0, index=M_in.index)
                 target_mag.loc[mask] = mass_mag * w_norm
@@ -2369,8 +2369,8 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         # Symmetric share-aware pooling - ignore near-ties
         Ppos = (dr > thresholds.minor_rate_diff)
         Pneg = (dr < -thresholds.minor_rate_diff)
-        M1 = pool(M0, Ppos, positive=True)
-        M1 = pool(M1, Pneg, positive=False)
+        M1 = pool(M0, Ppos, positive=True, weights_series=base_w_series, eps_threshold=pool_eps)
+        M1 = pool(M1, Pneg, positive=False, weights_series=base_w_series, eps_threshold=pool_eps)
 
         # Keep snapshots for transparency
         M_before = M.copy()
@@ -2718,7 +2718,7 @@ def get_baseline_data(
         best_rates = {}
         for category in all_categories:
             category_rates = []
-            for region, rates in category_rates_by_region.items():
+            for _region, rates in category_rates_by_region.items():
                 if category in rates and not pd.isna(rates[category]):
                     category_rates.append(rates[category])
             
@@ -3378,8 +3378,8 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     POS, NEG = "#2e7d32", "#c62828"
     GRID = "#8e8e8e"
     Q = {"I": "#e8f4ec", "II": "#f6f2dc", "III": "#ffffff", "IV": "#fdecea"}
-    PILL_BBOX = dict(boxstyle="square,pad=0.35", fc="white", ec="#cfcfcf", lw=1.0)
-    ARROW = dict(arrowstyle="-", lw=1.0, color="#777")
+    PILL_BBOX = {"boxstyle": "square,pad=0.35", "fc": "white", "ec": "#cfcfcf", "lw": 1.0}
+    ARROW = {"arrowstyle": "-", "lw": 1.0, "color": "#777"}
 
     # ----------------------- data ------------------------
     df = result.decomposition_df
@@ -3508,7 +3508,7 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
                  xy=ex, xytext=(ex[0], ex[1]-0.45),
                  xycoords=axk.transData, textcoords=axk.transData,
                  ha="center", va="top", fontsize=11, color="#222",
-                 bbox=PILL_BBOX, arrowprops=dict(arrowstyle="-|>", lw=1.1, color="#333"))
+                 bbox=PILL_BBOX, arrowprops={"arrowstyle": "-|>", "lw": 1.1, "color": "#333"})
 
     # ---------------- legend1 below ax2 -----------------
     ax_leg1.axis("off")
