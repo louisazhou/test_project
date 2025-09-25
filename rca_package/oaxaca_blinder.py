@@ -147,8 +147,22 @@ class AnalysisThresholds:
     near_zero_gap: float = 0.005         # 0.5pp - essentially no gap
     
     # Execution difference thresholds
-
-    minor_rate_diff: float = 0.005       # 0.5pp rate difference
+    minor_rate_diff: float = 0.001       # 0.1pp rate difference (reduced from 0.2pp to fix boundary cases)
+    
+    # Rebalancer parameters (Phase 1 improvements)
+    projection_epsilon: float = 0.001    # 0.1pp - projection floor/ceiling (reduced from 0.5pp)  
+    share_exponent_alpha: float = 1.5    # Share weighting exponent (increased from 1.0)
+    share_exponent_beta: float = 1.0     # Baseline leverage exponent
+    share_exponent_gamma: float = 0.0    # Performance tilt exponent (disabled)
+    small_share_threshold: float = 0.02  # 2% - threshold for small share damping
+    small_share_damp_factor: float = 0.3 # Damping factor for small shares (reduced from 0.5)
+    
+    # Health check thresholds
+    health_check_violation_delta: float = 0.0005  # 0.05pp threshold for sign coherence violations
+    
+    # Classification thresholds
+    min_strength_impact: float = 0.0025  # 0.25pp minimum impact to be considered a strength
+    min_problem_impact: float = 0.0025   # 0.25pp minimum magnitude to be considered a problem
     
     # Ranking thresholds for categorization
     meaningful_share_threshold: float = 0.05  # 5% - minimum share to be considered meaningful
@@ -256,18 +270,18 @@ class AnalysisResult:
                 regional_summary.loc[regional_summary['region'] == region, 'performance_direction'] = dec.performance_direction.value
         regional_summary = regional_summary.sort_values('total_net_gap', ascending=False)
         
-        # top contributors (numeric) - ensure display columns exist for ranking
-        decomp = _ensure_display_columns(self.decomposition_df)
+        # top contributors (numeric) - use net_gap directly
+        decomp = self.decomposition_df
         top_contributors = decomp[
             [
                 'region',
                 'category',
-                'net_display',
+                'net_gap',
                 'display_mix_contribution',
                 'display_rate_contribution',
-                'abs_gap',
             ]
         ].copy()
+        top_contributors['abs_gap'] = decomp['net_gap'].abs()
         top_contributors = top_contributors.nlargest(15, 'abs_gap')
 
         if format_for_display:
@@ -279,7 +293,7 @@ class AnalysisResult:
             rs['region_overall_rate_pct'] = (rs['region_overall_rate'] * 100).round(1).astype(str) + '%'
             rs['baseline_overall_rate_pct'] = (rs['baseline_overall_rate'] * 100).round(1).astype(str) + '%'
             tc = top_contributors.copy()
-            tc['net_gap_pp'] = (tc['net_display']*100).round(1).astype(str)+'pp'
+            tc['net_gap_pp'] = (tc['net_gap']*100).round(1).astype(str)+'pp'
             tc['mix_gap_pp'] = (tc['display_mix_contribution']*100).round(1).astype(str)+'pp'
             tc['rate_gap_pp'] = (tc['display_rate_contribution']*100).round(1).astype(str)+'pp'
             tc = tc[['region','category','net_gap_pp','mix_gap_pp','rate_gap_pp']]
@@ -294,7 +308,7 @@ class AnalysisResult:
         return {
             "regional_performance_summary": regional_summary.reset_index(drop=True),
             "top_category_contributors": top_contributors[
-                ['region','category','net_display','display_mix_contribution','display_rate_contribution']
+                ['region','category','net_gap','display_mix_contribution','display_rate_contribution']
             ].reset_index(drop=True),
             "paradox_regions": self.paradox_report.affected_regions if self.paradox_report.paradox_detected else [],
             "cancellation_regions": self.cancellation_report.affected_regions if self.cancellation_report.cancellation_detected else []
@@ -439,7 +453,7 @@ class AnalysisResult:
             "regional_gaps_row": region_gaps_row,
             "regional_gaps_full": self.regional_gaps.copy(),
             "mathematical_validation": self.mathematical_validation,
-            "impact_column_used": "net_display",
+            "impact_column_used": "net_gap",
             "sort_key_used": "bucketed_ranking"
         }
         
@@ -685,9 +699,7 @@ class NarrativeTemplateEngine:
         actual_region_rate = region_totals["region_overall_rate"]
         actual_baseline_rate = region_totals["baseline_overall_rate"]
         
-        region_rows = _ensure_display_columns(
-            decomposition_df[decomposition_df["region"] == region]
-        )
+        region_rows = decomposition_df[decomposition_df["region"] == region]
         
         # Use the single source of truth for ranking (same as supporting table and figures)
         tot_gap = region_totals["total_net_gap"]
@@ -705,7 +717,7 @@ class NarrativeTemplateEngine:
         # Build allocation issues using the new Simpson's columns
         allocation_issues = []
         for _, row in region_rows_sorted.iterrows():
-            name = row.get('category_clean', pretty_category(row.get('category')))
+            name = pretty_category(row['category'])
             r_pct = row["region_mix_pct"] * 100
             b_pct = row["rest_mix_pct"] * 100
             dx_pp = r_pct - b_pct
@@ -731,9 +743,9 @@ class NarrativeTemplateEngine:
         for _, row in region_rows_sorted.iterrows():
             rate_diff = (row['region_rate'] - row['rest_rate']) * 100
             share_weight = row['region_mix_pct']
-            net_impact = row.get('net_display', 0.0) * 100
+            net_impact = row['net_gap'] * 100
             if rate_diff > (self.thresholds.high_performance_threshold * 100) and share_weight > self.thresholds.meaningful_share_threshold:  # High performance + meaningful share
-                name = row.get('category_clean', pretty_category(row.get('category')))
+                name = pretty_category(row['category'])
                 despite_segments.append(f"{name} ({row['region_rate']*100:.1f}% vs {row['rest_rate']*100:.1f}% rates, {net_impact:+.1f}pp impact)")
         
         # Build two-sentence narrative
@@ -755,7 +767,7 @@ class NarrativeTemplateEngine:
                 dx_pp = r_pct - b_pct
                 
                 if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                    name = row.get('category_clean', pretty_category(row.get('category')))
+                    name = pretty_category(row['category'])
                     rate_r = row['region_rate'] * 100
                     
                     # Determine performance level based on region's own rate spectrum
@@ -796,9 +808,7 @@ class NarrativeTemplateEngine:
         overall_baseline_rate = region_totals["baseline_overall_rate"]
         
         # Use centralized contradiction logic
-        region_rows = _ensure_display_columns(
-            decomposition_df[decomposition_df["region"] == region]
-        )
+        region_rows = decomposition_df[decomposition_df["region"] == region]
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
         contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
         
@@ -838,19 +848,20 @@ class NarrativeTemplateEngine:
         top_rows = sorted_rows.head(3)
 
         top = top_rows[[
-            "category_clean",
+            "category",
             "region_rate",
             "rest_rate",
-            "net_display",
+            "net_gap",
             "display_rate_contribution",
             "display_mix_contribution",
-        ]]
+        ]].copy()
+        top["category_clean"] = top["category"].apply(pretty_category)
 
         # For PERFORMANCE_DRIVEN: Focus on rates, minimize share context, keep impact PP
         drivers = (
             ", ".join(
                 f"{r.category_clean} (rate: {r.region_rate*100:.1f}% vs {r.rest_rate*100:.1f}%, "
-                f"impact: {r.net_display*100:+.1f}pp)"
+                f"impact: {r.net_gap*100:+.1f}pp)"
             for r in top.itertuples()
             )
             if len(top)
@@ -916,7 +927,7 @@ class NarrativeTemplateEngine:
         # Build a ranked list of contradicting segments (by weight * |rate dx|)
         tmp = rows.loc[mask].copy()
         if len(tmp):
-            tmp["_label"] = tmp["category_clean"]  # Use guaranteed clean column
+            tmp["_label"] = tmp["category"].apply(pretty_category)
             tmp["_impact_rank"] = (w.loc[tmp.index] * rate_dx_pp.loc[tmp.index].abs())
             tmp = tmp.sort_values("_impact_rank", ascending=False)
             segments = [
@@ -940,12 +951,12 @@ class NarrativeTemplateEngine:
         for _, r in candidates.iterrows():
             dx_pp = (r["region_mix_pct"] - r["rest_mix_pct"]) * 100
             if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                name = r["category_clean"]
+                name = pretty_category(r["category"])
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
                 
                 # Use unified net display impact (works for both Simpson's and standard cases)
-                impact_pp = r.get('net_display', r.get('net_gap', 0)) * 100
+                impact_pp = r['net_gap'] * 100
                 
                 out.append(
                     f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
@@ -965,18 +976,19 @@ class NarrativeTemplateEngine:
             total_gap=tot_gap,
             thresholds=self.thresholds
         )
-        # Always use net_display for impact (unified rebalancer handles all cases)
-        impact_sorted = region_data["net_display"].fillna(region_data["net_gap"])
+        # Always use net_gap for impact (unified rebalancer handles all cases)
+        impact_sorted = region_data["net_gap"]
 
         # Common formatter for pp values
-        fmt_pp = lambda s: (s * 100).round(1).astype(str) + "pp"
+        def fmt_pp(s):
+            return (s * 100).round(1).astype(str) + "pp"
 
         # ----- Output columns (all from the same truth set) -----
         # Ensure consistent sort using extended fields when present
         if {'group_order','priority_score'}.issubset(region_data.columns):
             region_data = region_data.sort_values(['group_order','priority_score'], ascending=[True, False]).reset_index(drop=True)
         out = region_data.copy()
-        out["Category"] = region_data["category_clean"]
+        out["Category"] = region_data["category"].apply(pretty_category)
         out["Region Rate %"] = (region_data["region_rate"] * 100).round(1).astype(str) + "%"
         out["Baseline Rate %"] = (region_data["rest_rate"] * 100).round(1).astype(str) + "%"
         out["Region Share %"] = (region_data["region_mix_pct"] * 100).round(1).astype(str) + "%"
@@ -1398,6 +1410,62 @@ def _merge_paradox(p1: ParadoxReport, p2: ParadoxReport) -> ParadoxReport:
 # MAIN ORCHESTRATION
 # =============================================================================
 
+def _calculate_health_metrics(region_data: pd.DataFrame, thresholds: AnalysisThresholds) -> Dict[str, str]:
+    """
+    Calculate health check metrics for a region's impact distribution.
+    
+    Returns:
+        Dict with sign_coherence_violations, uniformity_fraction, and share_monotonicity
+    """
+    if region_data.empty:
+        return {
+            "sign_coherence_violations": "0/0",
+            "uniformity_fraction": "0.0%", 
+            "share_monotonicity": "N/A"
+        }
+    
+    try:
+        # Calculate rate differences and net impacts
+        dr = region_data.get('region_rate', pd.Series(0)) - region_data.get('rest_rate', pd.Series(0))
+        net_impact = region_data['net_gap']
+        region_share = region_data.get('region_mix_pct', pd.Series(0))
+        
+        eta = thresholds.minor_rate_diff
+        epsilon = thresholds.projection_epsilon
+        delta = thresholds.health_check_violation_delta
+        
+        # 1. Sign coherence: count violations
+        better_but_negative = (dr > eta) & (net_impact < -delta)
+        worse_but_positive = (dr < -eta) & (net_impact > delta)
+        total_violations = better_but_negative.sum() + worse_but_positive.sum()
+        sign_coherence = f"{total_violations}/{len(region_data)}"
+        
+        # 2. Uniformity: fraction near ±epsilon
+        near_pos_epsilon = (net_impact - epsilon).abs() < 0.0001
+        near_neg_epsilon = (net_impact + epsilon).abs() < 0.0001
+        plateau_rows = near_pos_epsilon.sum() + near_neg_epsilon.sum()
+        uniformity_fraction = f"{100 * plateau_rows / len(region_data):.1f}%"
+        
+        # 3. Share monotonicity: correlation between share and |impact|
+        if len(region_data) > 2:
+            corr = region_share.corr(net_impact.abs())
+            share_monotonicity = f"{corr:.3f}" if pd.notna(corr) else "N/A"
+        else:
+            share_monotonicity = "N/A (too few rows)"
+        
+        return {
+            "sign_coherence_violations": sign_coherence,
+            "uniformity_fraction": uniformity_fraction,
+            "share_monotonicity": share_monotonicity
+        }
+        
+    except Exception as e:
+        return {
+            "sign_coherence_violations": f"Error: {str(e)}",
+            "uniformity_fraction": "Error",
+            "share_monotonicity": "Error"
+        }
+
 def _build_oaxaca_tracebacks(
     decomposition_df: pd.DataFrame,
     regional_gaps: pd.DataFrame, 
@@ -1429,26 +1497,17 @@ def _build_oaxaca_tracebacks(
         walkthrough_rows = []
         for _, row in region_data.iterrows():
           
-            rbar = row.get('baseline_overall_rate', np.nan)
+            rbar = row['baseline_overall_rate']
             
-            # Show how net_impact is calculated (the key question!)
-            rate_contrib = row.get('rate_contribution_raw', 0)
-            # Use anchored mix for walkthrough value: (w_R - w_B) * (r_B - r̄_B)
-            try:
-                mix_contrib = (
-                    (row['region_mix_pct'] - row['rest_mix_pct']) *
-                    (row['rest_rate'] - row.get('baseline_overall_rate', 0.0))
-                )
-            except Exception:
-                mix_contrib = row.get('mix_contribution_raw', 0)
-            
-            # Get the final net impact first
-            net_impact = row.get('net_display', row.get('net_gap', 0))
+            # Use the calculated values from decomposition - no redundant math
+            rate_contrib = row['display_rate_contribution']
+            mix_contrib = row['display_mix_contribution']
+            net_impact = row['net_gap']
             
             # Show the transparent pipeline with actual numbers
-            pool_delta = row.get('rebalance_pool_delta', 0)
-            project_delta = row.get('rebalance_project_delta', row.get('rebalance_signcap_delta', 0))
-            pool_group = row.get('pool_group', 'unknown')
+            pool_delta = row['rebalance_pool_delta']
+            project_delta = row['rebalance_project_delta']
+            pool_group = row['pool_group']
             
             # numeric pipeline (scan-friendly) in pp units 
             raw_impact = rate_contrib + mix_contrib
@@ -1469,7 +1528,7 @@ def _build_oaxaca_tracebacks(
             reason_tags = []
             if (rate_diff < 0 and dw > 0) or (rate_diff > 0 and dw < 0):
                 reason_tags.append('oppose(dr,dw)')
-            if row.get('project_applied', False):
+            if row['project_applied']:
                 reason_tags.append('project')
             reason = '; '.join(reason_tags) if reason_tags else ''
             
@@ -1498,27 +1557,27 @@ def _build_oaxaca_tracebacks(
                 
                 # Formulas with documentation-consistent naming
                 "rate_contribution_formula": f"E = w_R × (r_R - r_B) = {row['region_mix_pct']:.3f} × ({row['region_rate']:.3f} - {row['rest_rate']:.3f})",
-                "E": round(row.get('rate_contribution_raw', 0), 3),
+                "E": round(rate_contrib, 3),
                 "mix_contribution_formula": f"M = (w_R - w_B) × (r_B - r̄_B) = ({row['region_mix_pct']:.3f} - {row['rest_mix_pct']:.3f}) × ({row['rest_rate']:.3f} - {rbar:.3f})",
                 "M₀": round(mix_contrib, 3),
                 "I₀": round(raw_impact, 3),
                 
                 # Documentation-consistent pp columns
-                "E (pp)": round(row.get('rate_contribution_raw', 0) * 100, 3),
+                "E (pp)": round(rate_contrib * 100, 3),
                 "M₀ (pp)": round(mix_contrib * 100, 3),
                 "I₀ (pp)": round(raw_impact * 100, 3),
 
                 # Rebalancer steps (as columns)
-                "pool_weight": round(row.get('pool_weight', 0), 4),
-                "pool_mass_pp": round(row.get('pool_mass_pp', 0), 3),
-                "M_pool(pp)": round(row.get('M_after_pool_pp', 0), 3),
-                "project_need_pp": round(row.get('project_need_pp', row.get('cap_need_pp', 0)), 3),
+                "pool_weight": round(row['pool_weight'], 4),
+                "pool_mass_pp": round(row['pool_mass_pp'], 3),
+                "M_pool(pp)": round((mix_contrib + pool_delta) * 100, 3),  # Mix after pooling
+                "project_need_pp": round(row['project_need_pp'], 3),
                 "pool_delta_pp": round(pool_delta * 100, 3),
                 "project_delta_pp": round(project_delta * 100, 3),
-                "M_project(pp)": round(row.get('M_after_project_pp', row.get('M_after_cap_pp', 0)), 3),
-                                "pool_group": pool_group_detailed,
-                "project_applied": row.get('project_applied', False),
-                "project_donor_scope": row.get('project_donor_scope', ''),
+                "M_project(pp)": round((mix_contrib + pool_delta + project_delta) * 100, 3),  # Mix after projection
+                "pool_group": pool_group_detailed,  # Which performance band this row belongs to for pooling
+                "project_applied": row['project_applied'],
+                "project_donor_scope": row['project_donor_scope'],  # Where projection found donors (group/region-wide/uniform)
                 "reason": reason,
                 "I_final formula": pipeline,
                 "I_final": round(net_impact, 3),
@@ -1530,17 +1589,17 @@ def _build_oaxaca_tracebacks(
         # Add per-step totals row for conservation reassurance
         if walkthrough_rows:
             # Totals computed from raw region_data (avoid double rounding), with pp variants
-            tot_E = float(region_data.get('rate_contribution_raw', pd.Series(0)).sum())
-            tot_M = float(region_data.get('mix_contribution_raw', pd.Series(0)).sum())
+            tot_E = float(region_data['display_rate_contribution'].sum())
+            tot_M = float(region_data['display_mix_contribution'].sum())
             tot_Iraw = tot_E + tot_M
-            tot_pool  = float(region_data.get('rebalance_pool_delta', pd.Series(0)).sum())
-            tot_cap   = float(region_data.get('rebalance_project_delta', region_data.get('rebalance_signcap_delta', pd.Series(0))).sum())
-            tot_Ifinal= float(region_data.get('net_display', pd.Series(0)).sum())
-            # Stage totals in pp
-            tot_M_after_pool_pp = float(region_data.get('M_after_pool_pp', pd.Series(0)).sum())
-            tot_M_after_cap_pp = float(region_data.get('M_after_project_pp', region_data.get('M_after_cap_pp', pd.Series(0))).sum())
-            tot_pool_mass_pp = float(region_data.get('pool_mass_pp', pd.Series(0)).sum())
-            tot_cap_need_pp = float(region_data.get('project_need_pp', region_data.get('cap_need_pp', pd.Series(0))).sum())
+            tot_pool  = float(region_data['rebalance_pool_delta'].sum())
+            tot_cap   = float(region_data['rebalance_project_delta'].sum())
+            tot_Ifinal= float(region_data['net_gap'].sum())
+            # Stage totals in pp - calculate from available data
+            tot_M_after_pool_pp = (tot_M + tot_pool) * 100  # M₀ + pool_delta
+            tot_M_after_cap_pp = (tot_M + tot_pool + tot_cap) * 100  # M₀ + pool_delta + project_delta
+            tot_pool_mass_pp = float(region_data['pool_mass_pp'].sum())
+            tot_cap_need_pp = float(region_data['project_need_pp'].sum())
 
             totals_row = {
                 "category": "=== TOTALS ===",
@@ -1577,12 +1636,12 @@ def _build_oaxaca_tracebacks(
         # === SUMMARY TABLE: High-level decisions and parameters ===
         # Calculate totals from the same formula components used in walkthrough for perfect consistency
         region_data = decomposition_df[decomposition_df['region'] == focus_region]
-        rate_gap = region_data['rate_contribution_raw'].sum()
-        mix_gap = region_data['mix_contribution_raw'].sum()
+        rate_gap = region_data['display_rate_contribution'].sum()
+        mix_gap = region_data['display_mix_contribution'].sum()
         
         # Use the same calculation logic as walkthrough
         # All cases now use the same calculation: sum of net_display
-        total_gap = region_data['net_display'].sum()
+        total_gap = region_data['net_gap'].sum()
         
         # Business conclusion logic
         decision = narrative_decisions.get(focus_region)
@@ -1622,17 +1681,48 @@ def _build_oaxaca_tracebacks(
             {"Component": "percentile_rules", "Formula": "meaningful share = median(share); low-share flag = P25(share); material positive/negative = medians within sign buckets; execution gate = median(dr>0)", "Value": "computed per region"},
         ])
         if simpson_detected:
-            summary_rows.append({"Component": "simpson_affected_regions", "Formula": "-", "Value": str(paradox_report.affected_regions)})
+            summary_rows.append({"Component": "simpson_affected_regions", "Formula": "Regions where Simpson's paradox was detected", "Value": str(paradox_report.affected_regions)})
             
         # Add key metrics if available (exclude redundant ones that duplicate total_gap)
         redundant_metrics = {"gap_magnitude", "total_gap", "construct_gap", "performance_gap"}
         if key_metrics:
             for metric_name, metric_value in key_metrics.items():
                 if metric_name not in redundant_metrics:  # Skip redundant metrics
+                    # Add meaningful formulas for key metrics
+                    metric_formulas = {
+                        "baseline_overall_rate": "Weighted average rate across baseline categories",
+                        "region_overall_rate": "Weighted average rate across region categories", 
+                        "common_mix_gap": "Performance gap using common category weights",
+                        "pooled_gap": "Actual observed performance gap",
+                        "disagree_exposure": "Share of categories that contradict overall direction"
+                    }
+                    formula = metric_formulas.get(metric_name, f"Key metric: {metric_name}")
+                    
                     if isinstance(metric_value, (int, float)):
-                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": "-", "Value": f"{metric_value:.4f}"})
+                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": formula, "Value": f"{metric_value:.4f}"})
                     else:
-                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": "-", "Value": str(metric_value)})
+                        summary_rows.append({"Component": f"key_metric_{metric_name}", "Formula": formula, "Value": str(metric_value)})
+        
+        # Add health check metrics to summary
+        try:
+            health_metrics = _calculate_health_metrics(region_data, thresholds)
+            
+            # Add explanatory formulas for health checks with actual threshold values
+            eta_pp = thresholds.minor_rate_diff * 100
+            epsilon_pp = thresholds.projection_epsilon * 100  
+            delta_pp = thresholds.health_check_violation_delta * 100
+            
+            health_formulas = {
+                "sign_coherence_violations": f"Count of counter-intuitive signs: dr>{eta_pp:.1f}pp & Net<-{delta_pp:.2f}pp OR dr<-{eta_pp:.1f}pp & Net>+{delta_pp:.2f}pp",
+                "uniformity_fraction": f"Percentage of rows with |Net| ≈ {epsilon_pp:.1f}pp (plateau detection - lower is better)",
+                "share_monotonicity": "Correlation between |Net| and share within performance bands (should be positive)"
+            }
+            
+            for metric_name, metric_value in health_metrics.items():
+                formula = health_formulas.get(metric_name, f"Health metric: {metric_name}")
+                summary_rows.append({"Component": f"health_check_{metric_name}", "Formula": formula, "Value": str(metric_value)})
+        except Exception as e:
+            summary_rows.append({"Component": "health_check_error", "Formula": "Health metrics calculation failed", "Value": f"Error: {str(e)}"})
         
         summary_df = pd.DataFrame(summary_rows)
         
@@ -1770,7 +1860,8 @@ def run_oaxaca_analysis(
             mix_component = (region_mix_val - baseline_mix_val) * baseline_rate_val
             net_gap = rate_component + mix_component
 
-            # Create result record - store both tuple and string for consistency
+            # Create result record - store only essential data
+            # Core contributions will be computed in rebalancing
             decomposition_results.append({
                 "region": region,
                 "category": str(category),  # display string
@@ -1778,19 +1869,16 @@ def run_oaxaca_analysis(
                 "rest_mix_pct": baseline_mix_val,
                 "region_rate": region_rate_val,
                 "rest_rate": baseline_rate_val,
-                "construct_gap_contribution": mix_component,
-                "performance_gap_contribution": rate_component,
-                "net_gap": net_gap,
                 "baseline_overall_rate": baseline_overall_rate,
+                # Store raw components for rebalancing to use
+                "_rate_component": rate_component,
+                "_mix_component": mix_component,
+                "net_gap": net_gap,
 
             })
     
     # Convert to DataFrame
     decomposition_df = pd.DataFrame(decomposition_results)
-    decomposition_df = _ensure_display_columns(decomposition_df)
-
-    # Step 2: Calculate regional aggregates
-    regional_gaps = _calculate_regional_aggregates(decomposition_df, regional_overall_rates)
     
     # Step 2.5: EARLY ROUTING - Check for single-category cases and route appropriately
     # This prevents late routing issues and provides clear decision path
@@ -1806,18 +1894,14 @@ def run_oaxaca_analysis(
     # Step 2.6: Create business analyzer
     business_analyzer = BusinessAnalyzer(thresholds)
     
-    # Step 3: Mathematical validation
-    decomposed_gaps = {
-        row["region"]: row["total_net_gap"] 
-        for _, row in regional_gaps.iterrows()
-    }
-    mathematical_validation = OaxacaCore.validate_decomposition(actual_gaps, decomposed_gaps, thresholds.mathematical_tolerance)
-    
     # Log decomposition breakdown for each region (detailed debug info)
-    for region in regions:
-        region_decomp = decomposition_df[decomposition_df["region"] == region]
-        for _, row in region_decomp.iterrows():
-            logger.debug(f"[MATH] DECOMPOSITION: {region}-{row['category']}: construct={row['construct_gap_contribution']:+.3f}, performance={row['performance_gap_contribution']:+.3f}, net={row['net_gap']:+.3f}")
+    if not decomposition_df.empty:
+        for region in regions:
+            region_decomp = decomposition_df[decomposition_df["region"] == region]
+            for _, row in region_decomp.iterrows():
+                construct = row['_mix_component']
+                performance = row['_rate_component']
+                logger.debug(f"[MATH] DECOMPOSITION: {region}-{row['category']}: construct={construct:+.3f}, performance={performance:+.3f}, net={row['net_gap']:+.3f}")
     
     # Step 4: Edge case detection (BEFORE business insights)
     paradox_report = ParadoxReport(False, [], GapSignificance.LOW)
@@ -1875,7 +1959,21 @@ def run_oaxaca_analysis(
     
     # Enrich DataFrames with all computed columns needed downstream
     enriched_decomposition_df = compute_derived_metrics_df(decomposition_df, thresholds, paradox_report)
+    
+    # Step 2: Calculate regional aggregates after enrichment (uses temporary columns)
+    regional_gaps = _calculate_regional_aggregates(enriched_decomposition_df, regional_overall_rates)
     enriched_regional_gaps = compute_derived_regional_gaps(regional_gaps)
+    
+    # Clean up temporary columns after regional aggregates are calculated
+    temp_cols = [col for col in enriched_decomposition_df.columns if col.startswith('_')]
+    enriched_decomposition_df = enriched_decomposition_df.drop(columns=temp_cols, errors='ignore')
+    
+    # Step 3: Mathematical validation (after regional gaps are available)
+    decomposed_gaps = {
+        row["region"]: row["total_net_gap"] 
+        for _, row in regional_gaps.iterrows()
+    }
+    mathematical_validation = OaxacaCore.validate_decomposition(actual_gaps, decomposed_gaps, thresholds.mathematical_tolerance)
     
     # Step 6: Mathematical cancellation detection
     cancellation_report = CancellationReport(
@@ -2265,11 +2363,19 @@ def unified_sign_projection(E: pd.Series, M: pd.Series, dr: pd.Series, base_w: p
 
 def _apply_constrained_rebalance(df: pd.DataFrame,
                                  *, thresholds: AnalysisThresholds,
-                                 alpha=1.0, beta=1.0, gamma=0.0,
-                                 share_floor=0.02, small_share_damp=0.5,
-                                 eps_floor=0.0) -> pd.DataFrame:
+                                 alpha=None, beta=None, gamma=None,
+                                 share_floor=None, small_share_damp=None,
+                                 eps_floor=None) -> pd.DataFrame:
     if df.empty:
         return df
+
+    # Use thresholds as defaults if not provided
+    alpha = alpha if alpha is not None else thresholds.share_exponent_alpha
+    beta = beta if beta is not None else thresholds.share_exponent_beta
+    gamma = gamma if gamma is not None else thresholds.share_exponent_gamma
+    share_floor = share_floor if share_floor is not None else thresholds.small_share_threshold
+    small_share_damp = small_share_damp if small_share_damp is not None else thresholds.small_share_damp_factor
+    eps_floor = eps_floor if eps_floor is not None else thresholds.projection_epsilon
 
     out = df.copy()
 
@@ -2278,21 +2384,24 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         g = out['region'] == region
         rows = out.loc[g].copy()
         
-        # Single-category safeguard - skip rebalancing to preserve conservation
+        # Single-category safeguard - skip rebalancing but create display columns
         if len(rows) <= 1:
             logger.debug(f"Single-category region {region} - skipping rebalancing")
             # Copy core Oaxaca values directly to display columns
-            out.loc[g, 'display_rate_contribution'] = rows.get('performance_gap_contribution', 0)
-            out.loc[g, 'display_mix_contribution'] = rows.get('construct_gap_contribution', 0)  
-            out.loc[g, 'net_display'] = rows.get('net_gap', 0)
+            out.loc[g, 'display_rate_contribution'] = rows['_rate_component']
+            out.loc[g, 'display_mix_contribution'] = rows['_mix_component']
+            # net_gap already contains the correct value
             out.loc[g, 'net_adjustment'] = 0
             out.loc[g, 'net_adjustment_role'] = 'baseline'
-            # Zero out all deltas
-            for col in ['rebalance_offender_delta', 'rebalance_pool_delta', 'rebalance_signcap_delta', 'rebalance_total_delta']:
-                out.loc[g, col] = 0
-            for col in ['guardrail_violation', 'signcap_applied']:
-                out.loc[g, col] = False
+            # Zero out diagnostic columns
+            out.loc[g, 'pool_mass_pp'] = 0
+            out.loc[g, 'project_need_pp'] = 0
+            out.loc[g, 'rebalance_pool_delta'] = 0
+            out.loc[g, 'rebalance_project_delta'] = 0
             out.loc[g, 'pool_group'] = 'single_category'
+            out.loc[g, 'project_applied'] = False
+            out.loc[g, 'project_donor_scope'] = ''
+            out.loc[g, 'pool_weight'] = 0
             continue
 
         # Inputs
@@ -2309,18 +2418,21 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
             z_eps = thresholds.mathematical_tolerance
             if wB_sum <= z_eps:
                 logger.warning(f"Region {region}: wB.sum() ≤ {z_eps:.0e}, skipping rebalancing to avoid odd anchors")
-                # Skip rebalancing, copy core Oaxaca values directly
-                out.loc[g, 'display_rate_contribution'] = rows.get('performance_gap_contribution', 0)
-                out.loc[g, 'display_mix_contribution'] = rows.get('construct_gap_contribution', 0)
-                out.loc[g, 'net_display'] = rows.get('net_gap', 0)
+                # Skip rebalancing but create display columns
+                out.loc[g, 'display_rate_contribution'] = rows['_rate_component']
+                out.loc[g, 'display_mix_contribution'] = rows['_mix_component']
+                # net_gap already contains the correct value
                 out.loc[g, 'net_adjustment'] = 0
                 out.loc[g, 'net_adjustment_role'] = 'baseline'
-                # Zero out all deltas
-                for col in ['rebalance_offender_delta', 'rebalance_pool_delta', 'rebalance_signcap_delta', 'rebalance_total_delta']:
-                    out.loc[g, col] = 0
-                for col in ['guardrail_violation', 'signcap_applied']:
-                    out.loc[g, col] = False
+                # Zero out diagnostic columns
+                out.loc[g, 'pool_mass_pp'] = 0
+                out.loc[g, 'project_need_pp'] = 0
+                out.loc[g, 'rebalance_pool_delta'] = 0
+                out.loc[g, 'rebalance_project_delta'] = 0
                 out.loc[g, 'pool_group'] = 'skipped_wB_zero'
+                out.loc[g, 'project_applied'] = False
+                out.loc[g, 'project_donor_scope'] = ''
+                out.loc[g, 'pool_weight'] = 0
                 continue
             else:
                 rB_overall = float((wB * rB).sum() / wB_sum)
@@ -2330,9 +2442,8 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         M  = (wR - wB) * (rB - rB_overall)
         total_impact  = E + M
         dr = (rR - rB)
-        dw = (wR - wB)
         
-        pool_eps = (eps_floor if eps_floor > 0 else thresholds.near_zero_gap) / 100
+        pool_eps = eps_floor / 100
         # Unified weights for pooling and projection
         damp = np.where(wR < share_floor, small_share_damp, 1.0)
         leverage = (rB - rB_overall).abs() ** beta
@@ -2373,13 +2484,12 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         M1 = pool(M1, Pneg, positive=False, weights_series=base_w_series, eps_threshold=pool_eps)
 
         # Keep snapshots for transparency
-        M_before = M.copy()
         M_after_offender = M0.copy()
         M_after_pool = M1.copy()
         
         # Unified sign projection (single-step) after pooling
         cap_eta = thresholds.minor_rate_diff
-        cap_eps = eps_floor if eps_floor > 0 else thresholds.near_zero_gap
+        cap_eps = eps_floor
         I1 = E + M1
         cap_need = pd.Series(0.0, index=rows.index)
         cap_need.loc[(dr > cap_eta) & (I1 < cap_eps)] = (cap_eps - I1.loc[(dr > cap_eta) & (I1 < cap_eps)])
@@ -2387,36 +2497,27 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         M2, cap_scope = unified_sign_projection(E, M1.copy(), dr, base_w_series, eps=cap_eps, eta=cap_eta)
         
         # Compute deltas for diagnostics
-        delta_guardrail = M_after_offender - M_before
         delta_pool = M_after_pool - M_after_offender
         delta_cap = M2 - M_after_pool
-        delta_total = M2 - M_before
         
         I2 = E + M2
 
         # Write display columns with final values
         out.loc[g, 'display_rate_contribution'] = E
-        out.loc[g, 'net_display'] = I2
         out.loc[g, 'display_mix_contribution'] = I2 - E
-        out.loc[g, 'net_adjustment'] = (I2 - (rows.get('net_gap', I).fillna(I)))
+        # Update net_gap to show final rebalanced impact
+        out.loc[g, 'net_gap'] = I2
+        out.loc[g, 'net_adjustment'] = (I2 - total_impact)
         out.loc[g, 'net_adjustment_role'] = np.where(out.loc[g, 'net_adjustment'] > 0, 'absorber',
                                               np.where(out.loc[g, 'net_adjustment'] < 0, 'donor', 'baseline'))
         
-        # Write diagnostic columns for transparency
-        out.loc[g, 'rebalance_offender_delta'] = delta_guardrail
-        out.loc[g, 'rebalance_pool_delta'] = delta_pool
-        out.loc[g, 'rebalance_project_delta'] = delta_cap
-        out.loc[g, 'rebalance_signcap_delta'] = delta_cap  # compatibility
-        out.loc[g, 'rebalance_total_delta'] = delta_total
-        # Stage values (pp) for de-obfuscated walkthrough
-        out.loc[g, 'M_before_pp'] = M_before * 100.0
-        out.loc[g, 'M_after_offender_pp'] = M_after_offender * 100.0
-        out.loc[g, 'M_after_pool_pp'] = M_after_pool * 100.0
-        out.loc[g, 'M_after_project_pp'] = M2 * 100.0
-        out.loc[g, 'M_after_cap_pp'] = M2 * 100.0  # compatibility
+        # Keep essential diagnostic columns for math walkthrough
         out.loc[g, 'pool_mass_pp'] = (M_after_pool - M_after_offender) * 100.0
         out.loc[g, 'project_need_pp'] = cap_need * 100.0
-        out.loc[g, 'cap_need_pp'] = cap_need * 100.0  # compatibility
+        
+        # Add delta columns that math walkthrough needs
+        out.loc[g, 'rebalance_pool_delta'] = delta_pool
+        out.loc[g, 'rebalance_project_delta'] = delta_cap
         
         # Diagnostic flags for walkthrough transparency (simplified)
         pool_group = np.where(dr > cap_eta, 'dr>0', np.where(dr < -cap_eta, 'dr<0', f'|dr|≤{cap_eta:.3f}'))
@@ -2439,20 +2540,18 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
         w_pos_norm, ok_pos = _safe_weights(base_w_series.where(Ppos, 0.0))
         w_neg_norm, ok_neg = _safe_weights(base_w_series.where(Pneg, 0.0))
         pool_weight = pd.Series(0.0, index=rows.index)
-        pool_scope = np.where(Ppos, 'dr>0', np.where(Pneg, 'dr<0', ''))
         if ok_pos and w_pos_norm is not None:
             pool_weight.loc[Ppos] = w_pos_norm.loc[Ppos].fillna(0.0)
         if ok_neg and w_neg_norm is not None:
             pool_weight.loc[Pneg] = w_neg_norm.loc[Pneg].fillna(0.0)
         out.loc[g, 'pool_weight'] = pool_weight
-        out.loc[g, 'pool_scope'] = pool_scope
         
         # Cheap runtime invariant checks per region - verify conservation
         E_sum = float(E.sum())
         M2_sum = float(M2.sum()) 
         I2_sum = float((E + M2).sum())
-        coreE = float(rows['performance_gap_contribution'].sum())
-        coreM = float(rows['construct_gap_contribution'].sum())
+        coreE = float(rows['_rate_component'].sum())
+        coreM = float(rows['_mix_component'].sum())
         coreNet = float(rows['net_gap'].sum())
         
         # Three key Oaxaca invariants with tolerance checks
@@ -2471,24 +2570,6 @@ def _apply_constrained_rebalance(df: pd.DataFrame,
 # =============================================================================
 
 
-def _ensure_display_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a DataFrame with consistent display columns for mix/rate/net."""
-    out = df.copy()
-
-    out["rate_contribution_raw"] = out.get("performance_gap_contribution", out.get("rate_contribution_raw", 0.0))
-    out["mix_contribution_raw"]  = out.get("construct_gap_contribution",  out.get("mix_contribution_raw",  0.0))
-    
-    if "net_gap" not in out.columns:
-        out["net_gap"] = out["rate_contribution_raw"] + out["mix_contribution_raw"]
-    
-    if "display_rate_contribution" not in out.columns:
-        out["display_rate_contribution"] = out["rate_contribution_raw"]
-    if "display_mix_contribution" not in out.columns:
-        out["display_mix_contribution"] = out["mix_contribution_raw"]
-    if "net_display" not in out.columns:
-        out["net_display"] = out["net_gap"]
-
-    return out
 
 def _rank_segments_by_narrative_support(
     rows: pd.DataFrame,
@@ -2504,18 +2585,13 @@ def _rank_segments_by_narrative_support(
       - priority_score: share-weighted magnitude per group rule
       - group_order: integer for band order depending on topline sign
     """
-    ranked = _ensure_display_columns(rows)
+    ranked = rows
     ranked = ranked.copy()
-    
-    # Ensure required columns exist for compatibility
-    if "display_net" not in ranked.columns:
-        ranked["display_net"] = ranked.get("net_display", ranked.get("net_gap", 0.0))
-    ranked["net_display"] = ranked.get("net_display", ranked["display_net"])
-    
-    # Compute primitives
-    rate = ranked.get('display_rate_contribution', ranked.get('rate_contribution_raw', 0.0)).fillna(0.0)
-    mix  = ranked.get('display_mix_contribution', ranked.get('mix_contribution_raw', 0.0)).fillna(0.0)
-    net  = ranked.get('net_display', ranked.get('net_gap', 0.0)).fillna(0.0)
+
+    # Use the final rebalanced values directly
+    rate = ranked['display_rate_contribution']
+    mix  = ranked['display_mix_contribution'] 
+    net  = ranked['net_gap']
     dr   = (ranked['region_rate'] - ranked['rest_rate']).fillna(0.0)
     share= ranked['region_mix_pct'].fillna(0.0)
 
@@ -2531,7 +2607,7 @@ def _rank_segments_by_narrative_support(
         s = s.dropna()
         return float(np.quantile(s, q)) if len(s) else default
 
-    share_meaningful = _q(share, 0.50, float(share.mean()) if len(share) else 0.0)  # median share
+    share_meaningful = _q(share, 0.4, float(share.mean()) if len(share) else 0.0)  # decreased from P50 to P40
     share_low_cut    = _q(share, 0.25, 0.0)  # P25 for low-share flag
 
     neg_vals = net_pp[net_pp < 0]
@@ -2543,14 +2619,27 @@ def _rank_segments_by_narrative_support(
     dr_pos_med  = _q(dr_pos_vals, 0.50, 0.0)  # median positive dr (decimal)
 
     cat2 = np.array(['Neutral'] * len(ranked), dtype=object)
-    # Problems: materially negative vs peers + meaningful share (split by dominant driver)
-    problem_mask = (net_pp <= net_neg_thr) & (share >= share_meaningful)
+    # Problems: materially negative vs peers + meaningful share + minimum magnitude
+    # Apply same minimum magnitude threshold as Strengths for consistency
+    min_problem_impact = thresholds.min_problem_impact * 100  # Convert to pp
+    problem_mask = (net_pp <= min(-min_problem_impact, net_neg_thr)) & (share >= share_meaningful)
     prob_rate = problem_mask & (abs(rate_pp) >= abs(mix_pp))
     prob_mix  = problem_mask & (abs(mix_pp) >  abs(rate_pp))
     cat2[prob_rate] = 'Problem (Rate)'
     cat2[prob_mix]  = 'Problem (Mix)'
-    # Strengths: materially positive + good execution + meaningful share
-    strength_mask = (net_pp >= net_pos_thr) & (dr >= dr_pos_med) & (share >= share_meaningful)
+    
+    # Strengths: Business-meaningful impact with clear justification
+    # Minimum impact threshold to avoid classifying tiny impacts as "Strength"
+    min_strength_impact = thresholds.min_strength_impact * 100  # Convert to pp
+    
+    # Path 1: High impact + meaningful share (impact-driven strength)
+    high_impact_strength = (net_pp >= max(net_pos_thr, min_strength_impact)) & (share >= share_meaningful)
+    # Path 2: Exceptional rate performance + decent share (execution-driven strength)  
+    dr_high_thr = _q(dr[dr > 0], 0.75, dr_pos_med)  # P75 of positive rate differences
+    share_decent = _q(share, 0.30, 0.0)  # P30 for decent share threshold
+    exceptional_rate_strength = (dr >= dr_high_thr) & (net_pp >= min_strength_impact) & (share >= share_decent)
+    
+    strength_mask = high_impact_strength | exceptional_rate_strength
     cat2[strength_mask] = 'Strength'
     ranked['category_type2'] = cat2
     ranked['low_share_flag'] = (share < share_low_cut)
@@ -2582,27 +2671,25 @@ def _rank_segments_by_narrative_support(
 
 
 def compute_derived_metrics_df(decomposition_df: pd.DataFrame, thresholds: AnalysisThresholds = None, paradox_report: ParadoxReport = None, 
-                               alpha=1.0, beta=1.0, gamma=0.0, share_floor=0.02, small_share_damp=0.5, eps_floor=None) -> pd.DataFrame:
+                               alpha=None, beta=1.0, gamma=0.0, share_floor=None, small_share_damp=None, eps_floor=None) -> pd.DataFrame:
     """Compute numeric derived metrics without display formatting."""
     thresholds = thresholds or AnalysisThresholds()
-    enriched = _ensure_display_columns(decomposition_df)
+    enriched = decomposition_df.copy()
 
     # Single, uniform constrained rebalancer for all regions
-    # All parameters from thresholds - no hardcoded constants
+    # Use threshold-based parameters for Phase 1 improvements
     enriched = _apply_constrained_rebalance(
         enriched,
         thresholds=thresholds,
-        alpha=alpha, beta=beta, gamma=gamma,
-        share_floor=share_floor, small_share_damp=small_share_damp,
-        eps_floor=eps_floor or thresholds.near_zero_gap
+        alpha=alpha or thresholds.share_exponent_alpha,
+        beta=beta, 
+        gamma=gamma,
+        share_floor=share_floor or thresholds.small_share_threshold,
+        small_share_damp=small_share_damp or thresholds.small_share_damp_factor,
+        eps_floor=eps_floor or thresholds.projection_epsilon
     )
 
-    # NUMERIC helpers only - use pooled net for ranking/impact
-    impact_series = enriched["net_display"].fillna(enriched["net_gap"])
-    enriched['abs_gap'] = impact_series.abs()
-    enriched['abs_gap_numeric'] = (impact_series * 100).abs()
-    enriched['category_clean'] = enriched['category'].apply(pretty_category)
-
+    # Don't clean up temporary columns yet - regional aggregates needs them
     return enriched
 
 def compute_derived_regional_gaps(regional_gaps: pd.DataFrame) -> pd.DataFrame:
@@ -2634,16 +2721,16 @@ def _calculate_regional_aggregates(
     """Calculate regional-level gap aggregates and include overall rates."""
     
     regional_gaps = decomposition_df.groupby("region").agg({
-        "construct_gap_contribution": "sum",
-        "performance_gap_contribution": "sum", 
+        "_mix_component": "sum",
+        "_rate_component": "sum", 
         "net_gap": "sum",
         "region_mix_pct": "sum",  # Should sum to 1.0
         "rest_mix_pct": "sum"     # Should sum to 1.0
     }).reset_index()
     
     regional_gaps = regional_gaps.rename(columns={
-        "construct_gap_contribution": "total_construct_gap",
-        "performance_gap_contribution": "total_performance_gap",
+        "_mix_component": "total_construct_gap",
+        "_rate_component": "total_performance_gap",
         "net_gap": "total_net_gap"
     })
     
@@ -2785,7 +2872,11 @@ def _normalize_0_1(x, lo, hi):
 
 def _topk_evidence(decomp_region_df: pd.DataFrame, thresholds: AnalysisThresholds, k: int = 5):
     """Return top-k rows by |gap| plus concentration/coverage metrics."""
-    d = decomp_region_df.sort_values("abs_gap_numeric", ascending=False).copy()
+    d = decomp_region_df.copy()
+    # Compute abs_gap_numeric on demand
+    d["abs_gap_numeric"] = (d["net_gap"] * 100).abs()
+    d = d.sort_values("abs_gap_numeric", ascending=False)
+    
     if len(d) == 0:
         return d.head(0), 0.0, 0.0, 0.0
 
@@ -2972,7 +3063,7 @@ def auto_find_best_slice(
                     "category",
                     "region_rate",
                     "rest_rate",
-                    "net_display",
+                    "net_gap",
                     "display_mix_contribution",
                     "display_rate_contribution",
                     "net_adjustment",
@@ -3074,10 +3165,10 @@ def build_oaxaca_exec_pack(
             total_gap=tot_gap,
             thresholds=thresholds
         )
-        impact_sorted = tmp.get("display_net", tmp.get("net_display", tmp["net_gap"]))
+        impact_sorted = tmp["net_gap"]
 
         support = pd.DataFrame({
-            "Category": tmp.get("category_clean", tmp["category"]),
+            "Category": tmp["category"].apply(pretty_category),
             "Region Rate %":  (tmp["region_rate"] * 100).round(1).astype(str) + "%",
             "Baseline Rate %":(tmp["rest_rate"]   * 100).round(1).astype(str) + "%",
             "Region Share %": (tmp["region_mix_pct"] * 100).round(1).astype(str) + "%",
@@ -3391,7 +3482,7 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
         thresholds=thresholds
     )
 
-    labels = rows["category_clean"].astype(str).values
+    labels = rows["category"].apply(pretty_category).astype(str).values
     dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
     dy = (rows["region_rate"] - rows["rest_rate"]).values * 100.0
     net = rows["display_net"].fillna(rows["net_gap"]).values * 100.0   # color/annotation by pooled impact
@@ -3559,10 +3650,10 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, metric_name: 
     else:
         tot_gap = float(result.regional_gaps.loc[result.regional_gaps["region"] == region, "total_net_gap"].iloc[0])
         thresholds = getattr(result, "thresholds", AnalysisThresholds())
-        
+
         ranked = _rank_segments_by_narrative_support(
-            result.decomposition_df[result.decomposition_df["region"] == region],
-            total_gap=tot_gap,
+        result.decomposition_df[result.decomposition_df["region"] == region],
+        total_gap=tot_gap,
             thresholds=thresholds
         )
 
@@ -3571,7 +3662,7 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, metric_name: 
     if sort_cols:
         ranked = ranked.sort_values(sort_cols, ascending=[True, False]).reset_index(drop=True)
     rows = ranked.head(top_n).copy()
-    rows["category_display"] = rows["category_clean"]
+    rows["category_display"] = rows["category"].apply(pretty_category)
 
     rows["rate_diff_pp"] = (rows["region_rate"] - rows["rest_rate"]) * 100
     rows["mix_diff_pp"]  = (rows["region_mix_pct"] - rows["rest_mix_pct"]) * 100
@@ -3708,8 +3799,8 @@ def plot_rates_and_mix_panel(result, region: str, top_n: int = 16, metric_name: 
     # Add impact magnitude annotations on the right side
     max_share = max(max(region_vals), max(peers_vals)) if len(region_vals) > 0 and len(peers_vals) > 0 else 10
     for i, (_, r) in enumerate(rows.iterrows()):
-        # Get impact from net_display or net_gap
-        impact = r.get('net_display', r.get('net_gap', 0)) * 100  # Convert to pp
+        # Get impact from net_gap
+        impact = r['net_gap'] * 100  # Convert to pp
         
         # Determine color from extended or coarse type
         cat2 = r.get('category_type2', r.get('category_type', 'Neutral'))

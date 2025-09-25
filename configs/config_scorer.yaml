@@ -43,7 +43,7 @@ metrics:
         expected_direction: "opposite"
         template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than Global average.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} {{ hypo_name }} than the global average ({{ ref_hypo_val }}). Slower pages ({{ hypo_dir }} load times) typically result in {{ metric_dir }} conversion rates."
         summary_template: "TBA"
-      "New User Percentage":
+      "New User Percentage (adding new characters to simulate a long name)":
         technical_name: "new_users_pct"
         expected_direction: "opposite"
         template: "{{ metric_name }} in {{ region }} is {{ metric_deviation }} {{ metric_dir }} than the global baseline.\n\nRoot cause: {{ region }} has {{ hypo_delta }} {{ hypo_dir }} percentage of new users ({{ hypo_name }}) compared to the global average ({{ ref_hypo_val }}). New users typically convert at lower rates than returning users, which explains this pattern."
@@ -154,3 +154,24 @@ metrics:
     technical_name: "revenue"
     higher_is_better: true
     # No hypotheses - should only be processed by depth analysis
+
+  # Funnel Metrics - Only processed by funnel analysis
+  "Technical Demo Conversion":
+    technical_name: "technical_demo_conversion_rate"
+    higher_is_better: true
+    # No hypotheses - should only be processed by funnel analysis
+    
+  "Business Proposal Success":
+    technical_name: "business_proposal_success_rate"
+    higher_is_better: true
+    # No hypotheses - should only be processed by funnel analysis
+    
+  "Contract Negotiation Close":
+    technical_name: "contract_negotiation_close_rate"
+    higher_is_better: true
+    # No hypotheses - should only be processed by funnel analysis
+    
+  "Total Lost":
+    technical_name: "total_lost_rate"
+    higher_is_better: false
+    # No hypotheses - should only be processed by funnel analysis

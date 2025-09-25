@@ -153,7 +153,7 @@ We add three **small, zero-sum adjustments** to make the category-level story re
 
 **Business rule:** Among similarly better (or worse) performers, **bigger share ⇒ bigger magnitude** of contribution.
 
-**Math:** Let $\Delta r_c=r^R_c-r^B_c$. Define “better” $P_+=\{\Delta r_c>\eta\}$ and “worse” $P_-=\{\Delta r_c<-\eta\}$, with near-tie tolerance $\eta$ (e.g., 0.5pp). Start from the anchored split $E_c=w^R_c\Delta r_c$, $M_c=(w^R_c-w^B_c)(r^B_c-\bar r^B)$.
+**Math:** Let $\Delta r_c=r^R_c-r^B_c$. Define "better" $P_+=\{\Delta r_c>\eta\}$ and "worse" $P_-=\{\Delta r_c<-\eta\}$, with near-tie tolerance $\eta=0.001$ (0.1pp). Start from the anchored split $E_c=w^R_c\Delta r_c$, $M_c=(w^R_c-w^B_c)(r^B_c-\bar r^B)$.
 
 * In $P_+$: pool **positive** mix mass and redistribute by normalized weights
   $\displaystyle \omega_c \propto (w^R_c)^{\alpha}\,\big|r^B_c-\bar r^B\big|^{\beta}\,\big|\Delta r_c\big|^{\gamma}$
@@ -232,8 +232,8 @@ $$
 
 * If a category’s rate is **better** than baseline (beyond $\eta$), its net impact should be **non-negative** (or $\ge\varepsilon$ if you set a margin). ---> If $\Delta r_c>\eta$: enforce $I^{final}_c \ge \varepsilon$.
 * If **worse** (beyond $\eta$), its net should be **non-positive** (or $\le-\varepsilon$). --> If $\Delta r_c<-\eta$: enforce $I^{final}_c \le -\varepsilon$.
-* Near-ties $(|\Delta r_c|\le\eta)$: don’t force a sign (treat as \~0). --> If $|\Delta r_c|\le \eta$: do nothing.
-> Parameters: $\eta=0.005$ (0.5pp), $\varepsilon=0.005$pp.
+* Near-ties $(|\Delta r_c|\le\eta)$: don't force a sign (treat as \~0). --> If $|\Delta r_c|\le \eta$: do nothing.
+> Parameters: $\eta=0.001$ (0.1pp), $\varepsilon=0.001$ (0.1pp).
 
 **Math:** With margin $\varepsilon\in[0,\;0.05\text{pp}]$:
 
@@ -242,8 +242,11 @@ $$
 
 It is zero-sum, so $\sum M$, $\sum E$, $\sum I$ are preserved. Denote the final outputs $M^{\text{final}}_c$ and $I^{\text{final}}_c=E_c+M^{\text{final}}_c$.
 
+> **Example (Product3, LATAM - Fixed Boundary Case):**
+> **"Simplify"** had $\Delta r=+0.1963\text{pp}$ (just under old 0.2pp threshold) and negative net (-1.0pp) due to mix dominance. Tightening $\eta$ to 0.1pp correctly classified it as a meaningful performance advantage, resulting in +0.1pp net impact instead of the counter-intuitive -1.0pp.
+
 > **Example (Vertical, LATAM):**
-> **“Value optimization for purchase ROAS”** had $\Delta r<0$ and positive net pre-projection (due to composition). Unified projection brings it to **$\le 0$** (≈0 with tiny $\varepsilon$), fixing direction without changing totals.
+> **"Value optimization for purchase ROAS"** had $\Delta r<0$ and positive net pre-projection (due to composition). Unified projection brings it to **$\le 0$** (≈0 with tiny $\varepsilon$), fixing direction without changing totals.
 
 | Category                             | w\_R  | w\_B  | r\_R  | r\_B  | Δr (pp)    | E (pp) | M₀ (pp) | I₀ (pp) | M\_pool (pp) | I\_pool (pp) | M\_final (pp) | **I\_final (pp)** |
 | ------------------------------------ | ----- | ----- | ----- | ----- | ---------- | ------ | ------- | ------- | ------------ | ------------ | ------------- | ----------------- |
@@ -341,12 +344,29 @@ We flag Simpson’s when all are true (thresholds are configurable in code):
 - Big swing between pooled and common‑mix: $\,|\Delta_{\text{common}}-\Delta_{\text{pooled}}|\;\ge\;\tau_{\text{swing}}$.
 - Optional policy (business choice): flag only when topline is underperforming (under_only), only overperforming (over_only), or both.
 
-Current thresholds (this analysis):
-  - $\tau_{\text{material}}=0.015$ (1.5pp)
-  - $\tau_{\text{share}}=0.40$ (40% of the common‑mix footprint disagrees with the pooled direction)
-  - $\tau_{\text{swing}}=0.010$ (1.0pp swing between pooled and common mix)
+**Current Analysis Thresholds**:
+
+**Simpson's Paradox Detection**:
+  - Material gap threshold: $\tau_{\text{material}}=0.015$ (1.5pp)
+  - Disagree share threshold: $\tau_{\text{share}}=0.40$ (40% of common‑mix footprint disagrees with pooled direction)
+  - Impact swing threshold: $\tau_{\text{swing}}=0.010$ (1.0pp swing between pooled and common mix)
   - Near‑zero gap for direction: $\varepsilon_{\text{dir}}=0.005$ (0.5pp)
-  - Gap significance cutoffs: high if $|\Delta|>0.020$ (2.0pp), medium if $|\Delta|>0.010$ (1.0pp), else low
+  - Gap significance: high if $|\Delta|>0.020$ (2.0pp), medium if $|\Delta|>0.010$ (1.0pp), else low
+
+**Rebalancer Parameters**:
+  - Sign projection epsilon: $\varepsilon=0.001$ (0.1pp) 
+  - Near-tie threshold: $\eta=0.001$ (0.1pp) 
+  - Share weighting exponents: $\alpha=1.5$, $\beta=1.0$, $\gamma=0.0$ 
+  - Small share damping: 0.3 factor below 2% share 
+
+**Classification Thresholds**:
+  - Minimum strength impact: 0.25pp (prevents tiny impacts from being labeled as "Strength")
+  - Minimum problem impact: 0.25pp (prevents tiny impacts from being labeled as "Problem")
+  - Meaningful share percentile: P40 
+
+**Health Check Thresholds**:
+  - Sign coherence violation delta: 0.05pp (detects counter-intuitive sign assignments)
+  - Uniformity detection: plateau detection around ±0.1pp (identifies over-flattening)
 
 ### What we do when it’s detected
 - We call it out explicitly in the narrative: “despite strong performance in … the topline is driven by allocation.”
@@ -417,7 +437,7 @@ This is exactly what the one‑liner explains:
    with $\bar r^B=\frac{\sum w^B r^B}{\sum w^B}$ and deltas $\Delta r_c=r^R_c-r^B_c,\;\Delta w_c=w^R_c-w^B_c.$
 
 2. **Share-aware pooling (shape magnitudes, not signs)**
-   Split categories by a near-tie tolerance $\eta=0.005\;(\text{0.5pp}):\;P_+=\{\Delta r_c>\eta\},\;P_-=\{\Delta r_c<-\eta\}.$
+   Split categories by a near-tie tolerance $\eta=0.001\;(\text{0.1pp}):\;P_+=\{\Delta r_c>\eta\},\;P_-=\{\Delta r_c<-\eta\}.$
 
    * In $P_+$: pool **positive** mix mass only.
    * In $P_-$: pool **negative** mix mass only.
@@ -426,7 +446,7 @@ This is exactly what the one‑liner explains:
      with small-share damping (if $w^R_c<2\%$, halve $\omega_c$). Outputs: $M_c^{\text{pool}},\,I_c^{\text{pool}}=E_c+M_c^{\text{pool}}$.
 
 3. **Sign projection (directional backstop)**
-   Enforce intuitive signs while keeping totals exact, with margin $\varepsilon$ (we use $\varepsilon=0.005$pp in Simpson-sensitive reporting):
+   Enforce intuitive signs while keeping totals exact, with margin $\varepsilon=0.001$pp (0.1pp):
 
    * If $\Delta r_c>\eta$, require $I_c^{\text{final}}\ge\varepsilon$.
    * If $\Delta r_c<-\eta$, require $I_c^{\text{final}}\le-\varepsilon$.
@@ -444,9 +464,9 @@ This is exactly what the one‑liner explains:
      Plus diagnostics (pool mass, cap need, donor scope) and invariants (all sums preserved via `np.isclose`).
 
 **Weights & parameters (defaults that work well)**
-$\alpha\ge1$ (share), $\beta\approx1$ (baseline leverage), $\gamma\in[0,1]$ (optional performance tilt);
-small-share damping at $w^R<2\%$ → ×0.5;
-$\eta=0.005$ (0.5pp), $\varepsilon\in[0,0.05]$pp (we use 0.5pp for strict sign clarity in Simpson cases);
+$\alpha=1.5$ (share emphasis), $\beta=1.0$ (baseline leverage), $\gamma=0.0$ (no performance tilt);
+small-share damping at $w^R<2\%$ → ×0.3 (strengthened from ×0.5);
+$\eta=0.001$ (0.1pp, tightened from 0.2pp to fix boundary cases), $\varepsilon=0.001$ (0.1pp for finer granularity);
 numeric guards $10^{-12}$.
 
 **Fail-safe skips**
