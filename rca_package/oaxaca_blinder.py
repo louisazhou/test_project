@@ -714,13 +714,11 @@ class NarrativeTemplateEngine:
         direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
         _contradicts, _, segs = self._contradiction_evidence(direction, region_rows_sorted)
         
-        # Build allocation issues using the new Simpson's columns
-        allocation_issues = []
-        for _, row in region_rows_sorted.iterrows():
-            name = pretty_category(row['category'])
-            r_pct = row["region_mix_pct"] * 100
-            b_pct = row["rest_mix_pct"] * 100
-            dx_pp = r_pct - b_pct
+        # Build allocation issues using centralized helper
+        allocation_issues = self._build_allocation_issues(
+            region_rows_sorted,
+            total_gap=tot_gap
+        )
 
         # Build despite clause (high performers with meaningful share)
         despite_segments = []
@@ -741,75 +739,23 @@ class NarrativeTemplateEngine:
         # Second sentence explaining the gap
         sentence2 = ""
         if allocation_issues:
-            # Find over-allocated poor performers and under-allocated good performers
-            over_allocated = []
-            under_allocated = []
-            
-            for _, row in region_rows_sorted.iterrows():
-                r_pct = row["region_mix_pct"] * 100
-                b_pct = row["rest_mix_pct"] * 100
-                dx_pp = r_pct - b_pct
-                
-                if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                    name = pretty_category(row['category'])
-                    rate_r = row['region_rate'] * 100
-                    
-                    # Determine performance level based on region's own rate spectrum
-                    region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
-                    low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
-                    high_threshold = np.percentile(region_rates, 67)   # Top 33%
-                    
-                    if rate_r/100 <= low_threshold:
-                        perf_desc = "low-performing"
-                    elif rate_r/100 >= high_threshold:
-                        perf_desc = "high-performing"
-                    else:
-                        perf_desc = "medium-performing"
-                    
-                    if dx_pp > 0:  # Over-allocated
-                        over_allocated.append(f"{perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
-                    else:  # Under-allocated
-                        under_allocated.append(f"{perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
-            
-            explanation_parts = []
-            if over_allocated:
-                explanation_parts.append(f"higher share in {over_allocated[0]}")
-            if under_allocated:
-                explanation_parts.append(f"lower share in {under_allocated[0]}")
-            
-            if explanation_parts:
-                sentence2 = f" This gap exists because {region} has {' and '.join(explanation_parts)}."
+            over = next((p for p in allocation_issues if p.startswith("higher share in ")), None)
+            under = next((p for p in allocation_issues if p.startswith("lower share in ")), None)
+            parts = [p for p in (over, under) if p]
+            if not parts:
+                parts = allocation_issues[:2]
+            if parts:
+                sentence2 = f" This gap exists because {region} has {' and '.join(parts)}."
         
         narrative = sentence1 + "." + sentence2
             
         return narrative
     
     def _composition_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float, paradox_report: ParadoxReport = None) -> str:
-        """Template for composition-driven narrative following gold standard pattern."""
-        # Use overall rates from enriched DataFrames
-        region_totals = regional_gaps[regional_gaps["region"] == region].iloc[0]
-        overall_region_rate = region_totals["region_overall_rate"]
-        overall_baseline_rate = region_totals["baseline_overall_rate"]
-        
-        # Use centralized contradiction logic
-        region_rows = decomposition_df[decomposition_df["region"] == region]
-        direction = gap_direction_from(region_totals["total_net_gap"], self.thresholds)
-        contradicts, _, segs = self._contradiction_evidence(direction, region_rows)
-        
-        # Use centralized allocation issues
-        allocation_issues = self._build_allocation_issues(
-            region_rows,
-            total_gap=region_totals["total_net_gap"]
+        """Reuse paradox-style wording to avoid duplication."""
+        return self._paradox_template(
+            region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude
         )
-        due_to_clause = ", ".join(allocation_issues[:2]) if allocation_issues else "allocation issues"
-        
-        # Use the same contradiction block everywhere
-        if contradicts and segs:
-            seg_text = " and ".join(segs[:3])
-            return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}) despite {seg_text} due to {due_to_clause}."
-        else:
-            # straight driver
-            return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), driven by {due_to_clause}."
     
     def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
         """Template for performance-driven narrative - using backup logic."""
@@ -938,7 +884,7 @@ class NarrativeTemplateEngine:
                 name = pretty_category(r["category"])
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
-                
+                                
                 # Determine performance level for proper description
                 rate_r = r['region_rate'] * 100
                 region_rates = [row['region_rate'] for _, row in rows.iterrows()]
@@ -953,9 +899,9 @@ class NarrativeTemplateEngine:
                     perf_desc = "medium-performing"
                 
                 if dx_pp > 0:  # Higher share
-                    out.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                    out.append(f"higher share in {perf_desc} categories like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
                 else:  # Lower share
-                    out.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                    out.append(f"lower share in {perf_desc} categories like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
         return out
 
     def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
@@ -1033,6 +979,7 @@ class NarrativeTemplateEngine:
 
         # Present only the business-facing columns in the supporting table
         return out[base_columns]
+
 
 
 class BusinessAnalyzer:
