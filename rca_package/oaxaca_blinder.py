@@ -733,10 +733,23 @@ class NarrativeTemplateEngine:
                     # Fallback to rate impact if Simpson's columns not available
                     impact_pp = row.get('display_rate_contribution', 0) * 100
                 
+                # Determine performance level for proper description
+                rate_r = row['region_rate'] * 100
+                region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
+                low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
+                high_threshold = np.percentile(region_rates, 67)   # Top 33%
+                
+                if rate_r/100 <= low_threshold:
+                    perf_desc = "low-performing"
+                elif rate_r/100 >= high_threshold:
+                    perf_desc = "high-performing"
+                else:
+                    perf_desc = "medium-performing"
+                
                 if dx_pp > 0:  # Over-allocation
-                    allocation_issues.append(f"over-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
+                    allocation_issues.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
                 else:  # Under-allocation  
-                    allocation_issues.append(f"under-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
+                    allocation_issues.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
 
         # Build despite clause (high performers with meaningful share)
         despite_segments = []
@@ -958,10 +971,23 @@ class NarrativeTemplateEngine:
                 # Use unified net display impact (works for both Simpson's and standard cases)
                 impact_pp = r['net_gap'] * 100
                 
-                out.append(
-                    f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
-                    f"({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)"
-                )
+                # Determine performance level for proper description
+                rate_r = r['region_rate'] * 100
+                region_rates = [row['region_rate'] for _, row in rows.iterrows()]
+                low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
+                high_threshold = np.percentile(region_rates, 67)   # Top 33%
+                
+                if r['region_rate'] <= low_threshold:
+                    perf_desc = "low-performing"
+                elif r['region_rate'] >= high_threshold:
+                    perf_desc = "high-performing"
+                else:
+                    perf_desc = "medium-performing"
+                
+                if dx_pp > 0:  # Over-allocation
+                    out.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                else:  # Under-allocation
+                    out.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
         return out
 
     def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
@@ -3485,7 +3511,7 @@ def quadrant_prompts(result, region: str, *, annotate_top_n: int = 3):
     labels = rows["category"].apply(pretty_category).astype(str).values
     dx = (rows["region_mix_pct"] - rows["rest_mix_pct"]).values * 100.0
     dy = (rows["region_rate"] - rows["rest_rate"]).values * 100.0
-    net = rows["display_net"].fillna(rows["net_gap"]).values * 100.0   # color/annotation by pooled impact
+    net = rows["net_gap"].values * 100.0   # color/annotation by pooled impact
     sizes = np.clip(rows["region_mix_pct"].values * 3200.0, 40.0, 1600.0)
     colors = np.where(net >= 0, POS, NEG)
 
