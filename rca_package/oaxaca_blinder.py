@@ -721,26 +721,6 @@ class NarrativeTemplateEngine:
             r_pct = row["region_mix_pct"] * 100
             b_pct = row["rest_mix_pct"] * 100
             dx_pp = r_pct - b_pct
-            
-            # Focus on meaningful allocation differences  
-            if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:  
-                # Determine performance level for proper description
-                rate_r = row['region_rate'] * 100
-                region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
-                low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
-                high_threshold = np.percentile(region_rates, 67)   # Top 33%
-                
-                if rate_r/100 <= low_threshold:
-                    perf_desc = "low-performing"
-                elif rate_r/100 >= high_threshold:
-                    perf_desc = "high-performing"
-                else:
-                    perf_desc = "medium-performing"
-                
-                if dx_pp > 0:  # Higher share
-                    allocation_issues.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
-                else:  # Lower share  
-                    allocation_issues.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
 
         # Build despite clause (high performers with meaningful share)
         despite_segments = []
