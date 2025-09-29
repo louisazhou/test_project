@@ -675,7 +675,7 @@ class NarrativeTemplateEngine:
         elif conclusion == BusinessConclusion.COMPOSITION_DRIVEN:
             return self._composition_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude, paradox_report)
         elif conclusion == BusinessConclusion.PERFORMANCE_DRIVEN:
-            return self._performance_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude, paradox_report)
+            return self._performance_template(region, decomposition_df, regional_gaps, baseline_name, direction_text, gap_magnitude)
         else:  # NO_SIGNIFICANT_GAP
             return self._no_gap_template(region, regional_gaps, baseline_name)
     
@@ -723,20 +723,24 @@ class NarrativeTemplateEngine:
             dx_pp = r_pct - b_pct
             
             # Focus on meaningful allocation differences  
-            if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:
-                # For Simpson's paradox: use the net impact (donated + acquired)
-                if 'display_donated_mix' in row and 'display_acquired_mix' in row:
-                    donated_impact = row.get('display_donated_mix', 0.0) * 100
-                    acquired_impact = row.get('display_acquired_mix', 0.0) * 100
-                    impact_pp = donated_impact + acquired_impact  # Net impact is the sum
-                else:
-                    # Fallback to rate impact if Simpson's columns not available
-                    impact_pp = row.get('display_rate_contribution', 0) * 100
+            if abs(dx_pp) >= self.thresholds.meaningful_allocation_diff_pp:  
+                # Determine performance level for proper description
+                rate_r = row['region_rate'] * 100
+                region_rates = [r['region_rate'] for _, r in region_rows_sorted.iterrows()]
+                low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
+                high_threshold = np.percentile(region_rates, 67)   # Top 33%
                 
-                if dx_pp > 0:  # Over-allocation
-                    allocation_issues.append(f"over-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
-                else:  # Under-allocation  
-                    allocation_issues.append(f"under-allocation in {name} ({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)")
+                if rate_r/100 <= low_threshold:
+                    perf_desc = "low-performing"
+                elif rate_r/100 >= high_threshold:
+                    perf_desc = "high-performing"
+                else:
+                    perf_desc = "medium-performing"
+                
+                if dx_pp > 0:  # Higher share
+                    allocation_issues.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                else:  # Lower share  
+                    allocation_issues.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
 
         # Build despite clause (high performers with meaningful share)
         despite_segments = []
@@ -827,7 +831,7 @@ class NarrativeTemplateEngine:
             # straight driver
             return f"{region} {direction_text} {baseline_name} by {gap_magnitude:.1f}pp ({overall_region_rate:.0%} vs {overall_baseline_rate:.0%}), driven by {due_to_clause}."
     
-    def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float, paradox_report: ParadoxReport = None) -> str:
+    def _performance_template(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame, baseline_name: str, direction_text: str, gap_magnitude: float) -> str:
         """Template for performance-driven narrative - using backup logic."""
         
         # Use overall rates from enriched DataFrames
@@ -955,13 +959,23 @@ class NarrativeTemplateEngine:
                 r_pct = r["region_mix_pct"] * 100
                 b_pct = r["rest_mix_pct"] * 100
                 
-                # Use unified net display impact (works for both Simpson's and standard cases)
-                impact_pp = r['net_gap'] * 100
+                # Determine performance level for proper description
+                rate_r = r['region_rate'] * 100
+                region_rates = [row['region_rate'] for _, row in rows.iterrows()]
+                low_threshold = np.percentile(region_rates, 33)    # Bottom 33%
+                high_threshold = np.percentile(region_rates, 67)   # Top 33%
                 
-                out.append(
-                    f"{'under' if dx_pp<0 else 'over'}-allocation in {name} "
-                    f"({r_pct:.1f}% vs {b_pct:.1f}%, {impact_pp:+.1f}pp impact)"
-                )
+                if r['region_rate'] <= low_threshold:
+                    perf_desc = "low-performing"
+                elif r['region_rate'] >= high_threshold:
+                    perf_desc = "high-performing"
+                else:
+                    perf_desc = "medium-performing"
+                
+                if dx_pp > 0:  # Higher share
+                    out.append(f"higher share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
+                else:  # Lower share
+                    out.append(f"lower share in {perf_desc} products like {name} ({r_pct:.1f}% vs {b_pct:.1f}% share, {rate_r:.1f}% rate)")
         return out
 
     def _create_supporting_table(self, region: str, decomposition_df: pd.DataFrame, regional_gaps: pd.DataFrame = None) -> pd.DataFrame:
