@@ -147,7 +147,7 @@ class AnalysisThresholds:
     near_zero_gap: float = 0.005         # 0.5pp - essentially no gap
     
     # Execution difference thresholds
-    minor_rate_diff: float = 0.001       # 0.1pp rate difference (reduced from 0.2pp to fix boundary cases)
+    minor_rate_diff: float = 0.0         # No near-tie threshold - ANY rate difference is meaningful
     
     # Rebalancer parameters (Phase 1 improvements)
     projection_epsilon: float = 0.001    # 0.1pp - projection floor/ceiling (reduced from 0.5pp)  

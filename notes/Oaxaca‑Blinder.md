@@ -153,7 +153,7 @@ We add three **small, zero-sum adjustments** to make the category-level story re
 
 **Business rule:** Among similarly better (or worse) performers, **bigger share ⇒ bigger magnitude** of contribution.
 
-**Math:** Let $\Delta r_c=r^R_c-r^B_c$. Define "better" $P_+=\{\Delta r_c>\eta\}$ and "worse" $P_-=\{\Delta r_c<-\eta\}$, with near-tie tolerance $\eta=0.001$ (0.1pp). Start from the anchored split $E_c=w^R_c\Delta r_c$, $M_c=(w^R_c-w^B_c)(r^B_c-\bar r^B)$.
+**Math:** Let $\Delta r_c=r^R_c-r^B_c$. Define "better" $P_+=\{\Delta r_c>0\}$ and "worse" $P_-=\{\Delta r_c<0\}$ (no near-tie threshold - any difference is meaningful). Start from the anchored split $E_c=w^R_c\Delta r_c$, $M_c=(w^R_c-w^B_c)(r^B_c-\bar r^B)$.
 
 * In $P_+$: pool **positive** mix mass and redistribute by normalized weights
   $\displaystyle \omega_c \propto (w^R_c)^{\alpha}\,\big|r^B_c-\bar r^B\big|^{\beta}\,\big|\Delta r_c\big|^{\gamma}$
@@ -233,7 +233,7 @@ $$
 * If a category’s rate is **better** than baseline (beyond $\eta$), its net impact should be **non-negative** (or $\ge\varepsilon$ if you set a margin). ---> If $\Delta r_c>\eta$: enforce $I^{final}_c \ge \varepsilon$.
 * If **worse** (beyond $\eta$), its net should be **non-positive** (or $\le-\varepsilon$). --> If $\Delta r_c<-\eta$: enforce $I^{final}_c \le -\varepsilon$.
 * Near-ties $(|\Delta r_c|\le\eta)$: don't force a sign (treat as \~0). --> If $|\Delta r_c|\le \eta$: do nothing.
-> Parameters: $\eta=0.001$ (0.1pp), $\varepsilon=0.001$ (0.1pp).
+> Parameters: $\eta=0.0$ (no near-tie threshold), $\varepsilon=0.001$ (0.1pp).
 
 **Math:** With margin $\varepsilon\in[0,\;0.05\text{pp}]$:
 
@@ -355,7 +355,7 @@ We flag Simpson’s when all are true (thresholds are configurable in code):
 
 **Rebalancer Parameters**:
   - Sign projection epsilon: $\varepsilon=0.001$ (0.1pp) 
-  - Near-tie threshold: $\eta=0.001$ (0.1pp) 
+  - Near-tie threshold: $\eta=0.0$ (0.0pp) - eliminated entirely to prevent counter-intuitive results 
   - Share weighting exponents: $\alpha=1.5$, $\beta=1.0$, $\gamma=0.0$ 
   - Small share damping: 0.3 factor below 2% share 
 
