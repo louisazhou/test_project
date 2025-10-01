@@ -502,16 +502,12 @@ def plot_subregion_bars(
     # Determine slices to highlight (problematic ones passed in)
     highlight_set = set(highlight_slices) if highlight_slices else set()
 
-    # Color-code bars: highlight only problematic slices provided
+    # Color-code bars: highlight only problematic slices provided (others neutral gray)
     colors = []
     for i, val in enumerate(values):
         slice_name = labels[i]
-        if slice_name in highlight_set and len(contributions) > i:
-            contribution = contributions[i]
-            if contribution > 0:
-                colors.append(COLORS['metric_positive'])  # Green for positive contributors
-            else:
-                colors.append(COLORS['metric_negative'])  # Red for negative contributors
+        if slice_name in highlight_set and len(contributions) > i and not pd.isna(contributions[i]):
+            colors.append(COLORS['metric_positive'] if contributions[i] > 0 else COLORS['metric_negative'])
         else:
             colors.append(COLORS['default_bar'])
     
@@ -729,38 +725,48 @@ def analyze_region_depth(
             def format_pct(x):
                 return f"{x*100:+.1f}%"  # Format as percentage with sign
             
-            # Generate more explanatory sentence comparing against region average
+            # Generate explanatory sentence; avoid invalid region-average gating for additive metrics
             if not top_contributors.empty:
-                # Build lists of slices & contributions but only keep those that are problematic
                 problematic_slices: list[str] = []
                 problematic_contribs: list[str] = []
-                for _, row in top_contributors.iterrows():
-                    slice_name = row['slice']
-                    slice_value = row[plot_metric_col]
-                    contrib_formatted = format_pct(row['contribution'])
 
-                    # For underperforming regions, problematic slices are those above region average
-                    # For overperforming regions, problematic slices are those below region average
-                    is_problematic = (delta > 0 and slice_value > region_value) or (delta < 0 and slice_value < region_value)
-
-                    if is_problematic:
-                        problematic_slices.append(slice_name)
-                        problematic_contribs.append(contrib_formatted)
-
-                # Fallback to top contributors if no problematic slice meets criteria
-                if problematic_slices:
-                    main_contributors_sentence = (
-                        f"{', '.join(problematic_slices)} contribute {', '.join(problematic_contribs)} "
-                        f"to the gap between {anomalous_region} and Rest-of-World"
-                    )
+                if metric_type == 'additive':
+                    # For additive metrics, rely on contribution sign and magnitude only
+                    mask = top_contributors['contribution'] < 0 if contributor_type == 'drags' else top_contributors['contribution'] > 0
+                    selected = top_contributors[mask]
+                    problematic_slices = selected['slice'].tolist()
+                    problematic_contribs = selected['contribution'].apply(format_pct).tolist()
                 else:
-                    # Use up to 3 top contributors regardless
-                    fallback_slices = top_contributors['slice'].tolist()
-                    fallback_contribs = top_contributors['contribution'].apply(format_pct).tolist()
-                    main_contributors_sentence = (
-                        f"{', '.join(fallback_slices)} contribute {', '.join(fallback_contribs)} "
-                        f"to the gap between {anomalous_region} and Rest-of-World"
-                    )
+                    # For rates, apply region-rate comparison as an interpretability aid
+                    for _, row in top_contributors.iterrows():
+                        slice_name = row['slice']
+                        slice_value = row[plot_metric_col]
+                        contrib_formatted = format_pct(row['contribution'])
+                        is_problematic = (delta > 0 and slice_value > region_value) or (delta < 0 and slice_value < region_value)
+                        if is_problematic:
+                            problematic_slices.append(slice_name)
+                            problematic_contribs.append(contrib_formatted)
+
+                # Fallback to top contributors if no slice passed the screen
+                if not problematic_slices:
+                    fallback = top_contributors[['slice','contribution','abs_contribution']].copy()
+                    fallback = fallback.sort_values('abs_contribution', ascending=False)
+                    problematic_slices = fallback['slice'].tolist()
+                    problematic_contribs = fallback['contribution'].apply(format_pct).tolist()
+
+                # Limit highlights to avoid coloring every bar (preserve contrast)
+                # Choose at most min(3, len(all_slices)-1) by abs contribution
+                limit = min(3, max(1, len(contrib_df) - 1))
+                if len(problematic_slices) > limit:
+                    cand = contrib_df.set_index('slice').loc[problematic_slices]
+                    cand = cand.sort_values('abs_contribution', ascending=False).head(limit)
+                    problematic_slices = cand.index.tolist()
+                    problematic_contribs = cand['contribution'].apply(format_pct).tolist()
+
+                main_contributors_sentence = (
+                    f"{', '.join(problematic_slices)} contribute {', '.join(problematic_contribs)} "
+                    f"to the gap between {anomalous_region} and Rest-of-World"
+                )
             else:
                 main_contributors_sentence = f"No significant {contributor_type} identified in the gap between {anomalous_region} and Rest-of-World"
             
@@ -775,7 +781,7 @@ def analyze_region_depth(
             summary_text = main_contributors_sentence
 
             # Return in unified format directly - no integration needed!
-            analysis_type = 'Depth'  # Derived from config_depth.yaml
+            analysis_type = 'Market'  # Derived from config_depth.yaml
             unified_results[metric_name] = {
                 'slides': {
                     analysis_type: {
@@ -783,7 +789,7 @@ def analyze_region_depth(
                             'summary_text': summary_text
                         },
                         'slide_info': {
-                            'title': f"{metric_name} - Depth Analysis",
+                            'title': f"{metric_name} - Market Drilldown",
                             'template_text': template,
                             'template_params': template_params,
                             'figure_generators': [
@@ -952,8 +958,8 @@ def main(output_dir: str = '.'):
         print(f"\nMetric: {metric_name}")
         
         # Access the depth slide data
-        if 'Depth' in metric_result['slides']:
-            depth_data = metric_result['slides']['Depth']
+        if 'Market' in metric_result['slides']:
+            depth_data = metric_result['slides']['Market']
             
             print(f"Summary: {depth_data['summary']['summary_text']}")
             
@@ -972,7 +978,7 @@ def main(output_dir: str = '.'):
                             else:
                                 print(f"{k}: {v}")
         else:
-            print("No Depth analysis data found")
+            print("No Market analysis data found")
     
     print(f"\nDepth analysis completed!")
     

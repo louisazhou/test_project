@@ -192,7 +192,8 @@ def create_template_params(
     metric_anomaly_info: Dict[str, Any],
     metric_name: str,
     hypo_name: Optional[str] = None,
-    hypo_result: Optional[Dict[str, Any]] = None
+    hypo_result: Optional[Dict[str, Any]] = None,
+    reference_row: str = "Global"
 ) -> Dict[str, Any]:
     """
     Create standardized template parameters for rendering.
@@ -210,7 +211,8 @@ def create_template_params(
         'region': metric_anomaly_info['anomalous_region'],
         'metric_name': metric_name,
         'metric_deviation': metric_anomaly_info.get('magnitude', '0%'),
-        'metric_dir': metric_anomaly_info['direction']
+        'metric_dir': metric_anomaly_info['direction'],
+        'reference_row': reference_row
     }
     
     if hypo_name and hypo_result:
@@ -586,7 +588,8 @@ def plot_bars(
     is_percent = ('pct' in col_to_plot.lower() or '%' in col_to_plot or 'rate' in col_to_plot.lower() or
                  (hypo_result and 'pp' in hypo_result['magnitude']))
     
-    # Extract regions and values (excluding reference row)
+    # Extract regions to plot as bars (exclude the reference row). The
+    # reference value is shown as a dashed line for context.
     regions = get_non_reference_regions(df, reference_row)
     values_series = df.loc[regions, col_to_plot]
     values = values_series.values
@@ -625,15 +628,32 @@ def plot_bars(
     x_positions = np.arange(len(regions))
     bars = ax.bar(x_positions, plot_values, color=bar_colors)
     
-    # Set x-ticks with region names
+    # Set x-ticks with region names and adapt label style to avoid overlap
     ax.set_xticks(x_positions)
-    ax.set_xticklabels(regions, rotation=0, ha='center', fontsize=FONTS['tick_label']['size'])
+    n_bars = len(regions)
+    # Dynamic rotation and font size for readability
+    if n_bars <= 6:
+        rotation = 0
+        lbl_size = FONTS['tick_label']['size']
+    elif n_bars <= 10:
+        rotation = 30
+        lbl_size = max(9, FONTS['tick_label']['size'] - 1)
+    elif n_bars <= 14:
+        rotation = 45
+        lbl_size = max(8, FONTS['tick_label']['size'] - 2)
+    else:
+        rotation = 60
+        lbl_size = max(8, FONTS['tick_label']['size'] - 3)
+    ax.set_xticklabels(regions, rotation=rotation, ha='right' if rotation else 'center', fontsize=lbl_size)
     
     # Add reference line if reference row is in the data and value is not NaN
     if reference_row in df.index:
-        global_val = df.loc[reference_row, col_to_plot]
-        if not pd.isna(global_val):
-            ax.axhline(global_val, color=COLORS['global_line'], linestyle='--', linewidth=1)
+        try:
+            ref_val = df.loc[reference_row, col_to_plot]
+            if not pd.isna(ref_val):
+                ax.axhline(ref_val, color=COLORS['global_line'], linestyle='--', linewidth=1)
+        except KeyError:
+            pass
     
     # Add values on top of bars or N/A
     for i, val in enumerate(values):
@@ -1064,7 +1084,8 @@ def create_multi_hypothesis_plot(
     ordered_hypos: List[Tuple[str, Dict[str, Any]]],
     figsize: Tuple[int, int] = (18, 10),
     include_score_formula: bool = True,
-    is_conclusive: bool = True
+    is_conclusive: bool = True,
+    reference_row: str = "Global"
 ) -> plt.Figure:
     """
     Create a multi-panel figure showing hypothesis analysis with bar charts.
@@ -1089,7 +1110,7 @@ def create_multi_hypothesis_plot(
         print(f"Using compact table view due to {compact_reason} - this avoids text overlap and improves readability")
         # Create mini results DataFrame for this metric (temporary solution)
         mini_results = []
-        all_regions = get_all_regions_ordered(df)
+        all_regions = get_all_regions_ordered(df, reference_row)
         
         for rank, (hypo_name, hypo_result) in enumerate(ordered_hypos, 1):
             # Apply wrapping to both metric and hypothesis names for display
@@ -1117,10 +1138,15 @@ def create_multi_hypothesis_plot(
             df=df,
             results_df=mini_df,
             metric_col=metric_col,
-            fontsize=10
+            fontsize=10,
+            reference_row=reference_row
         )
         return fig
     
+    # Ensure reference row exists; if not, fall back to the first row to avoid KeyError
+    if reference_row not in df.index and len(df.index) > 0:
+        reference_row = df.index[0]
+
     # Create an empty figure
     fig = plt.figure(figsize=figsize)
     
@@ -1163,7 +1189,7 @@ def create_multi_hypothesis_plot(
     ax_best_hypo = fig.add_subplot(gs[1, 0])
     
     # Plot metric
-    plot_bars(ax_metric, df[[metric_col]], metric_anomaly_info, plot_type='metric')
+    plot_bars(ax_metric, df[[metric_col]], metric_anomaly_info, plot_type='metric', reference_row=reference_row)
     ax_metric.set_title(f"Metric: {metric_col}", fontsize=FONTS['title']['size'])
     
     # Handle the "Best Hypothesis" plot area
@@ -1174,7 +1200,8 @@ def create_multi_hypothesis_plot(
             metric_anomaly_info, 
             best_hypo_result, 
             plot_type='hypothesis',
-            highlight_region=True
+            highlight_region=True,
+            reference_row=reference_row
         )
         
         # Check if metric name + "Best Hypothesis" is too long (more than ~25 characters)
@@ -1211,7 +1238,8 @@ def create_multi_hypothesis_plot(
                 metric_anomaly_info, 
                 hypo_result, 
                 plot_type='hypothesis',
-                highlight_region=False  # No highlight on the right side
+                highlight_region=False,  # No highlight on the right side
+                reference_row=reference_row
             )
             
             # Adjust title based on context
@@ -1555,7 +1583,8 @@ def render_template_text(
     metric_anomaly_info: Dict[str, Any],
     metric_col: str,
     best_hypo_name: Optional[str] = None,
-    best_hypo_result: Optional[Dict[str, Any]] = None
+    best_hypo_result: Optional[Dict[str, Any]] = None,
+    reference_row: str = "Global"
 ) -> str:
     """
     Render a Jinja2 template with values from the results.
@@ -1574,7 +1603,8 @@ def render_template_text(
         metric_anomaly_info=metric_anomaly_info,
         metric_name=metric_col,
         hypo_name=best_hypo_name,
-        hypo_result=best_hypo_result
+        hypo_result=best_hypo_result,
+        reference_row=reference_row
     )
     
     # Fill template with values using Jinja2 Template
@@ -1817,7 +1847,8 @@ def score_hypotheses_for_metrics(
                 metric_anomaly_info=anomaly_info,
                 metric_col=metric_name,
                 best_hypo_name=best_hypo_data['hypothesis'],
-                best_hypo_result=best_hypo_dict
+                best_hypo_result=best_hypo_dict,
+                reference_row=reference_row
             )
             
             # Extract summary text: only the part after "Root cause:" from template
@@ -1857,10 +1888,10 @@ def score_hypotheses_for_metrics(
                 hypo_result=best_hypo_dict
             )
         else:
-            template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than the reference mean. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
-            filled_text = render_template_text(template, anomaly_info, metric_name)
+            template = "Analysis of {{metric_name}} in {{region}} shows {{metric_deviation}} {{metric_dir}} performance than {{reference_row}}. However, none of the provided hypotheses meet the minimum evidence thresholds for a confident root cause determination."
+            filled_text = render_template_text(template, anomaly_info, metric_name, reference_row=reference_row)
             summary_text = "Inconclusive - no hypothesis meets minimum evidence thresholds."
-            template_params = create_template_params(metric_anomaly_info=anomaly_info, metric_name=metric_name)
+            template_params = create_template_params(metric_anomaly_info=anomaly_info, metric_name=metric_name, reference_row=reference_row)
         
         # Create figure generators using DataFrame data
         hypothesis_names = metric_results['hypothesis'].tolist()
@@ -1875,17 +1906,18 @@ def score_hypotheses_for_metrics(
                 'hypo_cols': hypothesis_names,
                 'metric_anomaly_info': anomaly_info,
                 'ordered_hypos': ordered_hypos,
-                'is_conclusive': is_conclusive
+                'is_conclusive': is_conclusive,
+                'reference_row': reference_row
             }
         }]
         
         # Store in unified format
         unified_results[metric_name] = {
             'slides': {
-                'Directional': {
+                'Business': {
                     'summary': {'summary_text': summary_text},
                     'slide_info': {
-                        'title': f"{metric_name} - Root Cause",
+                        'title': f"{metric_name} - Business Ops. Difference",
                         'template_text': filled_text,
                         'template_params': template_params,
                         'figure_generators': figure_generators,

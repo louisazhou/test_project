@@ -55,6 +55,7 @@ from rca_package.funnel_reason import (
     analyze_funnel_reasons, analyze_funnel_reasons_all_regions, create_funnel_synthetic_data
 )
 from rca_package.make_slides import SlideLayouts, dual_output, SlideContent
+from rca_package.slice_directional import inject_slice_directional_after_depth
 
 # Control figure display - set to True if you want to see figures inline
 # Check if running as script (__name__ == '__main__') or in interactive environment
@@ -126,6 +127,135 @@ data = {
 df_technical = pd.DataFrame(data, index=regions)
 print("✅ Test data created with technical column names")
 
+# Create granular synthetic data aligned with top-line data
+def create_granular_synthetic_from_topline(df_topline: pd.DataFrame, seed: int = 7) -> pd.DataFrame:
+    """Create slice-level synthetic data that aggregates back to the regional topline.
+
+    Produces technical-schema columns matching depth + hypotheses usage and a
+    parent_territory column that maps to the topline region index.
+    """
+    rng = np.random.default_rng(seed)
+
+    regions = [r for r in df_topline.index if r != 'Global']
+
+    rows = []
+    # Choose 3 slices per region
+    for region in regions:
+        # Pull topline metric/hypothesis values
+        conv_rate = float(df_topline.loc[region, 'conversion_rate_pct'])
+        revenue_total = float(df_topline.loc[region, 'revenue'])
+        csat = float(df_topline.loc[region, 'customer_satisfaction'])
+
+        # Hypotheses columns (if present, otherwise default ranges)
+        def _get(name, default):
+            return float(df_topline.loc[region, name]) if name in df_topline.columns else default
+
+        bounce = _get('bounce_rate_pct', 0.35)
+        page_time = _get('page_load_time', 2.5)
+        session_duration = _get('session_duration', 180)
+        pages_per_sess = _get('pages_per_session', 4.2)
+        new_users = _get('new_users_pct', 0.2)
+        cart_abandon = _get('cart_abandonment_rate', 0.6)
+        mobile_pct = _get('mobile_traffic_pct', 0.55)
+        search_rate = _get('search_usage_rate', 0.4)
+        email_open = _get('email_open_rate', 0.2)
+        social_traffic = _get('social_media_traffic', 0.12)
+        prod_reviews = _get('product_reviews_count', 120)
+        cust_calls = _get('customer_service_calls', 20)
+        return_rate = _get('return_rate_pct', 0.08)
+        inventory = _get('inventory_availability', 0.95)
+        ship_days = _get('shipping_speed_days', 2.5)
+        promo_disc = _get('promotional_discount_pct', 0.1)
+        uptime = _get('website_uptime_pct', 0.999)
+        payment_fail = _get('payment_failure_rate', 0.02)
+        reco_ctr = _get('recommendation_ctr', 0.12)
+
+        # Allocate visits across 3 slices and solve conversions to match regional rate
+        # Keep visits large enough for stability
+        visit_shares = rng.dirichlet([2, 2, 2])
+        total_visits = 30_000  # per region
+        visits = (visit_shares * total_visits).round().astype(int)
+        # Target total conversions
+        target_conversions = int(round(total_visits * conv_rate))
+        # Create slice-level rates around conv_rate and adjust last to match total exactly
+        slice_rates = np.clip(conv_rate + rng.normal(0, 0.01, size=3), 0.01, 0.95)
+        convs = (visits * slice_rates).round().astype(int)
+        diff = target_conversions - int(convs.sum())
+        # Adjust the largest-volume slice to close rounding gap
+        if visits.sum() > 0 and diff != 0:
+            idx_big = int(np.argmax(visits))
+            convs[idx_big] = max(0, convs[idx_big] + diff)
+
+        # Revenue: split to sum to topline
+        rev_shares = rng.dirichlet([2, 2, 2])
+        rev_values = (rev_shares * revenue_total).round(2)
+        # Adjust rounding to hit exact topline
+        rev_diff = revenue_total - float(rev_values.sum())
+        rev_values[0] = round(float(rev_values[0] + rev_diff), 2)
+
+        # Orders and AOV plausible: orders ~ conversions; aov within a band
+        orders = (convs * (1.0 + rng.normal(0.0, 0.05, size=3))).round().astype(int)
+        aov = np.maximum(20, rev_values / np.maximum(1, orders))
+
+        # CSAT: allocate surveys and sum_csat to match regional average
+        surveys = (rng.uniform(600, 1200, size=3)).round().astype(int)
+        target_sum_csat = csat * float(surveys.sum())
+        # Start with per-slice csat around regional value
+        slice_csats = np.clip(csat + rng.normal(0, 0.1, size=3), 1.0, 5.0)
+        sum_csat = (surveys * slice_csats).round(1)
+        csat_diff = round(target_sum_csat - float(sum_csat.sum()), 1)
+        if len(sum_csat) > 0 and abs(csat_diff) > 0:
+            sum_csat[0] = round(float(sum_csat[0] + csat_diff), 1)
+
+        # Hypotheses at slice-level around regional levels
+        def jitter(val, scale):
+            return float(max(0, val + rng.normal(0, scale)))
+
+        for i, suffix in enumerate(['a', 'b', 'c']):
+            rows.append({
+                'slice': f"{region}_{suffix}",
+                'parent_territory': region,
+                'region': region,  # for depth module
+                'visits': int(visits[i]),
+                'conversions': int(convs[i]),
+                'orders': int(orders[i]),
+                'revenue': float(rev_values[i]),
+                'surveys': int(surveys[i]),
+                'sum_csat': float(sum_csat[i]),
+                # Derived technical metrics to match topline schema
+                'conversion_rate_pct': float(0 if int(visits[i]) == 0 else int(convs[i]) / max(1, int(visits[i]))),
+                'avg_order_value': float(0 if int(orders[i]) == 0 else float(rev_values[i]) / max(1, int(orders[i]))),
+                'customer_satisfaction': float(0 if int(surveys[i]) == 0 else float(sum_csat[i]) / max(1, int(surveys[i]))),
+                # Hypotheses (technical names)
+                'bounce_rate_pct': jitter(bounce, 0.03),
+                'page_load_time': jitter(page_time, 0.3),
+                'session_duration': jitter(session_duration, 10.0),
+                'pages_per_session': jitter(pages_per_sess, 0.3),
+                'new_users_pct': jitter(new_users, 0.03),
+                'cart_abandonment_rate': jitter(cart_abandon, 0.05),
+                'mobile_traffic_pct': jitter(mobile_pct, 0.05),
+                'search_usage_rate': jitter(search_rate, 0.04),
+                'email_open_rate': jitter(email_open, 0.03),
+                'social_media_traffic': jitter(social_traffic, 0.03),
+                'product_reviews_count': int(max(0, round(jitter(prod_reviews, 10.0)))),
+                'customer_service_calls': int(max(0, round(jitter(cust_calls, 3.0)))),
+                'return_rate_pct': jitter(return_rate, 0.02),
+                'inventory_availability': min(1.0, jitter(inventory, 0.01)),
+                'shipping_speed_days': max(0.5, jitter(ship_days, 0.3)),
+                'promotional_discount_pct': jitter(promo_disc, 0.02),
+                'website_uptime_pct': min(0.9999, jitter(uptime, 0.0005)),
+                'payment_failure_rate': jitter(payment_fail, 0.01),
+                'recommendation_ctr': jitter(reco_ctr, 0.02),
+            })
+
+    return pd.DataFrame(rows)
+
+
+# Build granular synthetic slice-level table (technical schema)
+slice_df_technical = create_granular_synthetic_from_topline(df_technical)
+print(f"✅ Created granular slice-level data with {len(slice_df_technical)} rows")
+
+
 # %% [markdown]
 # ## 2. Config-Driven Processing
 
@@ -138,6 +268,10 @@ print("✅ Loaded config_scorer.yaml")
 # Convert data from technical to display names using config
 df = convert_dataframe_to_display_names(df_technical, config)
 print("✅ Converted technical → display names using config")
+
+# Also create a display-named slice DataFrame for directional work later
+slice_df = convert_dataframe_to_display_names(slice_df_technical, config)
+print("✅ Converted slice-level technical → display names using config")
 
 # Get all metrics from config and detect anomalies
 metric_names = get_all_metrics(config)
@@ -282,7 +416,7 @@ if metrics_with_hypotheses:
 try:
     print("🔄 Processing depth analysis...")
     results = analyze_region_depth(
-        sub_df=create_synthetic_data(),
+        sub_df=slice_df_technical,
         config=load_config('configs/config_depth.yaml'),
         metric_anomaly_map=metric_anomaly_map
     )
@@ -459,6 +593,22 @@ try:
                 print("✅ Comprehensive funnel summary slide created")
 except Exception as e:
     print(f"⚠️ Comprehensive funnel summary creation failed: {e}")
+
+try:
+    print("\n🔧 Adding slice-level Directional slides after Depth via module...")
+    unified_results = inject_slice_directional_after_depth(
+        unified_results=unified_results,
+        regional_df=df,
+        slice_df=slice_df,
+        config=config,
+        metric_anomaly_map=metric_anomaly_map,
+        k=2,
+        # only_metrics=['Conversion Rate','Average Order Value','Customer Satisfaction'],
+        verbose=True,
+    )
+    print("✅ Added slice-level Directional slides where applicable")
+except Exception as e:
+    print(f"⚠️  Failed to add slice-level Directional slides: {e}")
 
 # Generate detailed analysis slides (preserve YAML order)
 for metric_name in metric_names:

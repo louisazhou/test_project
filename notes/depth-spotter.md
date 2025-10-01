@@ -185,6 +185,12 @@ $|c|=0.875,\ \text{cov}=0.40\Rightarrow \text{score}=\sqrt{0.875+\frac{0.875-0.4
   “LATAM vs ROW gap Δ = Σ(actual) − Σ(expected at ROW rate).”
 * Middle: **“Who’s driving it?”**
   Bar chart of **all slices**: bars labeled with `% or value (+ numerator/denominator for rate)`, color shows **drag/lift**, lines for **ROW** and **Region avg**, **top contributors highlighted**.
+  
+  Highlight policy (for clarity):
+  - We always show every slice as a neutral bar (gray) and color only the most impactful ones to preserve contrast.
+  - For rate metrics, candidates are screened against the region’s rate to aid interpretation (e.g., drags when the region underperforms).
+  - For additive metrics, candidates are selected purely by contribution sign and magnitude (no “region-average” gating).
+  - We highlight up to the top-3 by absolute contribution, but avoid coloring every bar when the number of slices is very small (i.e., at most `min(3, number_of_slices − 1)`).
 * Right: **Top-3 table**
   `slice | metric | contribution (±%) | coverage | score`
   * a one-liner: “Top-3 explain X% of total contribution mass; action focus.”
