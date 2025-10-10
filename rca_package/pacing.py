@@ -1,33 +1,39 @@
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 
-_C_BLUE  = "#3b82f6"   # Current (still in stage)
-_C_LIGHT = "#bfdbfe"   # Transitioned to next
-_C_GRAY  = "#9ca3af"   # Lost / not recoverable
+_C_BLUE  = "#3b82f6"   # Current
+_C_LIGHT = "#bfdbfe"   # Transitioned / Terminal won
+_C_GRAY  = "#9ca3af"   # Lost
+MIN_VIS_PCT = 1.0
 
 def plot_funnel_row(row: pd.Series, use: str = "PRC"):
-    """
-    Supports two schemas by ds:
-      - ds >= 2025-07-01:
-          Early → Pitched/Committed → Actioned → Partially Adopted → Won
-          Each (except Won) has: Current %, ->Next %, ->Closed Lost % (Partially: Current% + ->Won% = 100).
-      - ds <  2025-07-01:
-          Early → Pitched/Committed → Closed Won (terminal), plus '-> Actioned %' as a branch out of Pitched.
-          Only two groups available & sum to 100:
-            * Early: Current %, ->Pitched/Committed %, ->Closed Lost %
-            * Pitched: Current %, ->Actioned %, ->Closed Won %
-    Returns: matplotlib Figure
-    """
-    # ----- helpers -----
     def _fmt_amount(v, mode, total):
-        val = int(round((v/100.0) * total))
-        return f"${val:,.0f}" if mode == "prc" else f"{val:,.0f}"
+        amt = int(round((v/100.0) * total))
+        # Convert to BMK suffix (B, M, K) with 2 decimal rounding
+        def _bmk(n: int) -> str:
+            absn = abs(n)
+            if absn >= 1_000_000_000:
+                num = round(n / 1_000_000_000, 2)
+                suf = "B"
+            elif absn >= 1_000_000:
+                num = round(n / 1_000_000, 2)
+                suf = "M"
+            elif absn >= 1_000:
+                num = round(n / 1_000, 2)
+                suf = "K"
+            else:
+                num = round(n, 2)
+                suf = ""
+            return f"{num:.2f}{suf}"
+        s = _bmk(amt)
+        return f"${s}" if mode == "prc" else s
 
     def _total_and_fmt(row, use):
         mode = use.lower()
         if mode == "prc":
-            total = row.get("total PRC", row.get("total_PRC"))
-            if total is None: raise KeyError("Need 'total PRC' (or 'total_PRC') for use='PRC'.")
+            total = row.get("Total PRC $")
+            if total is None:
+                raise KeyError("Need 'Total PRC $' for use='PRC'.")
             title_tail = f"Total PRC ${int(round(total)):,.0f}"
         elif mode == "solution":
             total = row["Total Initiatives"]
@@ -36,114 +42,135 @@ def plot_funnel_row(row: pd.Series, use: str = "PRC"):
             raise ValueError("use must be 'PRC' or 'Solution'")
         return mode, float(total), title_tail
 
-    ds = pd.to_datetime(row.get("ds", "1970-01-01"))
+    # Date handling
+    date_val = row.get("Date")
+    date_str = ""
+    if date_val is not None and pd.notnull(date_val):
+        try:
+            date_str = pd.to_datetime(date_val).strftime('%Y-%m-%d')
+        except Exception:
+            date_str = str(date_val)
+    ds = pd.to_datetime(date_val if date_val is not None else "1970-01-01")
     mode, TOTAL, title_tail = _total_and_fmt(row, use)
     territory = row.get("territory", "")
 
+    won_key = "Partially Adopted -> Won %" if "Partially Adopted -> Won %" in row.index else "Partially Adopted -> Won%"
+    pc_closed_won_key = "Pitched/Committed -> Closed Won %" if "Pitched/Committed -> Closed Won %" in row.index else "Pitched/Committed -> Closed Won%"
+
     if ds >= pd.Timestamp("2025-07-01"):
-        # ===== NEWER SCHEMA =====
         stages = ["Early Stage", "Pitched/Committed", "Actioned", "Partially Adopted", "Won"]
         to_next = {
-            "Early Stage":           float(row["Early Stage -> Pitched/Committed %"]),
-            "Pitched/Committed":     float(row["Pitched/Committed -> Actioned %"]),
-            "Actioned":              float(row["Actioned -> Partially Adopted %"]),
-            "Partially Adopted":     float(row["Partially Adopted -> Won%"]),
+            "Early Stage":           float(row.get("Early Stage -> Pitched/Committed %", 0) or 0),
+            "Pitched/Committed":     float(row.get("Pitched/Committed -> Actioned %", 0) or 0),
+            "Actioned":              float(row.get("Actioned -> Partially Adopted %", 0) or 0),
+            "Partially Adopted":     float(row.get(won_key, 0) or 0),
             "Won":                   0.0,
         }
         current_within = {
-            "Early Stage":           float(row["Early Stage Current %"]),
-            "Pitched/Committed":     float(row["Pitched/Committed Current %"]),
-            "Actioned":              float(row["Actioned Current %"]),
-            "Partially Adopted":     float(row["Partially Adopted Current %"]),
+            "Early Stage":           float(row.get("Early Stage Current %", 0) or 0),
+            "Pitched/Committed":     float(row.get("Pitched/Committed Current %", 0) or 0),
+            "Actioned":              float(row.get("Actioned Current %", 0) or 0),
+            "Partially Adopted":     float(row.get("Partially Adopted Current %", 0) or 0),
             "Won":                   100.0,
         }
         closed_lost = {
-            "Early Stage":           float(row["Early Stage -> Closed Lost %"]),
-            "Pitched/Committed":     float(row["Pitched/Committed -> Closed Lost %"]),
-            "Actioned":              float(row["Actioned -> Closed Lost %"]),
-            "Partially Adopted":     float(row.get("Partially Adopted -> Closed Lost %", 0.0)),
+            "Early Stage":           float(row.get("Early Stage -> Closed Lost %", 0) or 0),
+            "Pitched/Committed":     float(row.get("Pitched/Committed -> Closed Lost %", 0) or 0),
+            "Actioned":              float(row.get("Actioned -> Closed Lost %", 0) or 0),
+            "Partially Adopted":     float(row.get("Partially Adopted -> Closed Lost %", 0.0) or 0.0),
             "Won":                   0.0,
         }
-        # validate per-stage sums
+        # tolerance 99-101
         for s in stages[:-1]:
             tot = current_within[s] + to_next[s] + closed_lost[s]
-            if abs(tot - 100.0) > 1e-6:
-                raise ValueError(f"Stage '{s}' must sum to 100; got {tot:.2f}.")
+            if tot < 99 or tot > 101:
+                raise ValueError(f"Stage '{s}' must sum to ~100 (99-101 allowed); got {tot:.2f}.")
 
-        # base: % of origin that reached each stage
+        # base
         base = [100.0]
         base.append(base[-1] * to_next["Early Stage"] / 100.0)
         base.append(base[-1] * to_next["Pitched/Committed"] / 100.0)
         base.append(base[-1] * to_next["Actioned"] / 100.0)
         base.append(base[-1] * to_next["Partially Adopted"] / 100.0)
 
+        # segments (% of origin)
         seg_cur  = [b * (current_within[s] / 100.0) for s, b in zip(stages, base)]
         seg_tran = [b * (to_next[s]       / 100.0) for s, b in zip(stages, base)]
         seg_lost = [b * (closed_lost[s]   / 100.0) for s, b in zip(stages, base)]
 
+        # concise side text
+        side_group_text = {
+            "Early Stage":       f"Curr {current_within['Early Stage']:.2f}% | →Pitched {to_next['Early Stage']:.2f}% | Lost {closed_lost['Early Stage']:.2f}%",
+            "Pitched/Committed": f"Curr {current_within['Pitched/Committed']:.2f}% | →Actioned {to_next['Pitched/Committed']:.2f}% | Lost {closed_lost['Pitched/Committed']:.2f}%",
+            "Actioned":          f"Curr {current_within['Actioned']:.2f}% | →Part. Adopted {to_next['Actioned']:.2f}% | Lost {closed_lost['Actioned']:.2f}%",
+            "Partially Adopted": f"Curr {current_within['Partially Adopted']:.2f}% | →Won {to_next['Partially Adopted']:.2f}%",
+            "Won":               "Terminal"
+        }
+
+        # labels for 'Next' segment text
+        next_label = {
+            "Early Stage": "→Pitched",
+            "Pitched/Committed": "→Actioned",
+            "Actioned": "→Part. Adopted",
+            "Partially Adopted": "→Won",
+            "Won": ""
+        }
+
     else:
-        # ===== OLDER SCHEMA =====
-        # Stages: Early → Pitched/Committed → Closed Won (terminal).
-        # Pitched has a three-way split: Current / ->Actioned / ->Closed Won (sum to 100).
+        # OLD schema
         stages = ["Early Stage", "Pitched/Committed", "Closed Won"]
 
-        # to_next defined only for transitions that are part of the funnel flow:
-        to_next = {
-            "Early Stage":       float(row["Early Stage -> Pitched/Committed %"]),
-            "Pitched/Committed": float(row["Pitched/Committed -> Actioned %"]),  # branch to Actioned
-            "Closed Won":        0.0,
-        }
-        # current-within for the two groups we actually have:
-        current_within = {
-            "Early Stage":       float(row["Early Stage Current %"]),
-            "Pitched/Committed": float(row["Pitched/Committed Current %"]),
-            "Closed Won":        100.0,  # terminal
-        }
-        # closed lost where defined:
-        closed_lost = {
-            "Early Stage":       float(row["Early Stage -> Closed Lost %"]),
-            "Pitched/Committed": 0.0,  # no "Closed Lost" here in old schema
-            "Closed Won":        0.0,
-        }
-        # "Won" portion comes directly off Pitched/Committed
-        pct_closed_won = float(row["Pitched/Committed -> Closed Won %"])
+        early_to_pitched = float(row.get("Early Stage -> Pitched/Committed %", 0) or 0)
+        pitched_current  = float(row.get("Pitched/Committed Current %", 0) or 0)
+        pitched_closed_won = float(row.get(pc_closed_won_key, 0.0) or 0.0)
+        pitched_closed_lost = float(row.get("Pitched/Committed -> Closed Lost %", 0.0) or 0.0)
+        early_current = float(row.get("Early Stage Current %", 0) or 0)
+        early_closed_lost = float(row.get("Early Stage -> Closed Lost %", 0) or 0)
 
-        # validate sums
-        tot_early  = current_within["Early Stage"] + to_next["Early Stage"] + closed_lost["Early Stage"]
-        tot_pitched= current_within["Pitched/Committed"] + to_next["Pitched/Committed"] + pct_closed_won
-        if abs(tot_early - 100.0) > 1e-6:
-            raise ValueError(f"'Early Stage' must sum to 100; got {tot_early:.2f}.")
-        if abs(tot_pitched - 100.0) > 1e-6:
-            raise ValueError(f"'Pitched/Committed' must sum to 100; got {tot_pitched:.2f}.")
+        # validation
+        tot_early   = early_current + early_to_pitched + early_closed_lost
+        tot_pitched = pitched_current + pitched_closed_lost + pitched_closed_won
+        if tot_early < 99 or tot_early > 101:
+            raise ValueError(f"'Early Stage' must sum to ~100 (99-101 allowed); got {tot_early:.2f}.")
+        if tot_pitched < 99 or tot_pitched > 101:
+            raise ValueError(f"'Pitched/Committed' must sum to ~100 (99-101 allowed); got {tot_pitched:.2f}.")
 
-        # base (reached):
+        # base
         base_early   = 100.0
-        base_pitched = base_early * to_next["Early Stage"] / 100.0
-        base_closed_won = base_pitched * pct_closed_won / 100.0   # terminal
-        base = [base_early, base_pitched, base_closed_won]
+        base_pitched = base_early * early_to_pitched / 100.0
+        base_won     = base_pitched * pitched_closed_won / 100.0
+        base = [base_early, base_pitched, base_won]
 
-        # segments:
-        # Early: current / transitioned(to pitched) / lost
-        seg_cur_early  = base_early * (current_within["Early Stage"] / 100.0)
-        seg_trn_early  = base_early * (to_next["Early Stage"]       / 100.0)
-        seg_lost_early = base_early * (closed_lost["Early Stage"]   / 100.0)
+        # segments
+        seg_cur  = [
+            base_early   * (early_current / 100.0),
+            base_pitched * (pitched_current / 100.0),
+            base_won     * 1.0  # terminal stock
+        ]
+        seg_tran = [
+            base_early   * (early_to_pitched / 100.0),   # transition to pitched
+            base_pitched * (pitched_closed_won / 100.0), # transition to terminal won
+            0.0
+        ]
+        seg_lost = [
+            base_early   * (early_closed_lost / 100.0),
+            base_pitched * (pitched_closed_lost / 100.0),
+            0.0
+        ]
 
-        # Pitched: current / transitioned(to Actioned) / won (terminal branch)
-        seg_cur_pitch  = base_pitched * (current_within["Pitched/Committed"] / 100.0)
-        seg_trn_pitch  = base_pitched * (to_next["Pitched/Committed"]        / 100.0)
-        seg_won_pitch  = base_pitched * (pct_closed_won                      / 100.0)
+        # concise side text
+        side_group_text = {
+            "Early Stage":       f"Curr {early_current:.2f}% | →Pitched {early_to_pitched:.2f}% | Lost {early_closed_lost:.2f}%",
+            "Pitched/Committed": f"Curr {pitched_current:.2f}% | →Won {pitched_closed_won:.2f}% | Lost {pitched_closed_lost:.2f}%",
+            "Closed Won":        "Terminal"
+        }
+        next_label = {
+            "Early Stage": "→Pitched",
+            "Pitched/Committed": "→Won",
+            "Closed Won": ""
+        }
 
-        # Closed Won stage: treat as terminal stock = 100% current of its base
-        seg_cur_cwon   = base_closed_won
-        seg_trn_cwon   = 0.0
-        seg_lost_cwon  = 0.0
-
-        seg_cur  = [seg_cur_early, seg_cur_pitch, seg_cur_cwon]
-        seg_tran = [seg_trn_early, seg_trn_pitch, seg_trn_cwon]
-        # "lost" at pitched is 0 in old schema; use gray for Early's lost only.
-        seg_lost = [seg_lost_early, 0.0, 0.0]
-
-    # ----- Plot (common) -----
+    # Plot
     fig, ax = plt.subplots(figsize=(10, 6))
     max_w = max(base)
     left_offsets = [(max_w - w) / 2 for w in base]
@@ -153,47 +180,51 @@ def plot_funnel_row(row: pd.Series, use: str = "PRC"):
         left = left_offsets[i]
         bw, tw, gw = seg_cur[i], seg_tran[i], seg_lost[i]
 
-        # draw stacked: current (blue), transitioned (light), lost (gray)
-        if bw > 0: ax.barh(y, bw, left=left, color=_C_BLUE,  edgecolor="none")
-        if tw > 0: ax.barh(y, tw, left=left + bw, color=_C_LIGHT, edgecolor="none")
-        if gw > 0: ax.barh(y, gw, left=left + bw + tw, color=_C_GRAY,  edgecolor="none")
+        # display widths (min visible)
+        dbw = MIN_VIS_PCT if (bw > 0 and bw < MIN_VIS_PCT) else bw
+        dtw = MIN_VIS_PCT if (tw > 0 and tw < MIN_VIS_PCT) else tw
+        dgw = MIN_VIS_PCT if (gw > 0 and gw < MIN_VIS_PCT) else gw
 
-        # annotate on segments (% + integer amount from origin)
+        if bw > 0: ax.barh(y, dbw, left=left, color=_C_BLUE,  edgecolor="none")
+        if tw > 0: ax.barh(y, dtw, left=left + dbw, color=_C_LIGHT, edgecolor="none")
+        if gw > 0: ax.barh(y, dgw, left=left + dbw + dtw, color=_C_GRAY,  edgecolor="none")
+
+        # Numeric annotations on bars (Current, Transitioned, Lost)
         if bw > 0:
-            ax.text(left + bw/2, y, f"{bw:.1f}%\n{_fmt_amount(bw, mode, TOTAL)}",
-                    ha="center", va="center", color="white", fontsize=9, fontweight="bold")
-        if tw > 0:
-            # display the within-stage transition % on light segment
-            if ds >= pd.Timestamp("2025-07-01"):
-                within = to_next[s]
+            txt = f"{bw:.1f}%\n{_fmt_amount(bw, mode, TOTAL)}"
+            if dbw < 2.0:
+                ax.text(left + dbw + 0.5, y, txt, ha="left", va="center", color="white", fontsize=9, fontweight="bold")
             else:
-                within = to_next[s] if s in to_next else 0.0
-            ax.text(left + bw + tw/2, y, f"{within:.0f}%\n{_fmt_amount(tw, mode, TOTAL)}",
-                    ha="center", va="center", color="black", fontsize=9)
+                ax.text(left + dbw/2, y, txt, ha="center", va="center", color="white", fontsize=9, fontweight="bold")
+        if tw > 0:
+            txt = f"{tw:.1f}%\n{_fmt_amount(tw, mode, TOTAL)}"
+            if dtw < 2.0:
+                ax.text(left + dbw + dtw + 0.5, y, txt, ha="left", va="center", color="black", fontsize=9)
+            else:
+                ax.text(left + dbw + dtw/2, y, txt, ha="center", va="center", color="black", fontsize=9)
         if gw > 0:
-            # show the within-stage lost% (or none if not defined)
-            lost_pct = (gw / base[i] * 100.0) if base[i] > 0 else 0.0
-            ax.text(left + bw + tw + gw/2, y, f"{lost_pct:.0f}%\n{_fmt_amount(gw, mode, TOTAL)}",
-                    ha="center", va="center", color="black", fontsize=9)
+            txt = f"{gw:.1f}%\n{_fmt_amount(gw, mode, TOTAL)}"
+            if dgw < 2.0:
+                ax.text(left + dbw + dtw + dgw + 0.5, y, txt, ha="left", va="center", color="black", fontsize=9)
+            else:
+                ax.text(left + dbw + dtw + dgw/2, y, txt, ha="center", va="center", color="black", fontsize=9)
 
-        # right-side: reached share and amount (base of stage)
-        ax.text(max_w + 4, y, f"Reached: {base[i]:.1f}% • {_fmt_amount(base[i], mode, TOTAL)}",
-                va="center", fontsize=9)
+        # right-side annotations, compact two lines
+        right_text = f"Reached {base[i]:.1f}% • {_fmt_amount(base[i], mode, TOTAL)}\n{side_group_text.get(s, '')}"
+        ax.text(max_w + 4, y, right_text, va="center", fontsize=9)
 
-    # axes/legend/title
     ax.set_yticks(range(len(stages)))
     ax.set_yticklabels(stages[::-1])
     ax.set_xticks([]); ax.grid(False)
     for sp in ax.spines.values(): sp.set_visible(False)
 
-    title_left = " • ".join([t for t in [str(row.get("ds", "")), territory, title_tail] if t])
+    title_left = " • ".join([t for t in [date_str, territory, title_tail] if t])
     ax.set_title(title_left, fontsize=12, loc="left", pad=12)
 
-    # legend bottom, 2 columns
     fig.legend(
         handles=[
             plt.Line2D([0], [0], color=_C_BLUE,  lw=10, label="Current (not transitioned yet)"),
-            plt.Line2D([0], [0], color=_C_LIGHT, lw=10, label="Transitioned to next"),
+            plt.Line2D([0], [0], color=_C_LIGHT, lw=10, label="Transitioned (to next/terminal)"),
             plt.Line2D([0], [0], color=_C_GRAY,  lw=10, label="Lost (not recoverable)"),
         ],
         loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.06)
