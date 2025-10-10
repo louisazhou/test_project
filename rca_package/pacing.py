@@ -7,6 +7,16 @@ _C_GRAY  = "#9ca3af"   # Lost
 MIN_VIS_PCT = 1.0
 
 def plot_funnel_row(row: pd.Series, use: str = "PRC"):
+    def _num(key: str, default: float = 0.0) -> float:
+        v = row.get(key, default)
+        try:
+            vv = float(v)
+        except Exception:
+            return default
+        if pd.isna(vv):
+            return default
+        return vv
+
     def _fmt_amount(v, mode, total):
         amt = int(round((v/100.0) * total))
         # Convert to BMK suffix (B, M, K) with 2 decimal rounding
@@ -32,11 +42,13 @@ def plot_funnel_row(row: pd.Series, use: str = "PRC"):
         mode = use.lower()
         if mode == "prc":
             total = row.get("Total PRC $")
-            if total is None:
-                raise KeyError("Need 'Total PRC $' for use='PRC'.")
+            if total is None or pd.isna(total):
+                total = 0
             title_tail = f"Total PRC ${int(round(total)):,.0f}"
         elif mode == "solution":
-            total = row["Total Initiatives"]
+            total = row.get("Total Initiatives")
+            if total is None or pd.isna(total):
+                total = 0
             title_tail = f"Total Solutions {int(round(total)):,.0f}"
         else:
             raise ValueError("use must be 'PRC' or 'Solution'")
@@ -60,24 +72,24 @@ def plot_funnel_row(row: pd.Series, use: str = "PRC"):
     if ds >= pd.Timestamp("2025-07-01"):
         stages = ["Early Stage", "Pitched/Committed", "Actioned", "Partially Adopted", "Won"]
         to_next = {
-            "Early Stage":           float(row.get("Early Stage -> Pitched/Committed %", 0) or 0),
-            "Pitched/Committed":     float(row.get("Pitched/Committed -> Actioned %", 0) or 0),
-            "Actioned":              float(row.get("Actioned -> Partially Adopted %", 0) or 0),
-            "Partially Adopted":     float(row.get(won_key, 0) or 0),
+            "Early Stage":           _num("Early Stage -> Pitched/Committed %"),
+            "Pitched/Committed":     _num("Pitched/Committed -> Actioned %"),
+            "Actioned":              _num("Actioned -> Partially Adopted %"),
+            "Partially Adopted":     _num(won_key),
             "Won":                   0.0,
         }
         current_within = {
-            "Early Stage":           float(row.get("Early Stage Current %", 0) or 0),
-            "Pitched/Committed":     float(row.get("Pitched/Committed Current %", 0) or 0),
-            "Actioned":              float(row.get("Actioned Current %", 0) or 0),
-            "Partially Adopted":     float(row.get("Partially Adopted Current %", 0) or 0),
+            "Early Stage":           _num("Early Stage Current %"),
+            "Pitched/Committed":     _num("Pitched/Committed Current %"),
+            "Actioned":              _num("Actioned Current %"),
+            "Partially Adopted":     _num("Partially Adopted Current %"),
             "Won":                   100.0,
         }
         closed_lost = {
-            "Early Stage":           float(row.get("Early Stage -> Closed Lost %", 0) or 0),
-            "Pitched/Committed":     float(row.get("Pitched/Committed -> Closed Lost %", 0) or 0),
-            "Actioned":              float(row.get("Actioned -> Closed Lost %", 0) or 0),
-            "Partially Adopted":     float(row.get("Partially Adopted -> Closed Lost %", 0.0) or 0.0),
+            "Early Stage":           _num("Early Stage -> Closed Lost %"),
+            "Pitched/Committed":     _num("Pitched/Committed -> Closed Lost %"),
+            "Actioned":              _num("Actioned -> Closed Lost %"),
+            "Partially Adopted":     _num("Partially Adopted -> Closed Lost %"),
             "Won":                   0.0,
         }
         # tolerance 99-101
@@ -120,12 +132,12 @@ def plot_funnel_row(row: pd.Series, use: str = "PRC"):
         # OLD schema
         stages = ["Early Stage", "Pitched/Committed", "Closed Won"]
 
-        early_to_pitched = float(row.get("Early Stage -> Pitched/Committed %", 0) or 0)
-        pitched_current  = float(row.get("Pitched/Committed Current %", 0) or 0)
-        pitched_closed_won = float(row.get(pc_closed_won_key, 0.0) or 0.0)
-        pitched_closed_lost = float(row.get("Pitched/Committed -> Closed Lost %", 0.0) or 0.0)
-        early_current = float(row.get("Early Stage Current %", 0) or 0)
-        early_closed_lost = float(row.get("Early Stage -> Closed Lost %", 0) or 0)
+        early_to_pitched = _num("Early Stage -> Pitched/Committed %")
+        pitched_current  = _num("Pitched/Committed Current %")
+        pitched_closed_won = _num(pc_closed_won_key)
+        pitched_closed_lost = _num("Pitched/Committed -> Closed Lost %")
+        early_current = _num("Early Stage Current %")
+        early_closed_lost = _num("Early Stage -> Closed Lost %")
 
         # validation
         tot_early   = early_current + early_to_pitched + early_closed_lost
