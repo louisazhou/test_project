@@ -2,19 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-Example RCA Analysis Workflow - Simplified Config-Driven Approach
-This script demonstrates a simplified approach that uses the config to drive everything.
+Regional RCA Analysis Workflow - North America Markets
+This script demonstrates regional analysis with North America as reference and 4 sub-markets.
 """
 
 # %% [markdown]
-# # Example RCA Analysis Workflow - Simplified
+# # Regional RCA Analysis - North America Markets
 # 
-# This notebook demonstrates a simplified config-driven approach:
-# - **Single config source**: Uses config_scorer.yaml to drive everything
-# - **Automatic data conversion**: Technical → Display names from config
-# - **Automatic anomaly detection**: For all metrics in config
-# - **Config-driven slide ordering**: Order based on config structure
-# - **Complete automation**: From config loading to slide generation
+# This notebook demonstrates regional analysis with North America as reference:
+# - **Regional focus**: North America as reference region with 4 sub-markets
+# - **Market-level analysis**: North America 1, 2, 3, 4 as comparison markets
+# - **Team-level depth**: Each market has multiple teams for depth analysis
+# - **Directional + Depth only**: Focused on core RCA analysis methods
 
 # %% [setup]
 import os
@@ -81,46 +80,49 @@ print("\n📊 PREPARING TEST DATA")
 
 # Create sample data using technical names (as they come from real data sources)
 np.random.seed(42)
-regions = ["Global", "North America", "Europe", "Asia", "Latin America"]
+# Regional analysis: North America as reference, with 4 sub-markets
+regions = ["North America", "North America 1", "North America 2", "North America 3", "North America 4"]
 
 # Create test data with technical names as column headers (realistic scenario)
 # Note: conversion_rate_pct will be replaced by Oaxaca-Blinder synthetic data
 data = {
     # Metrics (using technical names from config)
-    'conversion_rate_pct': np.array([0.114, 0.084, 0.114, 0.149, 0.102]),  # From Oaxaca synthetic data
-    'avg_order_value': np.array([75.0, 65.0, 80.0, 85.0, 72.0]),
-    'customer_satisfaction': np.array([4.2, 3.8, 4.3, 4.5, 4.0]),
-    'revenue': np.array([1000000, 650000, 950000, 1100000, 850000]),
+    # North America as reference, sub-markets show different performance patterns
+    'conversion_rate_pct': np.array([0.084, 0.072, 0.095, 0.078, 0.089]),  # NA1 underperforms, NA2 overperforms
+    'avg_order_value': np.array([65.0, 58.0, 72.0, 61.0, 68.0]),  # NA1 low AOV, NA2 high AOV
+    'customer_satisfaction': np.array([3.8, 3.5, 4.1, 3.6, 3.9]),  # NA1 low CSAT, NA2 high CSAT
+    'revenue': np.array([650000, 520000, 780000, 580000, 720000]),  # Corresponding revenue patterns
     
     # Funnel metrics (direct data instead of function call)
-    'technical_demo_conversion_rate': np.array([0.65, 0.45, 0.68, 0.72, 0.66]),  # NA underperforms
-    'technical_demo_pipeline_value': np.array([45000000, 25000000, 48000000, 35000000, 42000000]),
-    'business_proposal_success_rate': np.array([0.58, 0.62, 0.42, 0.61, 0.59]),  # Europe underperforms
-    'business_proposal_pipeline_value': np.array([38000000, 32000000, 22000000, 28000000, 35000000]),
-    'contract_negotiation_close_rate': np.array([0.72, 0.75, 0.78, 0.55, 0.74]),  # Asia underperforms
-    'contract_negotiation_pipeline_value': np.array([28000000, 31000000, 35000000, 18000000, 29000000]),
-    'total_lost_rate': np.array([0.15, 0.25, 0.16, 0.14, 0.17]),  # North America underperforms overall
+    'technical_demo_conversion_rate': np.array([0.45, 0.38, 0.52, 0.41, 0.48]),  # NA1 underperforms, NA2 overperforms
+    'technical_demo_pipeline_value': np.array([25000000, 20000000, 30000000, 22000000, 28000000]),
+    'business_proposal_success_rate': np.array([0.42, 0.35, 0.48, 0.38, 0.45]),  # NA1 underperforms, NA2 overperforms
+    'business_proposal_pipeline_value': np.array([22000000, 18000000, 26000000, 20000000, 24000000]),
+    'contract_negotiation_close_rate': np.array([0.55, 0.48, 0.62, 0.51, 0.58]),  # NA1 underperforms, NA2 overperforms
+    'contract_negotiation_pipeline_value': np.array([18000000, 15000000, 21000000, 17000000, 19500000]),
+    'total_lost_rate': np.array([0.25, 0.32, 0.18, 0.28, 0.22]),  # NA1 high loss rate, NA2 low loss rate
     
     # Hypotheses (using technical names from config)
-    'bounce_rate_pct': np.array([0.35, 0.45, 0.32, 0.28, 0.34]),
-    'page_load_time': np.array([2.4, 3.8, 2.2, 1.9, 2.5]),
-    'session_duration': np.array([180, 120, 190, 210, 175]),
-    'pages_per_session': np.array([4.2, 3.1, 4.5, 4.8, 4.0]),
-    'new_users_pct': np.array([0.25, 0.18, 0.28, 0.30, 0.23]),
-    'cart_abandonment_rate': np.array([0.70, 0.85, 0.65, 0.60, 0.72]),
-    'mobile_traffic_pct': np.array([0.60, 0.45, 0.65, 0.70, 0.58]),
-    'search_usage_rate': np.array([0.40, 0.25, 0.45, 0.50, 0.38]),
-    'email_open_rate': np.array([0.22, 0.15, 0.25, 0.28, 0.20]),
-    'social_media_traffic': np.array([0.15, 0.08, 0.18, 0.20, 0.12]),
-    'product_reviews_count': np.array([150, 80, 170, 200, 140]),
-    'customer_service_calls': np.array([25, 45, 20, 15, 28]),
-    'return_rate_pct': np.array([0.08, 0.15, 0.06, 0.05, 0.09]),
-    'inventory_availability': np.array([0.95, 0.85, 0.97, 0.98, 0.93]),
-    'shipping_speed_days': np.array([2.5, 4.2, 2.0, 1.8, 2.8]),
-    'promotional_discount_pct': np.array([0.10, 0.05, 0.12, 0.15, 0.08]),
-    'website_uptime_pct': np.array([0.999, 0.995, 0.9995, 0.9998, 0.998]),
-    'payment_failure_rate': np.array([0.02, 0.08, 0.015, 0.01, 0.025]),
-    'recommendation_ctr': np.array([0.12, 0.06, 0.15, 0.18, 0.10])
+    # Patterns that explain the performance differences between NA markets
+    'bounce_rate_pct': np.array([0.45, 0.52, 0.38, 0.48, 0.42]),  # NA1 high bounce, NA2 low bounce
+    'page_load_time': np.array([3.8, 4.5, 3.2, 4.0, 3.6]),  # NA1 slow loading, NA2 fast loading
+    'session_duration': np.array([120, 95, 145, 110, 130]),  # NA1 short sessions, NA2 long sessions
+    'pages_per_session': np.array([3.1, 2.8, 3.5, 3.0, 3.3]),  # NA1 fewer pages, NA2 more pages
+    'new_users_pct': np.array([0.18, 0.15, 0.22, 0.16, 0.20]),  # NA1 fewer new users, NA2 more new users
+    'cart_abandonment_rate': np.array([0.85, 0.92, 0.78, 0.88, 0.82]),  # NA1 high abandonment, NA2 low abandonment
+    'mobile_traffic_pct': np.array([0.45, 0.38, 0.52, 0.42, 0.48]),  # NA1 low mobile, NA2 high mobile
+    'search_usage_rate': np.array([0.25, 0.18, 0.32, 0.22, 0.28]),  # NA1 low search, NA2 high search
+    'email_open_rate': np.array([0.15, 0.12, 0.18, 0.14, 0.16]),  # NA1 low email engagement, NA2 high
+    'social_media_traffic': np.array([0.08, 0.05, 0.12, 0.07, 0.10]),  # NA1 low social, NA2 high social
+    'product_reviews_count': np.array([80, 60, 100, 70, 90]),  # NA1 fewer reviews, NA2 more reviews
+    'customer_service_calls': np.array([45, 55, 35, 50, 40]),  # NA1 more calls, NA2 fewer calls
+    'return_rate_pct': np.array([0.15, 0.18, 0.12, 0.16, 0.14]),  # NA1 high returns, NA2 low returns
+    'inventory_availability': np.array([0.85, 0.80, 0.90, 0.82, 0.88]),  # NA1 low inventory, NA2 high inventory
+    'shipping_speed_days': np.array([4.2, 5.0, 3.5, 4.5, 3.8]),  # NA1 slow shipping, NA2 fast shipping
+    'promotional_discount_pct': np.array([0.05, 0.03, 0.08, 0.04, 0.07]),  # NA1 low discounts, NA2 high discounts
+    'website_uptime_pct': np.array([0.995, 0.992, 0.998, 0.994, 0.997]),  # NA1 low uptime, NA2 high uptime
+    'payment_failure_rate': np.array([0.08, 0.12, 0.05, 0.10, 0.06]),  # NA1 high failures, NA2 low failures
+    'recommendation_ctr': np.array([0.06, 0.04, 0.09, 0.05, 0.08])  # NA1 low CTR, NA2 high CTR
 }
 
 # Create DataFrame with technical names (as it comes from data sources)
@@ -129,17 +131,18 @@ print("✅ Test data created with technical column names")
 
 # Create granular synthetic data aligned with top-line data
 def create_granular_synthetic_from_topline(df_topline: pd.DataFrame, seed: int = 7) -> pd.DataFrame:
-    """Create slice-level synthetic data that aggregates back to the regional topline.
+    """Create team-level synthetic data that aggregates back to the market topline.
 
     Produces technical-schema columns matching depth + hypotheses usage and a
     parent_territory column that maps to the topline region index.
     """
     rng = np.random.default_rng(seed)
 
-    regions = [r for r in df_topline.index if r != 'Global']
+    # For regional analysis, use all markets (including reference North America)
+    regions = [r for r in df_topline.index]
 
     rows = []
-    # Choose 3 slices per region
+    # Choose 3 teams per market
     for region in regions:
         # Pull topline metric/hypothesis values
         conv_rate = float(df_topline.loc[region, 'conversion_rate_pct'])
@@ -213,7 +216,7 @@ def create_granular_synthetic_from_topline(df_topline: pd.DataFrame, seed: int =
 
         for i, suffix in enumerate(['a', 'b', 'c']):
             rows.append({
-                'slice': f"{region}_{suffix}",
+                'slice': f"{region}_team_{suffix}",
                 'parent_territory': region,
                 'region': region,  # for depth module
                 'visits': int(visits[i]),
@@ -251,9 +254,9 @@ def create_granular_synthetic_from_topline(df_topline: pd.DataFrame, seed: int =
     return pd.DataFrame(rows)
 
 
-# Build granular synthetic slice-level table (technical schema)
+# Build granular synthetic team-level table (technical schema)
 slice_df_technical = create_granular_synthetic_from_topline(df_technical)
-print(f"✅ Created granular slice-level data with {len(slice_df_technical)} rows")
+print(f"✅ Created granular team-level data with {len(slice_df_technical)} rows")
 # %% [markdown]
 slice_df_technical
 
@@ -281,10 +284,10 @@ print("✅ Converted slice-level technical → display names using config")
 metric_names = get_all_metrics(config)
 print(f"📋 Found {len(metric_names)} metrics in config: {metric_names}")
 
-# Detect anomalies for ALL metrics in config
+# Detect anomalies for ALL metrics in config (using North America as reference)
 metric_anomaly_map = {}
 for metric_name in metric_names:
-    anomaly_info = detect_snapshot_anomaly_for_column(df, 'Global', column=metric_name)
+    anomaly_info = detect_snapshot_anomaly_for_column(df, 'North America', column=metric_name)
     if anomaly_info:
         # Add higher_is_better from config
         metric_info = get_metric_info(config, metric_name)
@@ -402,7 +405,7 @@ total_hypotheses_per_metric = {}
 metric_hypo_map = get_metric_hypothesis_map(config)
 print(f"📋 Metrics with hypotheses: {list(metric_hypo_map.keys())}")
 
-# Process directional analysis
+# Process directional analysis (using North America as reference)
 metrics_with_hypotheses = [m for m in metric_names if m in metric_hypo_map and metric_hypo_map[m]]
 if metrics_with_hypotheses:
     print(f"🔄 Processing directional analysis for {len(metrics_with_hypotheses)} metrics...")
@@ -410,7 +413,8 @@ if metrics_with_hypotheses:
         results = score_hypotheses_for_metrics(
             regional_df=df,
             anomaly_map=metric_anomaly_map,
-            config=config
+            config=config,
+            reference_row="North America"  # Use North America as reference
         )
         process_analysis_results(results, unified_results)
     except Exception as e:
@@ -428,94 +432,8 @@ try:
 except Exception as e:
     print(f"⚠️  Depth analysis skipped: {e}")
 
-# Process Oaxaca-Blinder analysis
-try:
-    print("🔄 Processing Oaxaca-Blinder decomposition analysis...")
-    from rca_package.oaxaca_blinder import analyze_oaxaca_metrics, create_oaxaca_synthetic_data
-    
-    # For demonstration, generate synthetic data for Conversion Rate if anomaly detected
-    oaxaca_config = load_config('configs/config_oaxaca.yaml')
-    if 'Conversion Rate' in metric_anomaly_map:
-        anomaly = metric_anomaly_map['Conversion Rate']
-        target_region = anomaly['anomalous_region']
-        target_gap_pp = (anomaly['metric_val'] - anomaly['global_val']) * 100
-        
-        print(f"   🎯 Generating synthetic data for {target_region} with {target_gap_pp:+.1f}pp gap")
-        conversion_data = create_oaxaca_synthetic_data(
-            target_region=target_region, 
-            target_gap_pp=target_gap_pp
-        )
-        
-        results = analyze_oaxaca_metrics(
-            config=oaxaca_config,
-            metric_anomaly_map=metric_anomaly_map,
-            data_df=conversion_data
-        )
-        process_analysis_results(results, unified_results)
-    else:
-        print("   ℹ️  No conversion rate anomaly detected - skipping Oaxaca-Blinder")
-    
-except Exception as e:
-    print(f"⚠️  Oaxaca-Blinder analysis skipped: {e}")
-    import traceback
-    traceback.print_exc()
-
-# Process Funnel analysis
-try:
-    print("🔄 Processing funnel analysis...")
-    
-    # Generate synthetic funnel data
-    df_lost, df_blocked = create_funnel_synthetic_data()
-    
-    # Define column mappings for lost and blocked data (as required kwargs)
-    lost_columns = {
-        'lost_territory': "territory_l4_name",
-        'lost_stage': "Stage Before Closed", 
-        'lost_reason': "Closed Lost Sub Reason",
-        'lost_count': "# of Solutions Lost",
-        'lost_amount': "$ PRC Lost",
-        'lost_current_count': "# of Solutions Currently in Stage",
-        'lost_current_amount': "$ PRC Currently in Stage",
-        'lost_total_count': "Total # of Solutions (Lost + Current)",
-        'lost_total_amount': "Total $ PRC (Lost + Current)"
-    }
-    
-    blocked_columns = {
-        'blocked_territory': "territory_l4_name",
-        'blocked_stage': "Stage Being Blocked",
-        'blocked_reason': "Blocked Sub Reason", 
-        'blocked_count': "# of Solutions Blocked",
-        'blocked_amount': "$ PRC Blocked",
-        'blocked_current_count': "# of Solutions Currently in Stage",
-        'blocked_current_amount': "$ PRC Currently in Stage"
-    }
-    
-    funnel_config = load_config('configs/config_funnel.yaml')
-    
-    # Get comprehensive results for all regions
-    all_region_results = analyze_funnel_reasons_all_regions(
-        df_lost, df_blocked, funnel_config,
-        lost_columns=lost_columns, blocked_columns=blocked_columns
-    )
-    
-    # Process regular anomaly-driven results
-    results = analyze_funnel_reasons(
-        df_lost=df_lost,
-        df_block=df_blocked,
-        config=funnel_config,
-        metric_anomaly_map=metric_anomaly_map,
-        lost_columns=lost_columns,
-        blocked_columns=blocked_columns
-    )
-    process_analysis_results(results, unified_results)
-    
-    # Store all-region results for comprehensive slides
-    if 'all_region_funnel_results' not in globals():
-        all_region_funnel_results = all_region_results
-except Exception as e:
-    print(f"⚠️  Funnel analysis skipped: {e}")
-    import traceback
-    traceback.print_exc()
+# Skip Oaxaca-Blinder and Funnel analysis for regional focus
+print("ℹ️  Skipping Oaxaca-Blinder and Funnel analysis - focusing on directional and depth only")
 
 # Calculate total hypotheses per metric once
 for metric_name in unified_results:
@@ -564,42 +482,11 @@ slides.create_metrics_summary_slide(
 )
 print("✅ Summary slide created (will appear as second slide)")
 
-# Create comprehensive funnel summary slide for all regions
-try:
-    if 'all_region_funnel_results' in globals():
-        # Create funnel-specific summary showing all regions
-        funnel_metrics = [m for m in metric_names if m in all_region_funnel_results]
-        if funnel_metrics:
-            # Build comprehensive text showing all regions for funnel metrics
-            comprehensive_funnel_texts = {}
-            
-            for metric_name in funnel_metrics:
-                region_summaries = []
-                for region, region_data in all_region_funnel_results[metric_name].items():
-                    for slide_type, slide_data in region_data['slides'].items():
-                        if 'summary' in slide_data and 'summary_text' in slide_data['summary']:
-                            summary = slide_data['summary']['summary_text']
-                            region_summaries.append(f"**{region}**: {summary}")
-                
-                if region_summaries:
-                    comprehensive_funnel_texts[metric_name] = "\n\n".join(region_summaries)
-            
-            # Create a summary DataFrame for funnel metrics only
-            funnel_summary_df = summary_df[funnel_metrics].copy() if funnel_metrics else pd.DataFrame()
-            
-            if not funnel_summary_df.empty:
-                slides.create_metrics_summary_slide(
-                    df=funnel_summary_df,
-                    metrics_text=comprehensive_funnel_texts,
-                    metric_anomaly_map={k: v for k, v in metric_anomaly_map.items() if k in funnel_metrics},
-                    title="Comprehensive Funnel Analysis - All Regions"
-                )
-                print("✅ Comprehensive funnel summary slide created")
-except Exception as e:
-    print(f"⚠️ Comprehensive funnel summary creation failed: {e}")
+# Skip comprehensive funnel slides for regional focus
+print("ℹ️  Skipping comprehensive funnel slides - focusing on directional and depth only")
 
 try:
-    print("\n🔧 Adding slice-level Directional slides after Depth via module...")
+    print("\n🔧 Adding team-level Directional slides after Depth via module...")
     unified_results = inject_slice_directional_after_depth(
         unified_results=unified_results,
         regional_df=df,
@@ -610,9 +497,9 @@ try:
         # only_metrics=['Conversion Rate','Average Order Value','Customer Satisfaction'],
         verbose=True,
     )
-    print("✅ Added slice-level Directional slides where applicable")
+    print("✅ Added team-level Directional slides where applicable")
 except Exception as e:
-    print(f"⚠️  Failed to add slice-level Directional slides: {e}")
+    print(f"⚠️  Failed to add team-level Directional slides: {e}")
 
 # Generate detailed analysis slides (preserve YAML order)
 for metric_name in metric_names:
@@ -643,42 +530,8 @@ for metric_name in metric_names:
             current_count
         )
 
-# Generate comprehensive funnel slides for all regions
-try:
-    if 'all_region_funnel_results' in globals():
-        funnel_metrics = [m for m in metric_names if m in all_region_funnel_results]
-        
-        for metric_name in funnel_metrics:
-            if metric_name in all_region_funnel_results:
-                print(f"\n🔄 Generating comprehensive slides for {metric_name} (all regions)")
-                
-                # Add a divider slide for comprehensive analysis
-                slides._create_divider_slide(f"{metric_name} - All Regions")
-                
-                # Generate slides for each region
-                for region, region_data in all_region_funnel_results[metric_name].items():
-                    for analysis_type, slide_data in region_data['slides'].items():
-                        @dual_output(console=True, slide=True, slide_builder=slides, 
-                                    layout_type=slide_data['slide_info'].get('layout_type', 'text_figure'), 
-                                    show_figures=SHOW_FIGURES)
-                        def create_region_analysis_slide():
-                            template_params = slide_data['slide_info'].get('template_params', {}).copy()
-                            figure_generators = slide_data['slide_info'].get('figure_generators', [])
-                            dfs = slide_data['slide_info'].get('dfs', {}).copy()
-                            
-                            return SlideContent(
-                                title=slide_data['slide_info']['title'],
-                                text_template=slide_data['slide_info'].get('template_text', ''),
-                                dfs=dfs,
-                                template_params=template_params,
-                                figure_generators=figure_generators,
-                                show_figures=SHOW_FIGURES
-                            )
-                        
-                        content, results = create_region_analysis_slide()
-                        print(f"✅ Generated {analysis_type} slide for {region}")
-except Exception as e:
-    print(f"⚠️ Comprehensive region slides creation failed: {e}")
+# Skip comprehensive funnel slides generation for regional focus
+print("ℹ️  Skipping comprehensive funnel slides generation - focusing on directional and depth only")
 
 # %% [markdown]
 # ## 7. Save and Upload Presentation
@@ -691,7 +544,7 @@ output_dir = os.path.abspath('output')
 os.makedirs(output_dir, exist_ok=True)
 
 # Save the presentation
-presentation_path = slides.save("RCA_Analysis_Simplified", output_dir)
+presentation_path = slides.save("RCA_Analysis_Regional_NA", output_dir)
 print(f"✅ Presentation saved: {presentation_path}")
 
 # Optional: Upload to Google Drive
@@ -740,7 +593,7 @@ print(f"   • Size: {file_size:.1f} KB")
 total_content_slides = sum(len(result['slides']) for result in unified_results.values())
 print(f"   • Slides: {total_content_slides} content slides + title + summary")
 
-print(f"\n✨ SUCCESS! Simplified config-driven RCA analysis complete!")
+print(f"\n✨ SUCCESS! Regional North America RCA analysis complete!")
 
 # %% [cleanup]
 # Close all figures to prevent display spam
